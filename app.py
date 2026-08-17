@@ -47,16 +47,23 @@ if "paper_portfolio" not in st.session_state:
 if "ai_analysis_cache" not in st.session_state:
     st.session_state.ai_analysis_cache = {}
 
-# 2. Sidebar - API Key
+# 2. Sidebar - API Key (Auto-loads from Secrets or falls back to text input)
 st.sidebar.header("🔑 API Setup")
-GEMINI_API_KEY = st.sidebar.text_input(
-    "Google Gemini API Key",
-    type="password",
-    help="Get a free key from Google AI Studio (aistudio.google.com)",
-)
+
+api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
+
+if api_key_from_secrets:
+    GEMINI_API_KEY = api_key_from_secrets.strip()
+    st.sidebar.success("✅ Gemini API Key connected")
+else:
+    GEMINI_API_KEY = st.sidebar.text_input(
+        "Google Gemini API Key",
+        type="password",
+        help="Get a free key from Google AI Studio (aistudio.google.com)",
+    )
+
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY.strip())
-
 # Universe Presets
 NIFTY_50 = [
     "RELIANCE.NS",

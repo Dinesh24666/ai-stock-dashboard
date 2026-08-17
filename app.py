@@ -26,15 +26,23 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
 # Universe Presets
+NIFTY_50 = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
+    "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS",
+    "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS",
+    "KOTAKBANK.NS", "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS",
+    "TITAN.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
+    "ULTRACEMCO.NS", "COALINDIA.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", "ASIANPAINT.NS",
+    "TECHM.NS", "HCLTECH.NS", "WIPRO.NS", "LTIM.NS", "GRASIM.NS", "HEROMOTOCO.NS",
+    "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS", "EICHERMOT.NS", "DIVISLAB.NS",
+    "TATACONSUM.NS", "BRITANNIA.NS", "BPCL.NS", "SBILIFE.NS", "HDFCLIFE.NS",
+    "BAJAJFINSV.NS", "SHRIRAMFIN.NS", "TRENT.NS", "BEL.NS"
+]
+
 UNIVERSE_PRESETS = {
-    "Nifty 50 Core": [
-        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
-        "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS",
-        "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS",
-        "KOTAKBANK.NS", "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS",
-        "TITAN.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
-        "ULTRACEMCO.NS", "COALINDIA.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", "ASIANPAINT.NS"
-    ],
+    "Nifty 50 Core": NIFTY_50,
+    "Nifty 500 (Broad Market)": "NIFTY_500",
+    "All NSE Stocks (Full Listed)": "ALL_NSE",
     "Banking & Financial Services": [
         "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
         "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
@@ -52,42 +60,39 @@ UNIVERSE_PRESETS = {
         "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS",
         "MANKIND.NS", "LUPIN.NS", "ZYDUSLIFE.NS", "TORNTPHARM.NS", "MAXHEALTH.NS"
     ],
-    "FMCG & Retail": [
-        "ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS",
-        "VBL.NS", "MARICO.NS", "DABUR.NS", "GODREJCP.NS", "COLPAL.NS", "DMART.NS"
-    ],
-    "Energy, Oil & Power": [
-        "RELIANCE.NS", "ONGC.NS", "NTPC.NS", "POWERGRID.NS", "COALINDIA.NS",
-        "BPCL.NS", "IOC.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "NHPC.NS", "IREDA.NS"
-    ],
     "Defence, Rail & PSUs": [
         "HAL.NS", "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS",
         "IRFC.NS", "COCHINSHIP.NS", "BDL.NS", "CONCOR.NS"
     ],
-    "Metals & Mining": [
-        "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JINDALSTEL.NS",
-        "NMDC.NS", "SAIL.NS", "NATIONALUM.NS"
-    ],
-    "All NSE Stocks (Full Market)": "ALL_NSE",
     "Custom Watchlist": [],
 }
 
 @st.cache_data(ttl=86400)
-def get_all_nse_symbols():
+def get_nse_symbols(universe_type):
     try:
-        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        df_nse = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
-        return [f"{sym}.NS" for sym in df_nse["SYMBOL"].dropna().unique()]
+        if universe_type == "NIFTY_500":
+            url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+            df = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
+            return [f"{sym}.NS" for sym in df["Symbol"].dropna().unique()]
+        else:
+            url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+            df = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
+            return [f"{sym}.NS" for sym in df["SYMBOL"].dropna().unique()]
     except Exception:
-        return UNIVERSE_PRESETS["Nifty 50 Core"]
+        return NIFTY_50
 
 # Sidebar Universe Selection
 st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()))
 
-if selected_universe == "All NSE Stocks (Full Market)":
-    all_symbols = get_all_nse_symbols()
-    scan_limit = st.sidebar.slider("Number of NSE Stocks to Scan", 10, min(200, len(all_symbols)), 40, step=10)
+if selected_universe in ["Nifty 500 (Broad Market)", "All NSE Stocks (Full Listed)"]:
+    preset_type = "NIFTY_500" if selected_universe == "Nifty 500 (Broad Market)" else "ALL_NSE"
+    all_symbols = get_nse_symbols(preset_type)
+    scan_limit = st.sidebar.slider(
+        "Number of Stocks to Scan",
+        10, min(1000, len(all_symbols)), 50, step=10,
+        help="Higher limits take longer to process due to market data fetching."
+    )
     tickers_to_scan = all_symbols[:scan_limit]
 elif selected_universe == "Custom Watchlist":
     custom_input = st.sidebar.text_area(
@@ -108,16 +113,17 @@ score_filter_type = st.sidebar.selectbox(
     "Score Condition",
     ["No Score Filter", "Greater than or equal (>=)", "Less than or equal (<=)"]
 )
-target_score = st.sidebar.slider("Target Composite Score", 0, 100, 70) if score_filter_type != "No Score Filter" else None
+target_score = st.sidebar.slider("Target Composite Score", 0, 100, 60) if score_filter_type != "No Score Filter" else None
 
 st.sidebar.header("📊 Fundamental Filters")
+apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False)
 min_roe = st.sidebar.slider("Min Return on Equity (ROE %)", -20, 50, 0)
-max_pe = st.sidebar.slider("Max P/E Ratio", 5, 200, 100)
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 10.0, 5.0, step=0.1)
+max_pe = st.sidebar.slider("Max P/E Ratio", 5, 250, 120)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 10.0, 4.0, step=0.1)
 
 st.sidebar.header("📈 Technical Filters")
-rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (10, 90))
-max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 50)
+rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (20, 85))
+max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 60)
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     ["Any Trend", "Price > 50 SMA", "Price > 200 SMA", "Price > Both 50 & 200 SMA", "Golden Cross (50 SMA > 200 SMA)"]
@@ -186,8 +192,8 @@ def fetch_screener_universe(ticker_list):
             de_val = info.get("debtToEquity")
             de = round(float(de_val) / 100.0, 2) if de_val is not None else np.nan
 
-            safe_roe = roe if not np.isnan(roe) else 12.0
-            safe_de = de if not np.isnan(de) else 0.8
+            safe_roe = roe if not np.isnan(roe) else 10.0
+            safe_de = de if not np.isnan(de) else 1.0
             fund_score = min(100, max(0, (safe_roe / 25.0) * 60 + ((2.0 - min(safe_de, 2.0)) / 2.0) * 40))
             rsi_score = max(0, 100 - 4 * abs(rsi_val - 60))
             trend_score = (
@@ -214,9 +220,9 @@ def fetch_screener_universe(ticker_list):
                 "SMA_50": round(sma_50, 2),
                 "SMA_200": round(sma_200, 2),
                 "Raw_Ticker": ticker,
-                "_pe_num": pe if not np.isnan(pe) else 999.0,
-                "_roe_num": roe if not np.isnan(roe) else -999.0,
-                "_de_num": de if not np.isnan(de) else 999.0,
+                "_pe_num": pe if not np.isnan(pe) else np.nan,
+                "_roe_num": roe if not np.isnan(roe) else np.nan,
+                "_de_num": de if not np.isnan(de) else np.nan,
             })
         except Exception:
             continue
@@ -234,23 +240,28 @@ else:
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
+    # Score Filter
     if score_filter_type == "Greater than or equal (>=)":
         filtered_df = filtered_df[filtered_df["Composite Score"] >= target_score]
     elif score_filter_type == "Less than or equal (<=)":
         filtered_df = filtered_df[filtered_df["Composite Score"] <= target_score]
 
-    filtered_df = filtered_df[
-        (filtered_df["_roe_num"] >= min_roe)
-        & (filtered_df["_pe_num"] <= max_pe)
-        & (filtered_df["_de_num"] <= max_de)
-    ]
+    # Fundamental Filters (Applied only when enabled)
+    if apply_fund_filter:
+        filtered_df = filtered_df[
+            (filtered_df["_roe_num"].isna() | (filtered_df["_roe_num"] >= min_roe))
+            & (filtered_df["_pe_num"].isna() | (filtered_df["_pe_num"] <= max_pe))
+            & (filtered_df["_de_num"].isna() | (filtered_df["_de_num"] <= max_de))
+        ]
 
+    # Technical Filters
     filtered_df = filtered_df[
         (filtered_df["RSI (14)"] >= rsi_range[0])
         & (filtered_df["RSI (14)"] <= rsi_range[1])
         & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
     ]
 
+    # Trend Filter
     if sma_trend_filter == "Price > 50 SMA":
         filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_50"]]
     elif sma_trend_filter == "Price > 200 SMA":
@@ -277,11 +288,10 @@ if not df_raw.empty:
         ["📊 Screener Results", "🔬 Single Stock Chart & AI Thesis"]
     )
 
-    # --- TAB 1: SCREENER TABLE WITH IN-TAB SORTING FILTER ---
+    # --- TAB 1: SCREENER TABLE ---
     with tab_screener:
         st.info("💡 **Tip:** Click any row in the table below to load its 9/20 EMA chart in the Single Stock tab.")
         
-        # In-tab Sorting Controls Header
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
         with col_title:
             st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)})")
@@ -312,7 +322,7 @@ if not df_raw.empty:
         target_sort_col = sort_col_map.get(sort_metric, "Composite Score")
         ascending_flag = (sort_order == "Low to High (Asc)")
         
-        sorted_results_df = filtered_df.sort_values(by=target_sort_col, ascending=ascending_flag)
+        sorted_results_df = filtered_df.sort_values(by=target_sort_col, ascending=ascending_flag, na_position="last")
 
         display_cols = [
             "Ticker",
@@ -330,8 +340,6 @@ if not df_raw.empty:
         ]
 
         table_data = sorted_results_df[display_cols].copy()
-        
-        # Replace internal NaNs with clean "N/A" strings for clean presentation
         table_data["P/E"] = table_data["P/E"].fillna("N/A")
         table_data["ROE (%)"] = table_data["ROE (%)"].fillna("N/A")
         table_data["D/E"] = table_data["D/E"].fillna("N/A")

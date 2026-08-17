@@ -18,7 +18,7 @@ GEMINI_API_KEY = st.sidebar.text_input(
     help="Get a free key from Google AI Studio",
 )
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=GEMINI_API_KEY.strip())
 
 
 # 3. Cached Market Data Fetcher
@@ -106,13 +106,12 @@ if ticker_input:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 6. Low-Cost AI Summary Trigger
+        # 6. Low-Cost AI Summary Trigger (Auto-Detects Valid Gemini Model)
         st.subheader("🤖 AI Investment Thesis")
         if st.button("Generate AI Analysis"):
             if not GEMINI_API_KEY:
                 st.warning("Please enter your Gemini API Key in the sidebar.")
             else:
-                model = genai.GenerativeModel("gemini-1.5-flash-latest")
                 prompt = f"""
                 Analyze the following Indian stock:
                 - Company: {info.get('longName', ticker_input)}
@@ -126,8 +125,31 @@ if ticker_input:
                 2. Key Risks
                 3. Final Verdict (Bullish / Cautious / Bearish)
                 """
+
                 with st.spinner("Generating AI commentary..."):
-                    response = model.generate_content(prompt)
-                    st.write(response.text)
+                    try:
+                        # Automatically select the first supported model on your key
+                        available_models = [
+                            m.name
+                            for m in genai.list_models()
+                            if "generateContent"
+                            in m.supported_generation_methods
+                        ]
+                        target_model = next(
+                            (
+                                m
+                                for m in available_models
+                                if "flash" in m.lower()
+                            ),
+                            available_models[0]
+                            if available_models
+                            else "gemini-1.5-flash",
+                        )
+
+                        model = genai.GenerativeModel(target_model)
+                        response = model.generate_content(prompt)
+                        st.markdown(response.text)
+                    except Exception as err:
+                        st.error(f"Failed to generate analysis: {err}")
     else:
         st.error("No historical data found for this ticker.")

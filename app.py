@@ -1,4 +1,4 @@
-import time
+import os
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ st.set_page_config(
 
 st.title("⚡ Indian Market AI Stock Screener & Dashboard")
 
-# 2. Sidebar - Gemini Key
+# 2. Sidebar - API Key
 st.sidebar.header("🔑 API Setup")
 GEMINI_API_KEY = st.sidebar.text_input(
     "Google Gemini API Key",
@@ -26,6 +26,53 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
 
+# Universe Presets
+UNIVERSE_PRESETS = {
+    "Nifty 50 Core": [
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
+        "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS",
+        "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS",
+        "KOTAKBANK.NS", "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS",
+        "TITAN.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
+        "ULTRACEMCO.NS", "COALINDIA.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", "ASIANPAINT.NS"
+    ],
+    "Banking & Financial Services": [
+        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
+        "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
+        "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANKBARODA.NS"
+    ],
+    "IT & Technology": [
+        "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS",
+        "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "KPITTECH.NS"
+    ],
+    "Automobile & EV": [
+        "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS",
+        "TVSMOTOR.NS", "EICHERMOT.NS", "BHARATFORG.NS", "SONACOMS.NS", "MOTHERSON.NS"
+    ],
+    "Pharma & Healthcare": [
+        "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS",
+        "MANKIND.NS", "LUPIN.NS", "ZYDUSLIFE.NS", "TORNTPHARM.NS", "MAXHEALTH.NS"
+    ],
+    "FMCG & Retail": [
+        "ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS",
+        "VBL.NS", "MARICO.NS", "DABUR.NS", "GODREJCP.NS", "COLPAL.NS", "DMART.NS"
+    ],
+    "Energy, Oil & Power": [
+        "RELIANCE.NS", "ONGC.NS", "NTPC.NS", "POWERGRID.NS", "COALINDIA.NS",
+        "BPCL.NS", "IOC.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "NHPC.NS", "IREDA.NS"
+    ],
+    "Defence, Rail & PSUs": [
+        "HAL.NS", "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS",
+        "IRFC.NS", "COCHINSHIP.NS", "BDL.NS", "CONCOR.NS"
+    ],
+    "Metals & Mining": [
+        "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JINDALSTEL.NS",
+        "NMDC.NS", "SAIL.NS", "NATIONALUM.NS"
+    ],
+    "All NSE Stocks (Full Market)": "ALL_NSE",
+    "Custom Watchlist": [],
+}
+
 # Helper to fetch All NSE Stocks
 @st.cache_data(ttl=86400)
 def get_all_nse_symbols():
@@ -35,208 +82,22 @@ def get_all_nse_symbols():
         symbols = [f"{sym}.NS" for sym in df_nse["SYMBOL"].dropna().unique()]
         return symbols
     except Exception:
-        return [
-            "RELIANCE.NS",
-            "TCS.NS",
-            "HDFCBANK.NS",
-            "ICICIBANK.NS",
-            "BHARTIARTL.NS",
-            "INFY.NS",
-            "LT.NS",
-            "SBIN.NS",
-            "ITC.NS",
-            "HINDUNILVR.NS",
-            "TATAMOTORS.NS",
-            "M&M.NS",
-            "MARUTI.NS",
-            "SUNPHARMA.NS",
-            "BAJFINANCE.NS",
-            "KOTAKBANK.NS",
-            "AXISBANK.NS",
-            "NTPC.NS",
-            "POWERGRID.NS",
-            "ONGC.NS",
-            "TITAN.NS",
-            "TATASTEEL.NS",
-            "JSWSTEEL.NS",
-            "ADANIENT.NS",
-            "ADANIPORTS.NS",
-            "ULTRACEMCO.NS",
-            "COALINDIA.NS",
-            "BAJAJ-AUTO.NS",
-            "NESTLEIND.NS",
-            "ASIANPAINT.NS",
-            "HAL.NS",
-            "BEL.NS",
-            "BHEL.NS",
-            "MAZDOCK.NS",
-            "RVNL.NS",
-            "IRFC.NS",
-            "LTF.NS",
-            "ZOMATO.NS",
-        ]
+        return UNIVERSE_PRESETS["Nifty 50 Core"]
 
-
-# Sector Baskets
-UNIVERSE_PRESETS = {
-    "Nifty 50 Core": [
-        "RELIANCE.NS",
-        "TCS.NS",
-        "HDFCBANK.NS",
-        "ICICIBANK.NS",
-        "BHARTIARTL.NS",
-        "INFY.NS",
-        "LT.NS",
-        "SBIN.NS",
-        "ITC.NS",
-        "HINDUNILVR.NS",
-        "TATAMOTORS.NS",
-        "M&M.NS",
-        "MARUTI.NS",
-        "SUNPHARMA.NS",
-        "BAJFINANCE.NS",
-        "KOTAKBANK.NS",
-        "AXISBANK.NS",
-        "NTPC.NS",
-        "POWERGRID.NS",
-        "ONGC.NS",
-        "TITAN.NS",
-        "TATASTEEL.NS",
-        "JSWSTEEL.NS",
-        "ADANIENT.NS",
-        "ADANIPORTS.NS",
-        "ULTRACEMCO.NS",
-        "COALINDIA.NS",
-        "BAJAJ-AUTO.NS",
-        "NESTLEIND.NS",
-        "ASIANPAINT.NS",
-    ],
-    "Banking & Financial Services": [
-        "HDFCBANK.NS",
-        "ICICIBANK.NS",
-        "SBIN.NS",
-        "KOTAKBANK.NS",
-        "AXISBANK.NS",
-        "BAJFINANCE.NS",
-        "BAJAJFINSV.NS",
-        "LTF.NS",
-        "CHOLAFIN.NS",
-        "SHRIRAMFIN.NS",
-        "FEDERALBNK.NS",
-        "IDFCFIRSTB.NS",
-        "PNB.NS",
-        "BANKBARODA.NS",
-    ],
-    "IT & Technology": [
-        "TCS.NS",
-        "INFY.NS",
-        "HCLTECH.NS",
-        "WIPRO.NS",
-        "TECHM.NS",
-        "LTIM.NS",
-        "PERSISTENT.NS",
-        "COFORGE.NS",
-        "MPHASIS.NS",
-        "KPITTECH.NS",
-    ],
-    "Automobile & EV": [
-        "TATAMOTORS.NS",
-        "M&M.NS",
-        "MARUTI.NS",
-        "BAJAJ-AUTO.NS",
-        "HEROMOTOCO.NS",
-        "TVSMOTOR.NS",
-        "EICHERMOT.NS",
-        "BHARATFORG.NS",
-        "SONACOMS.NS",
-        "MOTHERSON.NS",
-    ],
-    "Pharma & Healthcare": [
-        "SUNPHARMA.NS",
-        "DRREDDY.NS",
-        "CIPLA.NS",
-        "DIVISLAB.NS",
-        "APOLLOHOSP.NS",
-        "MANKIND.NS",
-        "LUPIN.NS",
-        "ZYDUSLIFE.NS",
-        "TORNTPHARM.NS",
-        "MAXHEALTH.NS",
-    ],
-    "FMCG & Retail": [
-        "ITC.NS",
-        "HINDUNILVR.NS",
-        "NESTLEIND.NS",
-        "BRITANNIA.NS",
-        "TATACONSUM.NS",
-        "VBL.NS",
-        "MARICO.NS",
-        "DABUR.NS",
-        "GODREJCP.NS",
-        "COLPAL.NS",
-        "DMART.NS",
-    ],
-    "Energy, Oil & Power": [
-        "RELIANCE.NS",
-        "ONGC.NS",
-        "NTPC.NS",
-        "POWERGRID.NS",
-        "COALINDIA.NS",
-        "BPCL.NS",
-        "IOC.NS",
-        "TATAPOWER.NS",
-        "ADANIGREEN.NS",
-        "NHPC.NS",
-        "IREDA.NS",
-    ],
-    "Defence, Rail & PSUs": [
-        "HAL.NS",
-        "BEL.NS",
-        "BHEL.NS",
-        "MAZDOCK.NS",
-        "RVNL.NS",
-        "IRFC.NS",
-        "COCHINSHIP.NS",
-        "BDL.NS",
-        "CONCOR.NS",
-    ],
-    "Metals & Mining": [
-        "TATASTEEL.NS",
-        "JSWSTEEL.NS",
-        "HINDALCO.NS",
-        "VEDL.NS",
-        "JINDALSTEL.NS",
-        "NMDC.NS",
-        "SAIL.NS",
-        "NATIONALUM.NS",
-    ],
-    "All NSE Stocks (Full Market)": "ALL_NSE",
-    "Custom Watchlist": [],
-}
 
 st.sidebar.header("🎯 Universe Selection")
-selected_universe = st.sidebar.selectbox(
-    "Select Stock Basket", list(UNIVERSE_PRESETS.keys())
-)
+selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()))
 
 if selected_universe == "All NSE Stocks (Full Market)":
     all_symbols = get_all_nse_symbols()
-    scan_limit = st.sidebar.slider(
-        "Number of NSE Stocks to Scan",
-        10,
-        min(300, len(all_symbols)),
-        30,
-        step=10,
-    )
+    scan_limit = st.sidebar.slider("Number of NSE Stocks to Scan", 10, min(200, len(all_symbols)), 30, step=10)
     tickers_to_scan = all_symbols[:scan_limit]
 elif selected_universe == "Custom Watchlist":
     custom_input = st.sidebar.text_area(
         "Enter Tickers (comma-separated)",
         "RELIANCE, ICICIBANK, LTF, TCS, TATAMOTORS, HAL",
     )
-    raw_tickers = [
-        t.strip().upper() for t in custom_input.split(",") if t.strip()
-    ]
+    raw_tickers = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
     tickers_to_scan = [
         t if (t.endswith(".NS") or t.endswith(".BO")) else f"{t}.NS"
         for t in raw_tickers
@@ -244,12 +105,22 @@ elif selected_universe == "Custom Watchlist":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Sidebar Filters
+# 3. Sidebar Sorting Controls
+st.sidebar.header("🔃 Sort Results")
+sort_column = st.sidebar.selectbox(
+    "Sort By Column",
+    ["Composite Score", "Price (₹)", "RSI (14)", "From 52W High (%)", "P/E", "ROE (%)", "D/E", "Market Cap (₹ Cr)"],
+    index=0
+)
+sort_direction = st.sidebar.radio("Sort Order", ["High to Low (Descending)", "Low to High (Ascending)"])
+is_ascending = sort_direction == "Low to High (Ascending)"
+
+# 4. Sidebar Filters
 # Composite Score Filter
 st.sidebar.header("⭐ Composite Score Filter")
 score_filter_type = st.sidebar.selectbox(
     "Score Condition",
-    ["No Score Filter", "Greater than or equal (>=)", "Less than or equal (<=)"],
+    ["No Score Filter", "Greater than or equal (>=)", "Less than or equal (<=)"]
 )
 target_score = (
     st.sidebar.slider("Target Composite Score", 0, 100, 70)
@@ -259,36 +130,22 @@ target_score = (
 
 # Fundamental Filters
 st.sidebar.header("📊 Fundamental Filters")
-min_roe = st.sidebar.slider("Min Return on Equity (ROE %)", 0, 40, 10)
-max_pe = st.sidebar.slider("Max P/E Ratio", 5, 120, 60)
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 3.5, 2.0, step=0.1)
+min_roe = st.sidebar.slider("Min Return on Equity (ROE %)", -20, 50, 0)
+max_pe = st.sidebar.slider("Max P/E Ratio", 5, 200, 100)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 10.0, 5.0, step=0.1)
 
 # Technical Filters
 st.sidebar.header("📈 Technical Filters")
-rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (20, 80))
-max_dist_52w_high = st.sidebar.slider(
-    "Within % of 52-Week High",
-    0,
-    50,
-    30,
-    help="e.g. 20% means stock is at most 20% below its 52W high",
-)
+rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (10, 90))
+max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 50)
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
-    [
-        "Any Trend",
-        "Price > 50 SMA",
-        "Price > 200 SMA",
-        "Price > Both 50 & 200 SMA",
-        "Golden Cross (50 SMA > 200 SMA)",
-    ],
+    ["Any Trend", "Price > 50 SMA", "Price > 200 SMA", "Price > Both 50 & 200 SMA", "Golden Cross (50 SMA > 200 SMA)"]
 )
-only_volume_surge = st.sidebar.checkbox(
-    "Volume Surge (Today > 20-Day Avg Volume)", value=False
-)
+only_volume_surge = st.sidebar.checkbox("Volume Surge (Today > 20-Day Avg Volume)", value=False)
 
 
-# 4. Helper RSI Calculation
+# 5. Helper RSI Function
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -300,67 +157,68 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 5. Cached Batch Fetcher (with rate limit protection)
+# 6. Cached Batch Fetcher (with fast_info + resilient fundamentals)
 @st.cache_data(ttl=3600)
 def fetch_screener_universe(ticker_list):
     rows = []
-    progress_bar = st.progress(0, text="Fetching stock metrics...")
+    progress_bar = st.progress(0, text="Fetching real-time stock data...")
     total = len(ticker_list)
 
     for idx, ticker in enumerate(ticker_list):
-        progress_bar.progress(
-            (idx + 1) / total, text=f"Scanning {ticker} ({idx+1}/{total})..."
-        )
+        progress_bar.progress((idx + 1) / total, text=f"Analyzing {ticker} ({idx+1}/{total})...")
         try:
             t = yf.Ticker(ticker)
             hist = t.history(period="1y")
             if hist is None or hist.empty or len(hist) < 20:
                 continue
 
-            # Safe metadata extraction
-            try:
-                info = t.info or {}
-            except Exception:
-                info = {}
-
-            curr_price = hist["Close"].iloc[-1]
-            sma_50 = (
-                hist["Close"].rolling(50).mean().iloc[-1]
-                if len(hist) >= 50
-                else curr_price
-            )
-            sma_200 = (
-                hist["Close"].rolling(200).mean().iloc[-1]
-                if len(hist) >= 200
-                else curr_price
-            )
-            high_52w = hist["High"].max()
-            dist_52w_high = ((high_52w - curr_price) / high_52w) * 100.0
+            # Price and fast_info
+            curr_price = float(hist["Close"].iloc[-1])
+            sma_50 = float(hist["Close"].rolling(50).mean().iloc[-1]) if len(hist) >= 50 else curr_price
+            sma_200 = float(hist["Close"].rolling(200).mean().iloc[-1]) if len(hist) >= 200 else curr_price
+            high_52w = float(hist["High"].max())
+            dist_52w_high = max(0.0, ((high_52w - curr_price) / high_52w) * 100.0)
 
             # Technicals
             rsi_val = compute_rsi(hist["Close"], 14)
-            avg_vol_20 = (
-                hist["Volume"].rolling(20).mean().iloc[-1]
-                if len(hist) >= 20
-                else hist["Volume"].iloc[-1]
-            )
-            vol_surge = bool(hist["Volume"].iloc[-1] > avg_vol_20)
+            avg_vol_20 = float(hist["Volume"].rolling(20).mean().iloc[-1]) if len(hist) >= 20 else float(hist["Volume"].iloc[-1])
+            vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
 
-            # Fundamentals
-            roe = (info.get("returnOnEquity") or 0.10) * 100.0
-            pe = info.get("trailingPE") or info.get("forwardPE") or 25.0
-            de = (info.get("debtToEquity") or 50.0) / 100.0
-            mcap_cr = (info.get("marketCap") or 0) / 1e7
-            fcf = info.get("freeCashflow") or 0
-            rev = info.get("totalRevenue") or 1
-            fcf_margin = (fcf / rev) * 100.0 if rev > 0 else 0.0
-            sector = info.get("sector") or "Diversified"
+            # Metadata & Fundamentals extraction with fallbacks
+            info = {}
+            try:
+                info = t.get_info()
+            except Exception:
+                info = {}
 
-            # Composite Score (0-100)
-            fund_score = min(
-                100,
-                max(0, (roe / 25.0) * 60 + ((2.0 - min(de, 2.0)) / 2.0) * 40),
-            )
+            # Sector & Company Name
+            company_name = info.get("shortName") or info.get("longName") or ticker.replace(".NS", "")
+            sector = info.get("sector") or info.get("industry") or "Diversified"
+
+            # Market Cap (in ₹ Crores)
+            raw_mcap = None
+            try:
+                raw_mcap = t.fast_info.market_cap
+            except Exception:
+                raw_mcap = info.get("marketCap")
+            mcap_cr = round((raw_mcap / 1e7), 1) if raw_mcap and raw_mcap > 0 else 0.0
+
+            # P/E Ratio
+            pe_val = info.get("trailingPE") or info.get("forwardPE")
+            pe = round(float(pe_val), 1) if pe_val and pe_val > 0 else np.nan
+
+            # Return on Equity (%)
+            roe_val = info.get("returnOnEquity")
+            roe = round(float(roe_val) * 100.0, 1) if roe_val is not None else np.nan
+
+            # Debt to Equity
+            de_val = info.get("debtToEquity")
+            de = round(float(de_val) / 100.0, 2) if de_val is not None else np.nan
+
+            # Composite Scoring
+            safe_roe = roe if not np.isnan(roe) else 12.0
+            safe_de = de if not np.isnan(de) else 0.8
+            fund_score = min(100, max(0, (safe_roe / 25.0) * 60 + ((2.0 - min(safe_de, 2.0)) / 2.0) * 40))
             rsi_score = max(0, 100 - 4 * abs(rsi_val - 60))
             trend_score = (
                 (30 if curr_price >= sma_50 else 0)
@@ -370,29 +228,26 @@ def fetch_screener_universe(ticker_list):
             tech_score = 0.5 * trend_score + 0.5 * rsi_score
             composite = round(0.55 * fund_score + 0.45 * tech_score, 1)
 
-            rows.append(
-                {
-                    "Ticker": ticker.replace(".NS", "").replace(".BO", ""),
-                    "Company": info.get("shortName")
-                    or info.get("longName")
-                    or ticker.replace(".NS", ""),
-                    "Sector": sector,
-                    "Price (₹)": round(curr_price, 2),
-                    "Composite Score": composite,
-                    "RSI (14)": round(rsi_val, 1),
-                    "P/E": round(pe, 1),
-                    "ROE (%)": round(roe, 1),
-                    "D/E": round(de, 2),
-                    "52W High (₹)": round(high_52w, 2),
-                    "From 52W High (%)": round(dist_52w_high, 1),
-                    "FCF Margin (%)": round(fcf_margin, 1),
-                    "Market Cap (₹ Cr)": round(mcap_cr, 0),
-                    "SMA_50": round(sma_50, 2),
-                    "SMA_200": round(sma_200, 2),
-                    "Vol Surge": vol_surge,
-                    "Raw_Ticker": ticker,
-                }
-            )
+            rows.append({
+                "Ticker": ticker.replace(".NS", "").replace(".BO", ""),
+                "Company": company_name,
+                "Sector": sector,
+                "Price (₹)": round(curr_price, 2),
+                "Composite Score": composite,
+                "RSI (14)": round(rsi_val, 1),
+                "From 52W High (%)": round(dist_52w_high, 1),
+                "P/E": pe if not np.isnan(pe) else "N/A",
+                "ROE (%)": roe if not np.isnan(roe) else "N/A",
+                "D/E": de if not np.isnan(de) else "N/A",
+                "Vol Surge": vol_surge,
+                "Market Cap (₹ Cr)": mcap_cr,
+                "SMA_50": round(sma_50, 2),
+                "SMA_200": round(sma_200, 2),
+                "Raw_Ticker": ticker,
+                "_pe_num": pe if not np.isnan(pe) else 999.0,
+                "_roe_num": roe if not np.isnan(roe) else -999.0,
+                "_de_num": de if not np.isnan(de) else 999.0,
+            })
         except Exception:
             continue
 
@@ -406,25 +261,21 @@ if tickers_to_scan:
 else:
     df_raw = pd.DataFrame()
 
-# 6. Apply User Filters
+# 7. Apply Filters & Sorting
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
     # Score Filter
     if score_filter_type == "Greater than or equal (>=)":
-        filtered_df = filtered_df[
-            filtered_df["Composite Score"] >= target_score
-        ]
+        filtered_df = filtered_df[filtered_df["Composite Score"] >= target_score]
     elif score_filter_type == "Less than or equal (<=)":
-        filtered_df = filtered_df[
-            filtered_df["Composite Score"] <= target_score
-        ]
+        filtered_df = filtered_df[filtered_df["Composite Score"] <= target_score]
 
     # Fundamentals Filters
     filtered_df = filtered_df[
-        (filtered_df["ROE (%)"] >= min_roe)
-        & (filtered_df["P/E"] <= max_pe)
-        & (filtered_df["D/E"] <= max_de)
+        (filtered_df["_roe_num"] >= min_roe)
+        & (filtered_df["_pe_num"] <= max_pe)
+        & (filtered_df["_de_num"] <= max_de)
     ]
 
     # Technical Filters
@@ -436,25 +287,33 @@ if not df_raw.empty:
 
     # Trend Filter
     if sma_trend_filter == "Price > 50 SMA":
-        filtered_df = filtered_df[
-            filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
-        ]
+        filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_50"]]
     elif sma_trend_filter == "Price > 200 SMA":
-        filtered_df = filtered_df[
-            filtered_df["Price (₹)"] >= filtered_df["SMA_200"]
-        ]
+        filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_200"]]
     elif sma_trend_filter == "Price > Both 50 & 200 SMA":
         filtered_df = filtered_df[
             (filtered_df["Price (₹)"] >= filtered_df["SMA_50"])
             & (filtered_df["Price (₹)"] >= filtered_df["SMA_200"])
         ]
     elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
-        filtered_df = filtered_df[
-            filtered_df["SMA_50"] >= filtered_df["SMA_200"]
-        ]
+        filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
 
     if only_volume_surge:
         filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
+
+    # Apply Custom Sorting Filter
+    sort_key_map = {
+        "Composite Score": "Composite Score",
+        "Price (₹)": "Price (₹)",
+        "RSI (14)": "RSI (14)",
+        "From 52W High (%)": "From 52W High (%)",
+        "P/E": "_pe_num",
+        "ROE (%)": "_roe_num",
+        "D/E": "_de_num",
+        "Market Cap (₹ Cr)": "Market Cap (₹ Cr)"
+    }
+    actual_sort_col = sort_key_map.get(sort_column, "Composite Score")
+    filtered_df = filtered_df.sort_values(by=actual_sort_col, ascending=is_ascending)
 
     # Setup Session State for Click-to-Chart
     if "selected_ticker" not in st.session_state:
@@ -471,12 +330,8 @@ if not df_raw.empty:
 
     # --- TAB 1: SCREENER TABLE ---
     with tab_screener:
-        st.info(
-            "💡 **Tip:** Click any row in the table below to automatically load its 9/20 EMA chart in the Deep-Dive tab."
-        )
-        st.subheader(
-            f"Matching Stocks ({len(filtered_df)} of {len(df_raw)} passed filters)"
-        )
+        st.info("💡 **Tip:** Click any row in the table below to load its 9/20 EMA chart in the Single Stock tab.")
+        st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)} passed filters)")
 
         display_cols = [
             "Ticker",
@@ -493,11 +348,8 @@ if not df_raw.empty:
             "Market Cap (₹ Cr)",
         ]
 
-        table_data = filtered_df[display_cols].sort_values(
-            by="Composite Score", ascending=False
-        )
+        table_data = filtered_df[display_cols]
 
-        # Interactive Table with Row Click Support
         selection_event = st.dataframe(
             table_data,
             use_container_width=True,
@@ -506,12 +358,7 @@ if not df_raw.empty:
             selection_mode="single-row",
         )
 
-        # Update selected ticker when user clicks any row
-        if (
-            selection_event
-            and selection_event.selection
-            and selection_event.selection.rows
-        ):
+        if selection_event and selection_event.selection and selection_event.selection.rows:
             selected_row_idx = selection_event.selection.rows[0]
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
             st.session_state.selected_ticker = f"{clicked_ticker_sym}.NS"
@@ -524,7 +371,6 @@ if not df_raw.empty:
             else df_raw["Raw_Ticker"].tolist()
         )
 
-        # Safe default index
         default_index = (
             stock_options.index(st.session_state.selected_ticker)
             if st.session_state.selected_ticker in stock_options
@@ -539,103 +385,63 @@ if not df_raw.empty:
             t = yf.Ticker(selected_stock)
             hist = t.history(period="1y")
             try:
-                info = t.info or {}
+                info = t.get_info()
             except Exception:
                 info = {}
 
             if not hist.empty:
-                # Calculate 9 EMA, 20 EMA, 50 SMA, 200 SMA
+                # 9 EMA, 20 EMA, 50 SMA, 200 SMA
                 hist["EMA_9"] = hist["Close"].ewm(span=9, adjust=False).mean()
-                hist["EMA_20"] = (
-                    hist["Close"].ewm(span=20, adjust=False).mean()
-                )
+                hist["EMA_20"] = hist["Close"].ewm(span=20, adjust=False).mean()
                 hist["SMA_50"] = hist["Close"].rolling(50).mean()
                 hist["SMA_200"] = hist["Close"].rolling(200).mean()
 
-                curr_p = hist["Close"].iloc[-1]
-                ema9_val = hist["EMA_9"].iloc[-1]
-                ema20_val = hist["EMA_20"].iloc[-1]
+                curr_p = float(hist["Close"].iloc[-1])
+                ema9_val = float(hist["EMA_9"].iloc[-1])
+                ema20_val = float(hist["EMA_20"].iloc[-1])
 
                 # Metric Cards
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Current Price", f"₹{curr_p:.2f}")
-                c2.metric("9 EMA", f"₹{ema9_val:.2f}")
-                c3.metric("20 EMA", f"₹{ema20_val:.2f}")
+                c1.metric("Current Price", f"₹{curr_p:,.2f}")
+                c2.metric("9 EMA", f"₹{ema9_val:,.2f}")
+                c3.metric("20 EMA", f"₹{ema20_val:,.2f}")
                 c4.metric(
                     "Short-Term Momentum",
-                    "🚀 Bullish (9 > 20 EMA)"
-                    if ema9_val >= ema20_val
-                    else "🔻 Bearish (9 < 20 EMA)",
+                    "🚀 Bullish (9 > 20 EMA)" if ema9_val >= ema20_val else "🔻 Bearish (9 < 20 EMA)",
                 )
 
-                # Candlestick Chart with 9/20 EMA & 50/200 SMA
-                fig = go.Figure(
-                    data=[
-                        go.Candlestick(
-                            x=hist.index,
-                            open=hist["Open"],
-                            high=hist["High"],
-                            low=hist["Low"],
-                            close=hist["Close"],
-                            name="Price",
-                        ),
-                        go.Scatter(
-                            x=hist.index,
-                            y=hist["EMA_9"],
-                            line=dict(color="#00f2ff", width=1.5),
-                            name="9 EMA (Fast)",
-                        ),
-                        go.Scatter(
-                            x=hist.index,
-                            y=hist["EMA_20"],
-                            line=dict(color="#ffd700", width=1.5),
-                            name="20 EMA (Momentum)",
-                        ),
-                        go.Scatter(
-                            x=hist.index,
-                            y=hist["SMA_50"],
-                            line=dict(color="#ff9900", width=1.5),
-                            name="50 SMA",
-                        ),
-                        go.Scatter(
-                            x=hist.index,
-                            y=hist["SMA_200"],
-                            line=dict(color="#4d79ff", width=1.5),
-                            name="200 SMA",
-                        ),
-                    ]
-                )
+                # Candlestick Chart
+                fig = go.Figure(data=[
+                    go.Candlestick(
+                        x=hist.index,
+                        open=hist["Open"],
+                        high=hist["High"],
+                        low=hist["Low"],
+                        close=hist["Close"],
+                        name="Price",
+                    ),
+                    go.Scatter(x=hist.index, y=hist["EMA_9"], line=dict(color="#00f2ff", width=1.5), name="9 EMA (Fast)"),
+                    go.Scatter(x=hist.index, y=hist["EMA_20"], line=dict(color="#ffd700", width=1.5), name="20 EMA (Momentum)"),
+                    go.Scatter(x=hist.index, y=hist["SMA_50"], line=dict(color="#ff9900", width=1.5), name="50 SMA"),
+                    go.Scatter(x=hist.index, y=hist["SMA_200"], line=dict(color="#4d79ff", width=1.5), name="200 SMA"),
+                ])
                 fig.update_layout(
                     template="plotly_dark",
                     height=480,
                     margin=dict(l=20, r=20, t=30, b=20),
                     xaxis_rangeslider_visible=False,
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1,
-                    ),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # AI Investment Thesis
+                # AI Investment Thesis using gemini-3.6-flash
                 st.subheader("🤖 AI Investment Thesis")
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:
-                        st.warning(
-                            "Please provide your Gemini API Key in the left sidebar."
-                        )
+                        st.warning("Please provide your Gemini API Key in the left sidebar.")
                     else:
-                        stock_match = df_raw[
-                            df_raw["Raw_Ticker"] == selected_stock
-                        ]
-                        stock_row = (
-                            stock_match.iloc[0]
-                            if not stock_match.empty
-                            else None
-                        )
+                        stock_match = df_raw[df_raw["Raw_Ticker"] == selected_stock]
+                        stock_row = stock_match.iloc[0] if not stock_match.empty else None
 
                         prompt = f"""
                         Analyze this Indian stock:
@@ -645,6 +451,7 @@ if not df_raw.empty:
                         - Moving Averages: 9 EMA = ₹{ema9_val:.2f}, 20 EMA = ₹{ema20_val:.2f}, Short-term setup: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish'}
                         - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, From 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
                         - Fundamentals: P/E: {stock_row['P/E'] if stock_row is not None else 'N/A'} | ROE: {stock_row['ROE (%)'] if stock_row is not None else 'N/A'}% | Debt/Equity: {stock_row['D/E'] if stock_row is not None else 'N/A'}
+                        - Market Cap: ₹{stock_row['Market Cap (₹ Cr)'] if stock_row is not None else 'N/A'} Cr
                         - Quality Composite Score: {stock_row['Composite Score'] if stock_row is not None else 'N/A'}/100
 
                         Provide a clean analyst breakdown:
@@ -653,9 +460,7 @@ if not df_raw.empty:
                         3. **Key Risks & Valuation Check**
                         4. **Actionable Verdict** (Bullish / Neutral / Bearish)
                         """
-                        with st.spinner(
-                            "Generating AI Analysis with Gemini 3.6..."
-                        ):
+                        with st.spinner("Generating AI Analysis with Gemini 3.6..."):
                             try:
                                 model = genai.GenerativeModel("gemini-3.6-flash")
                                 res = model.generate_content(prompt)
@@ -663,6 +468,4 @@ if not df_raw.empty:
                             except Exception as err:
                                 st.error(f"Error generating AI thesis: {err}")
 else:
-    st.warning(
-        "No stocks passed the selected filter criteria. Try relaxing the filters in the sidebar."
-    )
+    st.warning("No stocks passed the selected filter criteria. Try relaxing the filters in the sidebar.")

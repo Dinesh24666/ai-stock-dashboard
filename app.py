@@ -15,7 +15,7 @@ st.set_page_config(
 
 st.title("🔍 Indian Market AI Screener & Dashboard")
 
-# 2. Sidebar - Setup & Preset Universes
+# 2. Sidebar - Setup & API Key
 st.sidebar.header("⚙️ Configuration")
 GEMINI_API_KEY = st.sidebar.text_input(
     "Google Gemini API Key",
@@ -25,7 +25,30 @@ GEMINI_API_KEY = st.sidebar.text_input(
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
-# Comprehensive NSE Sector Baskets
+
+# Helper to fetch All NSE Stocks directly from NSE official CSV
+@st.cache_data(ttl=86400)
+def get_all_nse_symbols():
+    try:
+        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        df_nse = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
+        symbols = [f"{sym}.NS" for sym in df_nse["SYMBOL"].dropna().unique()]
+        return symbols
+    except Exception:
+        # Fallback list of top active NSE tickers
+        return [
+            "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
+            "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS", "TATAMOTORS.NS",
+            "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS", "KOTAKBANK.NS",
+            "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "TITAN.NS",
+            "TATASTEEL.NS", "JSWSTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS", "ULTRACEMCO.NS",
+            "COALINDIA.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", "ASIANPAINT.NS", "HAL.NS",
+            "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS", "IRFC.NS", "LTF.NS", "ZOMATO.NS"
+        ]
+
+
+# Sector Baskets
 UNIVERSE_PRESETS = {
     "Nifty 50 Core": [
         "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
@@ -35,6 +58,7 @@ UNIVERSE_PRESETS = {
         "TITAN.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
         "ULTRACEMCO.NS", "COALINDIA.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", "ASIANPAINT.NS"
     ],
+    "All NSE Stocks (Full Market)": "ALL_NSE",
     "Banking & Financial Services": [
         "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
         "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
@@ -60,24 +84,24 @@ UNIVERSE_PRESETS = {
         "RELIANCE.NS", "ONGC.NS", "NTPC.NS", "POWERGRID.NS", "COALINDIA.NS",
         "BPCL.NS", "IOC.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "NHPC.NS", "IREDA.NS"
     ],
-    "Metals & Mining": [
-        "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JINDALSTEL.NS",
-        "NMDC.NS", "SAIL.NS", "NATIONALUM.NS"
-    ],
     "Defence, Rail & PSUs": [
         "HAL.NS", "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS",
         "IRFC.NS", "COCHINSHIP.NS", "BDL.NS", "CONCOR.NS"
     ],
-    "Infrastructure & Realty": [
-        "LT.NS", "DLF.NS", "GODREJPROP.NS", "MACROTECH.NS", "OBEROIRLTY.NS",
-        "ULTRACEMCO.NS", "GRASIM.NS", "AMBUJACEM.NS", "NCC.NS"
+    "Metals & Mining": [
+        "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JINDALSTEL.NS",
+        "NMDC.NS", "SAIL.NS", "NATIONALUM.NS"
     ],
     "Custom Watchlist": [],
 }
 
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()))
 
-if selected_universe == "Custom Watchlist":
+if selected_universe == "All NSE Stocks (Full Market)":
+    all_symbols = get_all_nse_symbols()
+    scan_limit = st.sidebar.slider("Number of NSE Stocks to Scan", 10, min(500, len(all_symbols)), 50, step=10)
+    tickers_to_scan = all_symbols[:scan_limit]
+elif selected_universe == "Custom Watchlist":
     custom_input = st.sidebar.text_area(
         "Enter Tickers (comma-separated)",
         "RELIANCE, ICICIBANK, LTF, TCS, TATAMOTORS, HAL",
@@ -102,7 +126,11 @@ only_bullish_sma = st.sidebar.checkbox("Only Bullish Trend (Price >= 50 & 200 SM
 @st.cache_data(ttl=1800)
 def fetch_screener_universe(ticker_list):
     rows = []
-    for ticker in ticker_list:
+    progress_bar = st.progress(0, text="Fetching stock metrics...")
+    total = len(ticker_list)
+
+    for idx, ticker in enumerate(ticker_list):
+        progress_bar.progress((idx + 1) / total, text=f"Fetching {ticker} ({idx+1}/{total})...")
         try:
             t = yf.Ticker(ticker)
             hist = t.history(period="1y")
@@ -148,12 +176,16 @@ def fetch_screener_universe(ticker_list):
             })
         except Exception:
             continue
+
+    progress_bar.empty()
     return pd.DataFrame(rows)
 
 
 # Fetch Data
-with st.spinner(f"Screening {len(tickers_to_scan)} stocks in basket..."):
+if tickers_to_scan:
     df_raw = fetch_screener_universe(tickers_to_scan)
+else:
+    df_raw = pd.DataFrame()
 
 # 5. Apply User Filters
 if not df_raw.empty:
@@ -234,7 +266,7 @@ if not df_raw.empty:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # AI Investment Thesis
+                # AI Investment Thesis using gemini-3.6-flash
                 st.subheader("🤖 AI Investment Thesis")
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:
@@ -256,16 +288,12 @@ if not df_raw.empty:
                         2. **Key Risks & Red Flags**
                         3. **Investment Verdict** (Bullish / Neutral / Bearish)
                         """
-                        with st.spinner("Generating AI Analysis..."):
+                        with st.spinner("Generating AI Analysis with Gemini 3.6..."):
                             try:
-                                model = genai.GenerativeModel("gemini-1.5-flash-latest")
+                                model = genai.GenerativeModel("gemini-3.6-flash")
                                 res = model.generate_content(prompt)
                                 st.markdown(res.text)
-                            except Exception as e:
-                                try:
-                                    fallback = genai.GenerativeModel("gemini-2.0-flash")
-                                    st.markdown(fallback.generate_content(prompt).text)
-                                except Exception as err:
-                                    st.error(f"Error generating AI thesis: {err}")
+                            except Exception as err:
+                                st.error(f"Error generating AI thesis: {err}")
 else:
     st.warning("No data retrieved. Verify your stock basket selection or network connection.")

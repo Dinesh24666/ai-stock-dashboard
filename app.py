@@ -106,19 +106,19 @@ if ticker_input:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 6. Low-Cost AI Summary Trigger (Auto-Detects Valid Gemini Model)
+        # 6. AI Summary Trigger
         st.subheader("🤖 AI Investment Thesis")
         if st.button("Generate AI Analysis"):
             if not GEMINI_API_KEY:
                 st.warning("Please enter your Gemini API Key in the sidebar.")
             else:
                 prompt = f"""
-                Analyze the following Indian stock:
+                Analyze the following Indian stock based on these pre-computed metrics:
                 - Company: {info.get('longName', ticker_input)}
                 - Current Price: ₹{curr_price:.2f}
                 - P/E: {pe:.1f} | ROE: {roe:.1f}% | Debt/Equity: {de:.2f}
                 - Technicals: Above 50 SMA: {curr_price > sma50}, Above 200 SMA: {curr_price > sma200}
-                - Calculated Score: {composite}/100
+                - Calculated Quality Score: {composite}/100
 
                 Provide concise bullet points:
                 1. Core Catalysts
@@ -128,25 +128,7 @@ if ticker_input:
 
                 with st.spinner("Generating AI commentary..."):
                     try:
-                        # Automatically select the first supported model on your key
-                        available_models = [
-                            m.name
-                            for m in genai.list_models()
-                            if "generateContent"
-                            in m.supported_generation_methods
-                        ]
-                        target_model = next(
-                            (
-                                m
-                                for m in available_models
-                                if "flash" in m.lower()
-                            ),
-                            available_models[0]
-                            if available_models
-                            else "gemini-1.5-flash",
-                        )
-
-                        model = genai.GenerativeModel(target_model)
+                        model = genai.GenerativeModel("gemini-3.6-flash")
                         response = model.generate_content(prompt)
                         st.markdown(response.text)
                     except Exception as err:

@@ -1,5 +1,6 @@
 from datetime import date
 import os
+import time
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -247,6 +248,9 @@ else:
 if "paper_portfolio" not in st.session_state:
     st.session_state.paper_portfolio = []
 
+if "ai_analysis_cache" not in st.session_state:
+    st.session_state.ai_analysis_cache = {}
+
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = (
         df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "RELIANCE.NS"
@@ -408,6 +412,12 @@ if not df_raw.empty:
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.subheader("🤖 AI Investment Thesis")
+                
+                # Check cache for previously generated thesis
+                cached_thesis = st.session_state.ai_analysis_cache.get(selected_stock)
+                if cached_thesis:
+                    st.markdown(cached_thesis)
+
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:
                         st.warning("Please provide your Gemini API Key in the left sidebar.")
@@ -428,13 +438,33 @@ if not df_raw.empty:
                         3. **Key Risks & Valuation Check**
                         4. **Actionable Verdict** (Bullish / Neutral / Bearish)
                         """
-                        with st.spinner("Generating AI Analysis with Gemini 3.6..."):
-                            try:
-                                model = genai.GenerativeModel("gemini-3.6-flash")
-                                res = model.generate_content(prompt)
-                                st.markdown(res.text)
-                            except Exception as err:
-                                st.error(f"Error generating AI thesis: {err}")
+                        with st.spinner("Analyzing stock with Gemini..."):
+                            # Robust fallback ladder across Gemini models
+                            model_ladder = [
+                                "gemini-3.6-flash",
+                                "gemini-2.5-flash",
+                                "gemini-1.5-flash-8b",
+                                "gemini-1.5-flash",
+                            ]
+                            success = False
+                            error_details = []
+
+                            for mod in model_ladder:
+                                try:
+                                    model = genai.GenerativeModel(mod)
+                                    res = model.generate_content(prompt)
+                                    if res and res.text:
+                                        st.session_state.ai_analysis_cache[selected_stock] = res.text
+                                        st.markdown(res.text)
+                                        success = True
+                                        break
+                                except Exception as err:
+                                    error_details.append(f"{mod}: {str(err)[:100]}")
+                                    time.sleep(1)
+                                    continue
+
+                            if not success:
+                                st.error("Rate limit reached across free tier models. Please wait 30–60 seconds before trying again.")
 
     # --- TAB 3: WATCHLIST & PAPER TRADING ---
     with tab_watchlist:

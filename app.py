@@ -112,7 +112,7 @@ if ticker_input:
             if not GEMINI_API_KEY:
                 st.warning("Please enter your Gemini API Key in the sidebar.")
             else:
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                model = genai.GenerativeModel("gemini-1.5-flash-latest")
                 prompt = f"""
                 Analyze the following Indian stock:
                 - Company: {info.get('longName', ticker_input)}

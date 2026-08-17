@@ -108,7 +108,7 @@ elif selected_universe == "Custom Watchlist":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Quantitative & Technical Filters (Sidebar)
+# 3. Quantitative & Technical Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False)
 min_roce = st.sidebar.slider("Min ROCE (%)", -10, 50, 10)
@@ -124,7 +124,7 @@ sma_trend_filter = st.sidebar.selectbox(
 only_volume_surge = st.sidebar.checkbox("Volume Surge (Today > 20-Day Avg Volume)", value=False)
 
 
-# Wilder's Exponential Smoothing RSI (Exact match with Dhan & TradingView)
+# Wilder's Exponential Smoothing RSI
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -436,7 +436,7 @@ if not df_raw.empty:
                             except Exception as err:
                                 st.error(f"Error generating AI thesis: {err}")
 
-    # --- TAB 3: WATCHLIST & PAPER TRADING WITH SL & REALISED P&L ---
+    # --- TAB 3: WATCHLIST & PAPER TRADING ---
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
@@ -461,7 +461,7 @@ if not df_raw.empty:
                 buy_price = st.number_input("Entry Price (₹)", value=live_price, min_value=0.1, step=0.5)
 
             with col_add4:
-                default_sl = round(buy_price * 0.95, 2)  # Default 5% SL
+                default_sl = round(buy_price * 0.95, 2)
                 sl_price = st.number_input("Stop Loss (SL ₹)", value=default_sl, min_value=0.0, step=0.5)
 
             with col_add5:
@@ -484,7 +484,7 @@ if not df_raw.empty:
                     })
                     st.success(f"Executed buy for {quantity} shares of {trade_stock.replace('.NS', '')} at ₹{buy_price} (SL: ₹{sl_price})!")
 
-        # Portfolio Tracking & SL Calculation
+        # Portfolio Tracking with safe dictionary getters
         if st.session_state.paper_portfolio:
             portfolio_rows = []
             open_invested = 0.0
@@ -493,34 +493,36 @@ if not df_raw.empty:
             realised_pnl_total = 0.0
 
             for pos in st.session_state.paper_portfolio:
-                sym = pos["Raw_Ticker"]
+                sym = pos.get("Raw_Ticker", "")
                 m_row = df_raw[df_raw["Raw_Ticker"] == sym]
-                curr_p = float(m_row["Price (₹)"].iloc[0]) if not m_row.empty else pos["Buy Price (₹)"]
-                invested = pos["Invested (₹)"]
-                sl = pos["SL (₹)"]
-                qty = pos["Qty"]
+                buy_p = float(pos.get("Buy Price (₹)", 0.0))
+                curr_p = float(m_row["Price (₹)"].iloc[0]) if not m_row.empty else buy_p
+                invested = float(pos.get("Invested (₹)", buy_p * pos.get("Qty", 1)))
+                sl = float(pos.get("SL (₹)", 0.0))
+                qty = int(pos.get("Qty", 1))
+                pos_date = str(pos.get("Date", str(date.today())))
 
                 # Automated SL Detection & Realised P&L Calculation
-                if curr_p <= sl and sl > 0:
+                if sl > 0 and curr_p <= sl:
                     status = "🔴 SL Hit (Closed)"
                     exit_price = sl
-                    pnl = round((exit_price - pos["Buy Price (₹)"]) * qty, 2)
-                    pnl_pct = round((pnl / invested) * 100.0, 2)
+                    pnl = round((exit_price - buy_p) * qty, 2)
+                    pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                     realised_pnl_total += pnl
                 else:
                     status = "🟢 Open"
-                    pnl = round((curr_p - pos["Buy Price (₹)"]) * qty, 2)
-                    pnl_pct = round((pnl / invested) * 100.0, 2)
+                    pnl = round((curr_p - buy_p) * qty, 2)
+                    pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                     open_invested += invested
                     open_current_val += round(curr_p * qty, 2)
                     unrealised_pnl_total += pnl
 
                 portfolio_rows.append({
-                    "Date": pos["Date"],
-                    "Ticker": pos["Ticker"],
-                    "Company": pos["Company"],
+                    "Date": pos_date,
+                    "Ticker": pos.get("Ticker", sym.replace(".NS", "")),
+                    "Company": pos.get("Company", sym),
                     "Status": status,
-                    "Entry (₹)": pos["Buy Price (₹)"],
+                    "Entry (₹)": buy_p,
                     "SL (₹)": sl,
                     "Current Price (₹)": curr_p,
                     "Qty": qty,
@@ -529,7 +531,6 @@ if not df_raw.empty:
                     "P&L (%)": f"{'+' if pnl >= 0 else ''}{pnl_pct}%",
                 })
 
-            # Portfolio Metric Cards
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
             p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
             p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")

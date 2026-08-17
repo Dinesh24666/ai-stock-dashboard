@@ -8,15 +8,15 @@ import yfinance as yf
 
 # 1. Page Config
 st.set_page_config(
-    page_title="Indian Market Screener",
-    page_icon="🔍",
+    page_title="Indian Market AI Screener",
+    page_icon="📈",
     layout="wide",
 )
 
-st.title("🔍 Indian Market AI Screener & Dashboard")
+st.title("⚡ Indian Market AI Stock Screener & Dashboard")
 
-# 2. Sidebar - Setup & API Key
-st.sidebar.header("⚙️ Configuration")
+# 2. Sidebar - Gemini Key
+st.sidebar.header("🔑 API Setup")
 GEMINI_API_KEY = st.sidebar.text_input(
     "Google Gemini API Key",
     type="password",
@@ -26,17 +26,15 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
 
-# Helper to fetch All NSE Stocks directly from NSE official CSV
+# Helper to fetch All NSE Stocks
 @st.cache_data(ttl=86400)
 def get_all_nse_symbols():
     try:
         url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        headers = {"User-Agent": "Mozilla/5.0"}
         df_nse = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
         symbols = [f"{sym}.NS" for sym in df_nse["SYMBOL"].dropna().unique()]
         return symbols
     except Exception:
-        # Fallback list of top active NSE tickers
         return [
             "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
             "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS", "TATAMOTORS.NS",
@@ -95,6 +93,7 @@ UNIVERSE_PRESETS = {
     "Custom Watchlist": [],
 }
 
+st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()))
 
 if selected_universe == "All NSE Stocks (Full Market)":
@@ -114,15 +113,49 @@ elif selected_universe == "Custom Watchlist":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Screener Sliders & Filters
-st.sidebar.header("🎯 Quantitative Filters")
+# 3. Sidebar Filters
+# --- Composite Score Filter ---
+st.sidebar.header("⭐ Composite Score Filter")
+score_filter_type = st.sidebar.selectbox(
+    "Score Condition",
+    ["No Score Filter", "Greater than or equal (>=)", "Less than or equal (<=)"]
+)
+if score_filter_type != "No Score Filter":
+    target_score = st.sidebar.slider("Target Composite Score", 0, 100, 70)
+else:
+    target_score = None
+
+# --- Fundamental Filters ---
+st.sidebar.header("📊 Fundamental Filters")
 min_roe = st.sidebar.slider("Min Return on Equity (ROE %)", 0, 40, 10)
 max_pe = st.sidebar.slider("Max P/E Ratio", 5, 120, 60)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 3.5, 2.0, step=0.1)
-only_bullish_sma = st.sidebar.checkbox("Only Bullish Trend (Price >= 50 & 200 SMA)", value=False)
+
+# --- Technical Filters ---
+st.sidebar.header("📈 Technical Filters")
+rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (20, 80))
+max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 50, 30, help="e.g. 20% means stock is at most 20% below its 52W high")
+
+sma_trend_filter = st.sidebar.selectbox(
+    "Moving Average Alignment",
+    ["Any Trend", "Price > 50 SMA", "Price > 200 SMA", "Price > Both 50 & 200 SMA", "Golden Cross (50 SMA > 200 SMA)"]
+)
+only_volume_surge = st.sidebar.checkbox("Volume Surge (Today > 20-Day Avg Volume)", value=False)
 
 
-# 4. Cached Batch Data Fetcher
+# 4. Helper RSI Calculation
+def compute_rsi(series: pd.Series, period: int = 14) -> float:
+    if len(series) < period + 1:
+        return 50.0
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain.iloc[-1] / (loss.iloc[-1] + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi) if not pd.isna(rsi) else 50.0
+
+
+# 5. Cached Batch Fetcher
 @st.cache_data(ttl=1800)
 def fetch_screener_universe(ticker_list):
     rows = []
@@ -130,7 +163,7 @@ def fetch_screener_universe(ticker_list):
     total = len(ticker_list)
 
     for idx, ticker in enumerate(ticker_list):
-        progress_bar.progress((idx + 1) / total, text=f"Fetching {ticker} ({idx+1}/{total})...")
+        progress_bar.progress((idx + 1) / total, text=f"Scanning {ticker} ({idx+1}/{total})...")
         try:
             t = yf.Ticker(ticker)
             hist = t.history(period="1y")
@@ -141,7 +174,16 @@ def fetch_screener_universe(ticker_list):
             curr_price = hist["Close"].iloc[-1]
             sma_50 = hist["Close"].rolling(50).mean().iloc[-1] if len(hist) >= 50 else curr_price
             sma_200 = hist["Close"].rolling(200).mean().iloc[-1] if len(hist) >= 200 else curr_price
+            high_52w = hist["High"].max()
+            dist_52w_high = ((high_52w - curr_price) / high_52w) * 100.0
 
+            # Technicals
+            rsi_val = compute_rsi(hist["Close"], 14)
+            avg_vol_20 = hist["Volume"].rolling(20).mean().iloc[-1] if len(hist) >= 20 else hist["Volume"].iloc[-1]
+            curr_vol = hist["Volume"].iloc[-1]
+            vol_surge = bool(curr_vol > avg_vol_20)
+
+            # Fundamentals
             roe = (info.get("returnOnEquity") or 0.10) * 100.0
             pe = info.get("trailingPE") or info.get("forwardPE") or 25.0
             de = (info.get("debtToEquity") or 50.0) / 100.0
@@ -152,26 +194,31 @@ def fetch_screener_universe(ticker_list):
 
             # Composite Score (0-100)
             fund_score = min(100, max(0, (roe / 25.0) * 60 + ((2.0 - min(de, 2.0)) / 2.0) * 40))
-            tech_score = (
-                (35 if curr_price >= sma_50 else 0)
-                + (35 if curr_price >= sma_200 else 0)
+            rsi_score = max(0, 100 - 4 * abs(rsi_val - 60))
+            trend_score = (
+                (30 if curr_price >= sma_50 else 0)
+                + (40 if curr_price >= sma_200 else 0)
                 + (30 if sma_50 >= sma_200 else 0)
             )
-            composite = round(0.6 * fund_score + 0.4 * tech_score, 1)
+            tech_score = 0.5 * trend_score + 0.5 * rsi_score
+            composite = round(0.55 * fund_score + 0.45 * tech_score, 1)
 
             rows.append({
                 "Ticker": ticker.replace(".NS", "").replace(".BO", ""),
                 "Company": info.get("shortName") or info.get("longName") or ticker.replace(".NS", ""),
                 "Price (₹)": round(curr_price, 2),
                 "Composite Score": composite,
+                "RSI (14)": round(rsi_val, 1),
                 "P/E": round(pe, 1),
                 "ROE (%)": round(roe, 1),
                 "D/E": round(de, 2),
+                "52W High (₹)": round(high_52w, 2),
+                "From 52W High (%)": round(dist_52w_high, 1),
                 "FCF Margin (%)": round(fcf_margin, 1),
                 "Market Cap (₹ Cr)": round(mcap_cr, 0),
                 "SMA_50": round(sma_50, 2),
                 "SMA_200": round(sma_200, 2),
-                "Above 200 SMA": bool(curr_price >= sma_200),
+                "Vol Surge": vol_surge,
                 "Raw_Ticker": ticker,
             })
         except Exception:
@@ -187,18 +234,45 @@ if tickers_to_scan:
 else:
     df_raw = pd.DataFrame()
 
-# 5. Apply User Filters
+# 6. Apply User Filters
 if not df_raw.empty:
-    filtered_df = df_raw[
-        (df_raw["ROE (%)"] >= min_roe)
-        & (df_raw["P/E"] <= max_pe)
-        & (df_raw["D/E"] <= max_de)
+    filtered_df = df_raw.copy()
+
+    # Composite Score Filter
+    if score_filter_type == "Greater than or equal (>=)":
+        filtered_df = filtered_df[filtered_df["Composite Score"] >= target_score]
+    elif score_filter_type == "Less than or equal (<=)":
+        filtered_df = filtered_df[filtered_df["Composite Score"] <= target_score]
+
+    # Fundamentals Filters
+    filtered_df = filtered_df[
+        (filtered_df["ROE (%)"] >= min_roe)
+        & (filtered_df["P/E"] <= max_pe)
+        & (filtered_df["D/E"] <= max_de)
     ]
-    if only_bullish_sma:
+
+    # Technical Filters
+    filtered_df = filtered_df[
+        (filtered_df["RSI (14)"] >= rsi_range[0])
+        & (filtered_df["RSI (14)"] <= rsi_range[1])
+        & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
+    ]
+
+    # Moving Average Alignment Filter
+    if sma_trend_filter == "Price > 50 SMA":
+        filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_50"]]
+    elif sma_trend_filter == "Price > 200 SMA":
+        filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_200"]]
+    elif sma_trend_filter == "Price > Both 50 & 200 SMA":
         filtered_df = filtered_df[
             (filtered_df["Price (₹)"] >= filtered_df["SMA_50"])
             & (filtered_df["Price (₹)"] >= filtered_df["SMA_200"])
         ]
+    elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
+        filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
+
+    if only_volume_surge:
+        filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
     # Tabs: Screener View vs Deep-Dive Analysis
     tab_screener, tab_deepdive = st.tabs(
@@ -214,12 +288,13 @@ if not df_raw.empty:
             "Company",
             "Price (₹)",
             "Composite Score",
+            "RSI (14)",
+            "From 52W High (%)",
             "P/E",
             "ROE (%)",
             "D/E",
-            "FCF Margin (%)",
+            "Vol Surge",
             "Market Cap (₹ Cr)",
-            "Above 200 SMA",
         ]
         st.dataframe(
             filtered_df[display_cols].sort_values(by="Composite Score", ascending=False),
@@ -266,7 +341,7 @@ if not df_raw.empty:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # AI Investment Thesis using gemini-3.6-flash
+                # AI Investment Thesis
                 st.subheader("🤖 AI Investment Thesis")
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:
@@ -279,14 +354,15 @@ if not df_raw.empty:
                         Analyze this Indian stock:
                         - Company: {info.get('longName', selected_stock)} ({selected_stock})
                         - Sector: {info.get('sector', 'N/A')}
-                        - Price: ₹{hist['Close'].iloc[-1]:.2f}
-                        - P/E: {stock_row['P/E'] if stock_row is not None else 'N/A'} | ROE: {stock_row['ROE (%)'] if stock_row is not None else 'N/A'}% | Debt/Equity: {stock_row['D/E'] if stock_row is not None else 'N/A'}
+                        - Current Price: ₹{hist['Close'].iloc[-1]:.2f}
+                        - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, From 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
+                        - Fundamentals: P/E: {stock_row['P/E'] if stock_row is not None else 'N/A'} | ROE: {stock_row['ROE (%)'] if stock_row is not None else 'N/A'}% | Debt/Equity: {stock_row['D/E'] if stock_row is not None else 'N/A'}
                         - Quality Composite Score: {stock_row['Composite Score'] if stock_row is not None else 'N/A'}/100
 
                         Provide a Screener.in-style analyst breakdown:
-                        1. **Pros & Competitive Moat**
-                        2. **Key Risks & Red Flags**
-                        3. **Investment Verdict** (Bullish / Neutral / Bearish)
+                        1. **Pros & Technical Moat**
+                        2. **Key Risks & Valuation Flags**
+                        3. **Investment Verdict** (Bullish / Neutral / Bearish with target reasoning)
                         """
                         with st.spinner("Generating AI Analysis with Gemini 3.6..."):
                             try:

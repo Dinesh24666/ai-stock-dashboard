@@ -440,8 +440,8 @@ if not df_raw.empty:
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
-        # Order Placement Form
-        with st.expander("➕ Execute New Paper Trade with Stop Loss (SL)", expanded=True):
+        # Order Placement Form (Manual SL Input)
+        with st.expander("➕ Execute New Paper Trade (Enter SL Manually)", expanded=True):
             col_add1, col_add2, col_add3, col_add4, col_add5, col_btn = st.columns([1.2, 1, 1, 1, 1, 1.2])
 
             with col_add1:
@@ -461,8 +461,13 @@ if not df_raw.empty:
                 buy_price = st.number_input("Entry Price (₹)", value=live_price, min_value=0.1, step=0.5)
 
             with col_add4:
-                default_sl = round(buy_price * 0.95, 2)
-                sl_price = st.number_input("Stop Loss (SL ₹)", value=default_sl, min_value=0.0, step=0.5)
+                sl_price = st.number_input(
+                    "Stop Loss (SL ₹)",
+                    value=0.0,
+                    min_value=0.0,
+                    step=0.5,
+                    help="Enter your custom Stop Loss level. Leave as 0.0 if no SL is needed.",
+                )
 
             with col_add5:
                 quantity = st.number_input("Quantity", value=50, min_value=1, step=1)
@@ -482,7 +487,8 @@ if not df_raw.empty:
                         "Invested (₹)": round(buy_price * quantity, 2),
                         "Raw_Ticker": trade_stock,
                     })
-                    st.success(f"Executed buy for {quantity} shares of {trade_stock.replace('.NS', '')} at ₹{buy_price} (SL: ₹{sl_price})!")
+                    sl_msg = f"(SL: ₹{sl_price})" if sl_price > 0 else "(No SL set)"
+                    st.success(f"Executed buy for {quantity} shares of {trade_stock.replace('.NS', '')} at ₹{buy_price} {sl_msg}!")
 
         # Portfolio Tracking with safe dictionary getters
         if st.session_state.paper_portfolio:
@@ -523,7 +529,7 @@ if not df_raw.empty:
                     "Company": pos.get("Company", sym),
                     "Status": status,
                     "Entry (₹)": buy_p,
-                    "SL (₹)": sl,
+                    "SL (₹)": sl if sl > 0 else "None",
                     "Current Price (₹)": curr_p,
                     "Qty": qty,
                     "Invested (₹)": invested,
@@ -555,6 +561,6 @@ if not df_raw.empty:
                 st.session_state.paper_portfolio = []
                 st.rerun()
         else:
-            st.info("No active paper trades. Use the order form above to execute trades with date and stop loss tracking.")
+            st.info("No active paper trades. Use the order form above to enter trades with manual stop loss tracking.")
 else:
     st.warning("No stocks passed the selected filter criteria.")

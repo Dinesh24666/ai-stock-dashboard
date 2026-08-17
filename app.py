@@ -25,7 +25,6 @@ GEMINI_API_KEY = st.sidebar.text_input(
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY.strip())
 
-
 # Universe Presets
 UNIVERSE_PRESETS = {
     "Nifty 50 Core": [
@@ -73,24 +72,22 @@ UNIVERSE_PRESETS = {
     "Custom Watchlist": [],
 }
 
-# Helper to fetch All NSE Stocks
 @st.cache_data(ttl=86400)
 def get_all_nse_symbols():
     try:
         url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
         df_nse = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
-        symbols = [f"{sym}.NS" for sym in df_nse["SYMBOL"].dropna().unique()]
-        return symbols
+        return [f"{sym}.NS" for sym in df_nse["SYMBOL"].dropna().unique()]
     except Exception:
         return UNIVERSE_PRESETS["Nifty 50 Core"]
 
-
+# Sidebar Universe Selection
 st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()))
 
 if selected_universe == "All NSE Stocks (Full Market)":
     all_symbols = get_all_nse_symbols()
-    scan_limit = st.sidebar.slider("Number of NSE Stocks to Scan", 10, min(200, len(all_symbols)), 30, step=10)
+    scan_limit = st.sidebar.slider("Number of NSE Stocks to Scan", 10, min(200, len(all_symbols)), 40, step=10)
     tickers_to_scan = all_symbols[:scan_limit]
 elif selected_universe == "Custom Watchlist":
     custom_input = st.sidebar.text_area(
@@ -105,36 +102,19 @@ elif selected_universe == "Custom Watchlist":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Sidebar Sorting Controls
-st.sidebar.header("🔃 Sort Results")
-sort_column = st.sidebar.selectbox(
-    "Sort By Column",
-    ["Composite Score", "Price (₹)", "RSI (14)", "From 52W High (%)", "P/E", "ROE (%)", "D/E", "Market Cap (₹ Cr)"],
-    index=0
-)
-sort_direction = st.sidebar.radio("Sort Order", ["High to Low (Descending)", "Low to High (Ascending)"])
-is_ascending = sort_direction == "Low to High (Ascending)"
-
-# 4. Sidebar Filters
-# Composite Score Filter
+# 3. Quantitative & Technical Filters
 st.sidebar.header("⭐ Composite Score Filter")
 score_filter_type = st.sidebar.selectbox(
     "Score Condition",
     ["No Score Filter", "Greater than or equal (>=)", "Less than or equal (<=)"]
 )
-target_score = (
-    st.sidebar.slider("Target Composite Score", 0, 100, 70)
-    if score_filter_type != "No Score Filter"
-    else None
-)
+target_score = st.sidebar.slider("Target Composite Score", 0, 100, 70) if score_filter_type != "No Score Filter" else None
 
-# Fundamental Filters
 st.sidebar.header("📊 Fundamental Filters")
 min_roe = st.sidebar.slider("Min Return on Equity (ROE %)", -20, 50, 0)
 max_pe = st.sidebar.slider("Max P/E Ratio", 5, 200, 100)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 10.0, 5.0, step=0.1)
 
-# Technical Filters
 st.sidebar.header("📈 Technical Filters")
 rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (10, 90))
 max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 50)
@@ -145,7 +125,6 @@ sma_trend_filter = st.sidebar.selectbox(
 only_volume_surge = st.sidebar.checkbox("Volume Surge (Today > 20-Day Avg Volume)", value=False)
 
 
-# 5. Helper RSI Function
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -157,7 +136,7 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 6. Cached Batch Fetcher (with fast_info + resilient fundamentals)
+# 4. Cached Batch Fetcher
 @st.cache_data(ttl=3600)
 def fetch_screener_universe(ticker_list):
     rows = []
@@ -172,30 +151,25 @@ def fetch_screener_universe(ticker_list):
             if hist is None or hist.empty or len(hist) < 20:
                 continue
 
-            # Price and fast_info
             curr_price = float(hist["Close"].iloc[-1])
             sma_50 = float(hist["Close"].rolling(50).mean().iloc[-1]) if len(hist) >= 50 else curr_price
             sma_200 = float(hist["Close"].rolling(200).mean().iloc[-1]) if len(hist) >= 200 else curr_price
             high_52w = float(hist["High"].max())
             dist_52w_high = max(0.0, ((high_52w - curr_price) / high_52w) * 100.0)
 
-            # Technicals
             rsi_val = compute_rsi(hist["Close"], 14)
             avg_vol_20 = float(hist["Volume"].rolling(20).mean().iloc[-1]) if len(hist) >= 20 else float(hist["Volume"].iloc[-1])
             vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
 
-            # Metadata & Fundamentals extraction with fallbacks
             info = {}
             try:
                 info = t.get_info()
             except Exception:
                 info = {}
 
-            # Sector & Company Name
             company_name = info.get("shortName") or info.get("longName") or ticker.replace(".NS", "")
             sector = info.get("sector") or info.get("industry") or "Diversified"
 
-            # Market Cap (in ₹ Crores)
             raw_mcap = None
             try:
                 raw_mcap = t.fast_info.market_cap
@@ -203,19 +177,15 @@ def fetch_screener_universe(ticker_list):
                 raw_mcap = info.get("marketCap")
             mcap_cr = round((raw_mcap / 1e7), 1) if raw_mcap and raw_mcap > 0 else 0.0
 
-            # P/E Ratio
             pe_val = info.get("trailingPE") or info.get("forwardPE")
             pe = round(float(pe_val), 1) if pe_val and pe_val > 0 else np.nan
 
-            # Return on Equity (%)
             roe_val = info.get("returnOnEquity")
             roe = round(float(roe_val) * 100.0, 1) if roe_val is not None else np.nan
 
-            # Debt to Equity
             de_val = info.get("debtToEquity")
             de = round(float(de_val) / 100.0, 2) if de_val is not None else np.nan
 
-            # Composite Scoring
             safe_roe = roe if not np.isnan(roe) else 12.0
             safe_de = de if not np.isnan(de) else 0.8
             fund_score = min(100, max(0, (safe_roe / 25.0) * 60 + ((2.0 - min(safe_de, 2.0)) / 2.0) * 40))
@@ -236,9 +206,9 @@ def fetch_screener_universe(ticker_list):
                 "Composite Score": composite,
                 "RSI (14)": round(rsi_val, 1),
                 "From 52W High (%)": round(dist_52w_high, 1),
-                "P/E": pe if not np.isnan(pe) else "N/A",
-                "ROE (%)": roe if not np.isnan(roe) else "N/A",
-                "D/E": de if not np.isnan(de) else "N/A",
+                "P/E": pe if not np.isnan(pe) else np.nan,
+                "ROE (%)": roe if not np.isnan(roe) else np.nan,
+                "D/E": de if not np.isnan(de) else np.nan,
                 "Vol Surge": vol_surge,
                 "Market Cap (₹ Cr)": mcap_cr,
                 "SMA_50": round(sma_50, 2),
@@ -255,37 +225,32 @@ def fetch_screener_universe(ticker_list):
     return pd.DataFrame(rows)
 
 
-# Fetch Data
 if tickers_to_scan:
     df_raw = fetch_screener_universe(tickers_to_scan)
 else:
     df_raw = pd.DataFrame()
 
-# 7. Apply Filters & Sorting
+# 5. Apply User Filters
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
-    # Score Filter
     if score_filter_type == "Greater than or equal (>=)":
         filtered_df = filtered_df[filtered_df["Composite Score"] >= target_score]
     elif score_filter_type == "Less than or equal (<=)":
         filtered_df = filtered_df[filtered_df["Composite Score"] <= target_score]
 
-    # Fundamentals Filters
     filtered_df = filtered_df[
         (filtered_df["_roe_num"] >= min_roe)
         & (filtered_df["_pe_num"] <= max_pe)
         & (filtered_df["_de_num"] <= max_de)
     ]
 
-    # Technical Filters
     filtered_df = filtered_df[
         (filtered_df["RSI (14)"] >= rsi_range[0])
         & (filtered_df["RSI (14)"] <= rsi_range[1])
         & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
     ]
 
-    # Trend Filter
     if sma_trend_filter == "Price > 50 SMA":
         filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_50"]]
     elif sma_trend_filter == "Price > 200 SMA":
@@ -301,21 +266,6 @@ if not df_raw.empty:
     if only_volume_surge:
         filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
-    # Apply Custom Sorting Filter
-    sort_key_map = {
-        "Composite Score": "Composite Score",
-        "Price (₹)": "Price (₹)",
-        "RSI (14)": "RSI (14)",
-        "From 52W High (%)": "From 52W High (%)",
-        "P/E": "_pe_num",
-        "ROE (%)": "_roe_num",
-        "D/E": "_de_num",
-        "Market Cap (₹ Cr)": "Market Cap (₹ Cr)"
-    }
-    actual_sort_col = sort_key_map.get(sort_column, "Composite Score")
-    filtered_df = filtered_df.sort_values(by=actual_sort_col, ascending=is_ascending)
-
-    # Setup Session State for Click-to-Chart
     if "selected_ticker" not in st.session_state:
         st.session_state.selected_ticker = (
             filtered_df["Raw_Ticker"].iloc[0]
@@ -323,15 +273,46 @@ if not df_raw.empty:
             else df_raw["Raw_Ticker"].iloc[0]
         )
 
-    # Tabs
     tab_screener, tab_deepdive = st.tabs(
         ["📊 Screener Results", "🔬 Single Stock Chart & AI Thesis"]
     )
 
-    # --- TAB 1: SCREENER TABLE ---
+    # --- TAB 1: SCREENER TABLE WITH IN-TAB SORTING FILTER ---
     with tab_screener:
         st.info("💡 **Tip:** Click any row in the table below to load its 9/20 EMA chart in the Single Stock tab.")
-        st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)} passed filters)")
+        
+        # In-tab Sorting Controls Header
+        col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
+        with col_title:
+            st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)})")
+        with col_sort_by:
+            sort_metric = st.selectbox(
+                "Sort Results By:",
+                ["Composite Score", "Price (₹)", "RSI (14)", "From 52W High (%)", "P/E", "ROE (%)", "D/E", "Market Cap (₹ Cr)"],
+                index=0
+            )
+        with col_sort_dir:
+            sort_order = st.radio(
+                "Order:",
+                ["High to Low (Desc)", "Low to High (Asc)"],
+                horizontal=True
+            )
+
+        sort_col_map = {
+            "Composite Score": "Composite Score",
+            "Price (₹)": "Price (₹)",
+            "RSI (14)": "RSI (14)",
+            "From 52W High (%)": "From 52W High (%)",
+            "P/E": "_pe_num",
+            "ROE (%)": "_roe_num",
+            "D/E": "_de_num",
+            "Market Cap (₹ Cr)": "Market Cap (₹ Cr)"
+        }
+        
+        target_sort_col = sort_col_map.get(sort_metric, "Composite Score")
+        ascending_flag = (sort_order == "Low to High (Asc)")
+        
+        sorted_results_df = filtered_df.sort_values(by=target_sort_col, ascending=ascending_flag)
 
         display_cols = [
             "Ticker",
@@ -348,7 +329,12 @@ if not df_raw.empty:
             "Market Cap (₹ Cr)",
         ]
 
-        table_data = filtered_df[display_cols]
+        table_data = sorted_results_df[display_cols].copy()
+        
+        # Replace internal NaNs with clean "N/A" strings for clean presentation
+        table_data["P/E"] = table_data["P/E"].fillna("N/A")
+        table_data["ROE (%)"] = table_data["ROE (%)"].fillna("N/A")
+        table_data["D/E"] = table_data["D/E"].fillna("N/A")
 
         selection_event = st.dataframe(
             table_data,
@@ -366,8 +352,8 @@ if not df_raw.empty:
     # --- TAB 2: DEEP DIVE & CHART VIEW ---
     with tab_deepdive:
         stock_options = (
-            filtered_df["Raw_Ticker"].tolist()
-            if not filtered_df.empty
+            sorted_results_df["Raw_Ticker"].tolist()
+            if not sorted_results_df.empty
             else df_raw["Raw_Ticker"].tolist()
         )
 
@@ -390,7 +376,6 @@ if not df_raw.empty:
                 info = {}
 
             if not hist.empty:
-                # 9 EMA, 20 EMA, 50 SMA, 200 SMA
                 hist["EMA_9"] = hist["Close"].ewm(span=9, adjust=False).mean()
                 hist["EMA_20"] = hist["Close"].ewm(span=20, adjust=False).mean()
                 hist["SMA_50"] = hist["Close"].rolling(50).mean()
@@ -400,7 +385,6 @@ if not df_raw.empty:
                 ema9_val = float(hist["EMA_9"].iloc[-1])
                 ema20_val = float(hist["EMA_20"].iloc[-1])
 
-                # Metric Cards
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Current Price", f"₹{curr_p:,.2f}")
                 c2.metric("9 EMA", f"₹{ema9_val:,.2f}")
@@ -410,7 +394,6 @@ if not df_raw.empty:
                     "🚀 Bullish (9 > 20 EMA)" if ema9_val >= ema20_val else "🔻 Bearish (9 < 20 EMA)",
                 )
 
-                # Candlestick Chart
                 fig = go.Figure(data=[
                     go.Candlestick(
                         x=hist.index,
@@ -434,7 +417,6 @@ if not df_raw.empty:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # AI Investment Thesis using gemini-3.6-flash
                 st.subheader("🤖 AI Investment Thesis")
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:

@@ -282,7 +282,7 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. Cached Batch Fetcher
+# 4. Cached Batch Fetcher (with rate-limit throttling protection)
 @st.cache_data(ttl=3600)
 def fetch_screener_universe(ticker_list):
     rows = []
@@ -323,6 +323,7 @@ def fetch_screener_universe(ticker_list):
             )
             vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
 
+            # Metadata extraction with safe fallbacks
             info = {}
             try:
                 info = t.get_info()
@@ -418,6 +419,17 @@ def fetch_screener_universe(ticker_list):
 
     progress_bar.empty()
     return pd.DataFrame(rows)
+
+
+# Cached Single Ticker History Fetcher (Protects Tab 2 from Rate Limit Errors)
+@st.cache_data(ttl=1800)
+def get_single_stock_history(ticker):
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="1y")
+        return hist
+    except Exception:
+        return pd.DataFrame()
 
 
 if tickers_to_scan:
@@ -572,7 +584,7 @@ if not df_raw.empty:
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
             st.session_state.selected_ticker = f"{clicked_ticker_sym}.NS"
 
-    # --- TAB 2: DEEP DIVE & CHART VIEW ---
+    # --- TAB 2: DEEP DIVE & CHART VIEW (PROTECTED AGAINST RATE LIMITS) ---
     with tab_deepdive:
         stock_options = (
             sorted_results_df["Raw_Ticker"].tolist()
@@ -591,12 +603,11 @@ if not df_raw.empty:
         st.session_state.selected_ticker = selected_stock
 
         if selected_stock:
-            t = yf.Ticker(selected_stock)
-            hist = t.history(period="1y")
+            hist = get_single_stock_history(selected_stock)
             stock_match = df_raw[df_raw["Raw_Ticker"] == selected_stock]
             stock_row = stock_match.iloc[0] if not stock_match.empty else None
 
-            if not hist.empty:
+            if hist is not None and not hist.empty:
                 hist["EMA_9"] = hist["Close"].ewm(span=9, adjust=False).mean()
                 hist["EMA_20"] = (
                     hist["Close"].ewm(span=20, adjust=False).mean()
@@ -728,8 +739,12 @@ if not df_raw.empty:
                                 st.error(
                                     "Rate limit reached across free tier models. Please wait 30–60 seconds before trying again."
                                 )
+            else:
+                st.warning(
+                    f"Historical price data for {selected_stock} is temporarily unavailable from Yahoo Finance or is being rate-limited. Try selecting another stock."
+                )
 
-    # --- TAB 3: WATCHLIST & PAPER TRADING (PERSISTENT AUTO-SAVE) ---
+    # --- TAB 3: WATCHLIST & PAPER TRADING ---
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
@@ -800,9 +815,7 @@ if not df_raw.empty:
                         "Raw_Ticker": trade_stock,
                     }
                     st.session_state.paper_portfolio.append(new_trade)
-                    save_portfolio(
-                        st.session_state.paper_portfolio
-                    )  # Auto-save to disk
+                    save_portfolio(st.session_state.paper_portfolio)
 
                     sl_msg = (
                         f"(SL: ₹{sl_price})" if sl_price > 0 else "(No SL set)"
@@ -835,7 +848,6 @@ if not df_raw.empty:
                 qty = int(pos.get("Qty", 1))
                 pos_date = str(pos.get("Date", str(date.today())))
 
-                # Automated SL Detection & Realised P&L Calculation
                 if sl > 0 and curr_p <= sl:
                     status = "🔴 SL Hit (Closed)"
                     exit_price = sl
@@ -898,7 +910,7 @@ if not df_raw.empty:
 
             if st.button("🗑️ Reset / Clear All Trades"):
                 st.session_state.paper_portfolio = []
-                save_portfolio([])  # Reset on disk
+                save_portfolio([])
                 st.rerun()
         else:
             st.info(

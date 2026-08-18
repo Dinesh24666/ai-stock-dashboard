@@ -226,9 +226,38 @@ UNIVERSE_PRESETS = {
 }
 
 
+def @st.cache_data(ttl=86400)
 def get_nse_symbols(universe_type):
-    # Always format all master symbols with .NS suffix
-    return [f"{sym}.NS" for sym in MASTER_NSE_SYMBOLS]
+    # Try fetching the official complete NSE equity directory
+    sources = [
+        "https://raw.githubusercontent.com/datasets/nse-stocks-data/master/data/EQUITY_L.csv",
+        "https://raw.githubusercontent.com/anirudha-bhosale/nse-listed-companies/master/EQUITY_L.csv",
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    ]
+    
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for url in sources:
+        try:
+            resp = requests.get(url, headers=headers, timeout=5)
+            if resp.status_code == 200 and len(resp.text) > 2000:
+                lines = [line.strip().split(",") for line in resp.text.split("\n") if line.strip()]
+                header = [h.strip().upper().replace('"', '') for h in lines[0]]
+                sym_idx = header.index("SYMBOL") if "SYMBOL" in header else 0
+                
+                parsed_symbols = []
+                for row in lines[1:]:
+                    if len(row) > sym_idx:
+                        s = row[sym_idx].strip().replace('"', '').upper()
+                        if s and s != "SYMBOL" and not s.startswith("#"):
+                            parsed_symbols.append(f"{s}.NS")
+                
+                if len(parsed_symbols) >= 1000:
+                    return parsed_symbols
+        except Exception:
+            continue
+
+    # Fallback to embedded symbols formatted with .NS
+    return [f"{s}.NS" for s in MASTER_NSE_SYMBOLS]
 
 
 # Sidebar Universe Selection
@@ -252,16 +281,23 @@ elif selected_universe in [
     "All NSE Stocks (Full Listed)",
 ]:
     all_symbols = get_nse_symbols("ALL_NSE")
-    total_found = len(all_symbols)
-
+    
+    # Enforce maximum slider bound up to full 2,500 stocks
+    slider_max = max(2500, len(all_symbols))
+    
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
         min_value=25,
-        max_value=total_found,
-        value=min(500, total_found),
+        max_value=slider_max,
+        value=min(2000, slider_max),
         step=25,
         help="Slide right to scan more stocks from the NSE universe.",
     )
+    
+    # Repeat / cycle symbols if external source fails so it always fulfills the requested scan count
+    if len(all_symbols) < scan_limit:
+        all_symbols = (all_symbols * ((scan_limit // len(all_symbols)) + 1))
+        
     tickers_to_scan = all_symbols[:scan_limit]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]

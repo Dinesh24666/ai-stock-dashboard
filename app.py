@@ -9,11 +9,32 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-# 1. Page Configuration
+# 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
     layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+    /* Center align dataframe headers and cells */
+    [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
+        text-align: center !important;
+        vertical-align: middle !important;
+    }
+    div[data-testid="stDataFrame"] div[role="columnheader"] {
+        text-align: center !important;
+        justify-content: center !important;
+    }
+    div[data-testid="stDataFrame"] div[role="gridcell"] {
+        text-align: center !important;
+        justify-content: center !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
@@ -129,6 +150,7 @@ NIFTY_50 = [
 
 UNIVERSE_PRESETS = {
     "🔍 Single Stock Search": "SINGLE_SEARCH",
+    "All NSE Stocks (Full Listed)": "ALL_NSE",
     "Nifty 50 Core": NIFTY_50,
     "Nifty 500 (Broad Market)": "NIFTY_500",
     "Banking & Financial Services": [
@@ -194,23 +216,36 @@ UNIVERSE_PRESETS = {
         "BDL.NS",
         "CONCOR.NS",
     ],
-    "All NSE Stocks (Full Listed)": "ALL_NSE",
 }
 
 
 @st.cache_data(ttl=86400)
 def get_nse_symbols(universe_type):
     try:
+        headers = {"User-Agent": "Mozilla/5.0"}
         if universe_type == "NIFTY_500":
             url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-            df = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
-            return [f"{sym}.NS" for sym in df["Symbol"].dropna().unique()]
+            df = pd.read_csv(url, storage_options=headers)
+            col = "Symbol" if "Symbol" in df.columns else df.columns[0]
+            symbols = [f"{str(sym).strip()}.NS" for sym in df[col].dropna().unique() if str(sym).strip()]
+            return symbols if symbols else NIFTY_50
         else:
             url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-            df = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
-            if "SERIES" in df.columns:
-                df = df[df["SERIES"] == "EQ"]
-            return [f"{sym}.NS" for sym in df["SYMBOL"].dropna().unique()]
+            df = pd.read_csv(url, storage_options=headers)
+            symbol_col = None
+            for c in ["SYMBOL", "Symbol", "symbol"]:
+                if c in df.columns:
+                    symbol_col = c
+                    break
+            if symbol_col is None:
+                symbol_col = df.columns[0]
+
+            symbols = [
+                f"{str(sym).strip()}.NS"
+                for sym in df[symbol_col].dropna().unique()
+                if str(sym).strip() and str(sym).strip().upper() != "SYMBOL"
+            ]
+            return symbols if len(symbols) > 500 else NIFTY_50
     except Exception:
         return NIFTY_50
 
@@ -218,7 +253,7 @@ def get_nse_symbols(universe_type):
 # Sidebar Universe Selection
 st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox(
-    "Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0
+    "Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=1
 )
 
 is_single_search = selected_universe == "🔍 Single Stock Search"
@@ -230,10 +265,7 @@ if is_single_search:
         help="Type single NSE symbol e.g., ACE, RELIANCE, INFY, ICICIBANK",
     )
     clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
-    if clean_sym:
-        tickers_to_scan = [f"{clean_sym}.NS"]
-    else:
-        tickers_to_scan = ["ACE.NS"]
+    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
 elif selected_universe in [
     "Nifty 500 (Broad Market)",
     "All NSE Stocks (Full Listed)",
@@ -244,17 +276,16 @@ elif selected_universe in [
         else "ALL_NSE"
     )
     all_symbols = get_nse_symbols(preset_type)
-    max_scan = (
-        len(all_symbols)
-        if preset_type == "ALL_NSE"
-        else min(500, len(all_symbols))
-    )
+    total_found = len(all_symbols)
+
+    max_scan = max(2500, total_found) if preset_type == "ALL_NSE" else min(500, total_found)
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
         min_value=25,
         max_value=max_scan,
         value=min(500, max_scan),
         step=50,
+        help="Slide right to scan more stocks from the NSE universe.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -499,16 +530,16 @@ def fetch_screener_universe(ticker_list):
                         "Change (%)": change_display,
                         "Volume": f"{curr_vol:,}",
                         "Composite Score": round(swing_composite, 1),
-                        "9 EMA": round(ema_9, 2),
-                        "20 EMA": round(ema_20, 2),
-                        "ADX (14)": adx_val,
                         "ROCE (%)": roce,
+                        "ADX (14)": adx_val,
                         "RSI (14)": round(rsi_val, 1),
                         "From 52W High (%)": round(dist_52w_high, 1),
-                        "P/E": pe,
-                        "D/E": de,
                         "Vol Surge": vol_surge,
                         "Market Cap (₹ Cr)": mcap_cr,
+                        "9 EMA": round(ema_9, 2),
+                        "20 EMA": round(ema_20, 2),
+                        "P/E": pe,
+                        "D/E": de,
                         "SMA_50": round(sma_50, 2),
                         "SMA_200": round(sma_200, 2),
                         "Raw_Ticker": ticker,
@@ -660,6 +691,7 @@ if not df_raw.empty:
             by=target_sort_col, ascending=ascending_flag, na_position="last"
         )
 
+        # Exact ordering matching the visual image (9 and 20 SMA/EMA removed)
         display_cols = [
             "Ticker",
             "Signal",
@@ -667,21 +699,37 @@ if not df_raw.empty:
             "Change (%)",
             "Volume",
             "Composite Score",
-            "9 EMA",
-            "20 EMA",
+            "ROCE (%)",
             "ADX (14)",
             "RSI (14)",
             "From 52W High (%)",
             "Vol Surge",
-            "ROCE (%)",
             "Market Cap (₹ Cr)",
         ]
 
         table_data = sorted_results_df[display_cols].copy()
+        
+        # Center-aligned DataFrame column configuration
+        column_config = {
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Signal": st.column_config.TextColumn("Signal"),
+            "Price (₹)": st.column_config.NumberColumn("Price (₹)", format="₹%.2f"),
+            "Change (%)": st.column_config.TextColumn("Change (%)"),
+            "Volume": st.column_config.TextColumn("Volume"),
+            "Composite Score": st.column_config.NumberColumn("Composite Score", format="%d"),
+            "ROCE (%)": st.column_config.NumberColumn("ROCE (%)", format="%.1f"),
+            "ADX (14)": st.column_config.NumberColumn("ADX (14)", format="%.1f"),
+            "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.1f"),
+            "From 52W High (%)": st.column_config.NumberColumn("From 52W High (%)", format="%.1f"),
+            "Vol Surge": st.column_config.CheckboxColumn("Vol Surge"),
+            "Market Cap (₹ Cr)": st.column_config.NumberColumn("Market Cap (₹ Cr)", format="%.1f"),
+        }
+
         selection_event = st.dataframe(
             table_data,
             use_container_width=True,
             hide_index=True,
+            column_config=column_config,
             on_select="rerun",
             selection_mode="single-row",
         )

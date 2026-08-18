@@ -3,7 +3,6 @@ import gc
 import json
 import os
 import time
-import requests
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -21,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe columns and headers */
+    /* Center alignment for dataframe cells and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
@@ -73,7 +72,7 @@ if "ai_analysis_cache" not in st.session_state:
 if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
-# 2. Sidebar - API Key Configuration
+# 2. Sidebar - API Setup
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -93,14 +92,52 @@ if GEMINI_API_KEY:
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
 
+# Built-in High Liquidity NSE Universe (Fast & Offline Safe)
+MASTER_NSE_SYMBOLS = [
+    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "INFY", "LT", "SBIN",
+    "ITC", "HINDUNILVR", "TATAMOTORS", "M&M", "MARUTI", "SUNPHARMA", "BAJFINANCE",
+    "KOTAKBANK", "AXISBANK", "NTPC", "POWERGRID", "ONGC", "TITAN", "ACE", "AEGISLOG",
+    "AETHER", "AFFLE", "AJANTPHARM", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE",
+    "APARINDS", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", "ASIANPAINT",
+    "ASTRAL", "ATUL", "AUBANK", "AUROPHARMA", "BAJAJ-AUTO", "BAJAJFINSV", "BALKRISIND",
+    "BALRAMCHIN", "BANDHANBNK", "BANKBARODA", "BATAINDIA", "BDL", "BEL", "BEML",
+    "BERGEPAINT", "BHARATFORG", "BHEL", "BIOCON", "BLS", "BLUESTARCO", "BOSCHLTD",
+    "BPCL", "BRITANNIA", "BSE", "BSOFT", "CAMS", "CANBK", "CASTROLIND", "CDSL",
+    "CEATLTD", "CESC", "CGPOWER", "CHAMBLFERT", "CHENNPETRO", "CHOLAFIN", "CIPLA",
+    "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON",
+    "CUMMINSIND", "CYIENT", "DABUR", "DALBHARAT", "DATAPATTNS", "DEEPAKFERT", "DEEPAKNTR",
+    "DELHIVERY", "DIVISLAB", "DIXON", "DLF", "DMART", "DRREDDY", "EICHERMOT", "ENDURANCE",
+    "ENGINERSIN", "ESCORTS", "EXIDEIND", "FEDERALBNK", "FORTIS", "GAIL", "GLENMARK",
+    "GMRINFRA", "GODREJCP", "GODREJPROP", "GRASIM", "GRAVITA", "HAL", "HAVELLS",
+    "HCLTECH", "HDFCAMC", "HDFCLIFE", "HEROMOTOCO", "HFCL", "HINDALCO", "HINDCOPPER",
+    "HINDPETRO", "HINDZINC", "HUDCO", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL", "INDIACEM",
+    "INDIAMART", "INDIANB", "INDIGO", "INDUSINDBK", "INDUSTOWER", "IOC", "IPCALAB",
+    "IRB", "IRCON", "IRCTC", "IRFC", "J&KBANK", "JBMA", "JINDALSTEL", "JIOFIN",
+    "JKCEMENT", "JSWENERGY", "JSWINFRA", "JSWSTEEL", "JUBLFOOD", "KALYANKJIL", "KEC",
+    "KEI", "KPITTECH", "LALPATHLAB", "LAURUSLABS", "LICHSGFIN", "LICI", "LTIM", "LTTS",
+    "LUPIN", "MAHABANK", "MANAPPURAM", "MANKIND", "MARICO", "MAXHEALTH", "MAZDOCK",
+    "METROPOLIS", "MFSL", "MGL", "MOTHERSON", "MOTILALOFS", "MPHASIS", "MRF", "MUTHOOTFIN",
+    "NATIONALUM", "NAUKRI", "NBCC", "NCC", "NESTLEIND", "NHPC", "NMDC", "NTPC",
+    "OBEROIRLTY", "OFSS", "OIL", "PAGEIND", "PATANJALI", "PAYTM", "PCBL", "PERSISTENT",
+    "PETRONET", "PFC", "PHOENIXLTD", "PIDILITIND", "PIIND", "PNB", "POLICYBZR", "POLYCAB",
+    "POONAWALLA", "POWERGRID", "PRAJIND", "PRESTIGE", "PVRINOX", "RADICO", "RAILTEL",
+    "RAMCOCEM", "RAYMOND", "RBLBANK", "RECLTD", "RVNL", "SAIL", "SBICARD", "SBILIFE",
+    "SCHNEIDER", "SHREECEM", "SHRIRAMFIN", "SIEMENS", "SJVN", "SOBHA", "SOLARINDS",
+    "SONACOMS", "SONATSOFTW", "SUNDARMFIN", "SUNPHARMA", "SUZLON", "SWANENERGY", "TATACHEM",
+    "TATACOMM", "TATACONSUM", "TATAELXSI", "TATAMOTORS", "TATAPOWER", "TATASTEEL", "TATATECH",
+    "TCS", "TECHM", "TITAGARH", "TITAN", "TORNTPHARM", "TORNTPOWER", "TRENT", "TRIDENT",
+    "TVSMOTOR", "ULTRACEMCO", "UNIONBANK", "UNOMINDA", "UPL", "VBL", "VEDL", "VOLTAS",
+    "WIPRO", "YESBANK", "ZEEL", "ZOMATO", "ZYDUSLIFE"
+]
+
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
-    "Nifty 50 Core": "NIFTY_50",
+    "Nifty 50 Core": [f"{s}.NS" for s in MASTER_NSE_SYMBOLS[:50]],
     "Banking & Financial Services": [
         "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
-        "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
-        "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANKBARODA.NS", "AUBANK.NS", "BANDHANBNK.NS"
+        "BAJFINANCE.NS", "BAJAJFINSV.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
+        "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANKBARODA.NS", "AUBANK.NS"
     ],
     "IT & Technology": [
         "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS",
@@ -120,40 +157,6 @@ UNIVERSE_PRESETS = {
     ],
 }
 
-
-@st.cache_data(ttl=86400)
-def get_all_nse_symbols():
-    urls = [
-        "https://raw.githubusercontent.com/yogeshnarang/Nifty-Index-Clustering/master/nse-indices-symbols.csv",
-        "https://raw.githubusercontent.com/parismita/sharesbot/master/NSE-datasets-codes.csv",
-        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
-    ]
-    
-    unique_symbols = set()
-    for url in urls:
-        try:
-            resp = requests.get(url, timeout=4)
-            if resp.status_code == 200:
-                lines = [l.strip().split(",") for l in resp.text.split("\n") if l.strip()]
-                for row in lines:
-                    for item in row:
-                        clean = item.strip().replace('"', '').replace("NSE/", "").upper()
-                        if clean.endswith(".NS"):
-                            clean = clean.replace(".NS", "")
-                        if clean.isalpha() and 2 <= len(clean) <= 15:
-                            unique_symbols.add(f"{clean}.NS")
-        except Exception:
-            continue
-            
-    final_list = sorted(list(unique_symbols))
-    return final_list if len(final_list) >= 500 else [
-        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
-        "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS", "TATAMOTORS.NS",
-        "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS", "KOTAKBANK.NS",
-        "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "TITAN.NS", "ACE.NS"
-    ]
-
-
 # Sidebar Universe Selection
 st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox(
@@ -170,22 +173,17 @@ if is_single_search:
     )
     clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
     tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
-elif selected_universe == "Nifty 50 Core":
-    all_symbols = get_all_nse_symbols()
-    tickers_to_scan = all_symbols[:50]
 elif selected_universe == "All NSE Stocks (Full Listed)":
-    all_symbols = get_all_nse_symbols()
-    total_found = len(all_symbols)
-
+    all_syms = [f"{s}.NS" for s in MASTER_NSE_SYMBOLS]
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
         min_value=25,
-        max_value=total_found,
-        value=min(500, total_found),
+        max_value=len(all_syms),
+        value=min(200, len(all_syms)),
         step=25,
         help="Slide right to scan more stocks across the NSE universe.",
     )
-    tickers_to_scan = all_symbols[:scan_limit]
+    tickers_to_scan = all_syms[:scan_limit]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
@@ -239,7 +237,7 @@ only_volume_surge = st.sidebar.checkbox(
 )
 
 
-# Technical Indicator Calculations (RSI & ADX)
+# Technical Indicator Calculations
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -285,7 +283,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
-# 4. Memory-Safe Chunked Batch Fetcher
+# 4. Deadlock-Free Batch Fetcher
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -310,12 +308,13 @@ def fetch_screener_universe(ticker_list):
             text=f"Scanning batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...",
         )
         try:
+            # threads=False prevents thread pool deadlock on Streamlit Cloud
             batch_data = yf.download(
                 tickers=" ".join(chunk),
                 period="6mo",
                 interval="1d",
                 group_by="ticker",
-                threads=True,
+                threads=False,
                 auto_adjust=True,
                 progress=False,
             )
@@ -492,7 +491,7 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-# Sidebar Action Buttons
+# Sidebar Run & Reset Controls
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Reset", use_container_width=True):
     st.cache_data.clear()
@@ -501,26 +500,20 @@ if st.sidebar.button("🔄 Clear Cache & Reset", use_container_width=True):
     gc.collect()
     st.rerun()
 
-# Run screener when triggered or on initial single search
-if scan_button or (is_single_search and st.session_state["screener_data"].empty):
-    with st.spinner("Analyzing universe..."):
+# Safe data fetch orchestration
+if scan_button or is_single_search or st.session_state["screener_data"].empty:
+    with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
         st.session_state["screener_data"] = df_raw
 else:
     df_raw = st.session_state["screener_data"]
-
-# If first time loading and empty, initialize with top 50 quick load
-if df_raw.empty and not is_single_search:
-    with st.spinner("Loading initial stock basket..."):
-        df_raw = fetch_screener_universe(tickers_to_scan[:50])
-        st.session_state["screener_data"] = df_raw
 
 if "selected_ticker" not in st.session_state:
     st.session_state["selected_ticker"] = (
         df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "ACE.NS"
     )
 
-# 5. Filtering & Rendering
+# 5. Filtering & UI Rendering
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
@@ -1030,7 +1023,7 @@ if not df_raw.empty:
                     period="5d",
                     interval="1d",
                     group_by="ticker",
-                    threads=True,
+                    threads=False,
                     auto_adjust=True,
                     progress=False,
                 )
@@ -1135,4 +1128,4 @@ if not df_raw.empty:
                 "No active paper trades. Use the order form above to enter trades with custom remarks & stop loss tracking."
             )
 else:
-    st.info("👈 Choose your settings in the sidebar and click **'🚀 Run Screener Scan'** to start scanning.")
+    st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to fetch stocks.")

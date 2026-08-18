@@ -47,9 +47,8 @@ if "paper_portfolio" not in st.session_state:
 if "ai_analysis_cache" not in st.session_state:
     st.session_state.ai_analysis_cache = {}
 
-# 2. Sidebar - API Key (Auto-loads from Secrets or falls back to text input)
+# 2. Sidebar - API Key (Auto-detects from secrets or text input)
 st.sidebar.header("🔑 API Setup")
-
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 
 if api_key_from_secrets:
@@ -64,6 +63,7 @@ else:
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY.strip())
+
 # Universe Presets
 NIFTY_50 = [
     "RELIANCE.NS",
@@ -185,7 +185,7 @@ UNIVERSE_PRESETS = {
         "CONCOR.NS",
     ],
     "All NSE Stocks (Full Listed)": "ALL_NSE",
-    "Custom Watchlist": [],
+    "🔍 Search Specific Stocks": "SEARCH_BAR",
 }
 
 
@@ -210,7 +210,16 @@ selected_universe = st.sidebar.selectbox(
     "Select Stock Basket", list(UNIVERSE_PRESETS.keys())
 )
 
-if selected_universe in [
+if selected_universe == "🔍 Search Specific Stocks":
+    search_query = st.sidebar.text_input(
+        "Search Stock Symbols (e.g. RELIANCE, TCS, LTF)", "RELIANCE, LTF, ICICIBANK, TATAMOTORS, HAL"
+    )
+    raw_tickers = [t.strip().upper() for t in search_query.split(",") if t.strip()]
+    tickers_to_scan = [
+        t if (t.endswith(".NS") or t.endswith(".BO")) else f"{t}.NS"
+        for t in raw_tickers
+    ]
+elif selected_universe in [
     "Nifty 500 (Broad Market)",
     "All NSE Stocks (Full Listed)",
 ]:
@@ -228,18 +237,6 @@ if selected_universe in [
         step=10,
     )
     tickers_to_scan = all_symbols[:scan_limit]
-elif selected_universe == "Custom Watchlist":
-    custom_input = st.sidebar.text_area(
-        "Enter Tickers (comma-separated)",
-        "RELIANCE, ICICIBANK, LTF, TCS, TATAMOTORS, HAL",
-    )
-    raw_tickers = [
-        t.strip().upper() for t in custom_input.split(",") if t.strip()
-    ]
-    tickers_to_scan = [
-        t if (t.endswith(".NS") or t.endswith(".BO")) else f"{t}.NS"
-        for t in raw_tickers
-    ]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
@@ -248,7 +245,15 @@ st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
     "Enable Strict Fundamental Filters", value=False
 )
-min_roce = st.sidebar.slider("Min ROCE (%)", -10, 50, 10)
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 60))
+mcap_range_cr = st.sidebar.slider(
+    "Market Cap Range (₹ Cr)",
+    0,
+    2000000,
+    (100, 2000000),
+    step=500,
+    help="Filter by minimum and maximum market capitalization in ₹ Crores",
+)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 2.5, step=0.1)
 
 st.sidebar.header("📈 Technical Filters")
@@ -289,7 +294,7 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. Cached Batch Fetcher (with rate-limit throttling protection)
+# 4. Cached Batch Fetcher
 @st.cache_data(ttl=3600)
 def fetch_screener_universe(ticker_list):
     rows = []
@@ -330,7 +335,6 @@ def fetch_screener_universe(ticker_list):
             )
             vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
 
-            # Metadata extraction with safe fallbacks
             info = {}
             try:
                 info = t.get_info()
@@ -419,6 +423,7 @@ def fetch_screener_universe(ticker_list):
                     "Raw_Ticker": ticker,
                     "_roce_num": roce if not np.isnan(roce) else np.nan,
                     "_de_num": de if not np.isnan(de) else np.nan,
+                    "_mcap_num": mcap_cr if not np.isnan(mcap_cr) else 0.0,
                 }
             )
         except Exception:
@@ -428,7 +433,7 @@ def fetch_screener_universe(ticker_list):
     return pd.DataFrame(rows)
 
 
-# Cached Single Ticker History Fetcher (Protects Tab 2 from Rate Limit Errors)
+# Cached Single Ticker History Fetcher
 @st.cache_data(ttl=1800)
 def get_single_stock_history(ticker):
     try:
@@ -453,11 +458,22 @@ if "selected_ticker" not in st.session_state:
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
+    # Fundamental Range Filters
     if apply_fund_filter:
         filtered_df = filtered_df[
             (
                 filtered_df["_roce_num"].isna()
-                | (filtered_df["_roce_num"] >= min_roce)
+                | (
+                    (filtered_df["_roce_num"] >= roce_range[0])
+                    & (filtered_df["_roce_num"] <= roce_range[1])
+                )
+            )
+            & (
+                filtered_df["_mcap_num"].isna()
+                | (
+                    (filtered_df["_mcap_num"] >= mcap_range_cr[0])
+                    & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
+                )
             )
             & (
                 filtered_df["_de_num"].isna()
@@ -465,12 +481,14 @@ if not df_raw.empty:
             )
         ]
 
+    # Technical Filters
     filtered_df = filtered_df[
         (filtered_df["RSI (14)"] >= rsi_range[0])
         & (filtered_df["RSI (14)"] <= rsi_range[1])
         & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
     ]
 
+    # Moving Average Alignment
     if sma_trend_filter == "Price > 50 SMA":
         filtered_df = filtered_df[
             filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
@@ -542,7 +560,7 @@ if not df_raw.empty:
             "From 52W High (%)": "From 52W High (%)",
             "P/E": "P/E",
             "D/E": "_de_num",
-            "Market Cap (₹ Cr)": "Market Cap (₹ Cr)",
+            "Market Cap (₹ Cr)": "_mcap_num",
         }
 
         target_sort_col = sort_col_map.get(sort_metric, "Composite Score")
@@ -591,7 +609,7 @@ if not df_raw.empty:
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
             st.session_state.selected_ticker = f"{clicked_ticker_sym}.NS"
 
-    # --- TAB 2: DEEP DIVE & CHART VIEW (PROTECTED AGAINST RATE LIMITS) ---
+    # --- TAB 2: DEEP DIVE & CHART VIEW ---
     with tab_deepdive:
         stock_options = (
             sorted_results_df["Raw_Ticker"].tolist()
@@ -710,6 +728,7 @@ if not df_raw.empty:
                         - Moving Averages: 9 EMA = ₹{ema9_val:.2f}, 20 EMA = ₹{ema20_val:.2f}, Trend: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish'}
                         - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, From 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
                         - Fundamentals: ROCE: {stock_row['ROCE (%)'] if stock_row is not None else 'N/A'}% | Debt/Equity: {stock_row['D/E'] if stock_row is not None else 'N/A'} | P/E: {stock_row['P/E'] if stock_row is not None else 'N/A'}
+                        - Market Cap: ₹{stock_row['Market Cap (₹ Cr)'] if stock_row is not None else 'N/A'} Cr
                         - Quality Composite Score: {stock_row['Composite Score'] if stock_row is not None else 'N/A'}/100
 
                         Provide a clean analyst breakdown:
@@ -720,10 +739,10 @@ if not df_raw.empty:
                         """
                         with st.spinner("Analyzing stock with Gemini..."):
                             model_ladder = [
-                                "gemini-3.6-flash",
-                                "gemini-2.5-flash",
-                                "gemini-1.5-flash-8b",
                                 "gemini-1.5-flash",
+                                "gemini-1.5-flash-8b",
+                                "gemini-2.0-flash",
+                                "gemini-3.6-flash",
                             ]
                             success = False
 
@@ -739,28 +758,29 @@ if not df_raw.empty:
                                         success = True
                                         break
                                 except Exception:
-                                    time.sleep(1)
+                                    time.sleep(0.8)
                                     continue
 
                             if not success:
                                 st.error(
-                                    "Rate limit reached across free tier models. Please wait 30–60 seconds before trying again."
+                                    "Rate limit reached on Free Tier. Please wait 30–45 seconds before clicking again."
                                 )
             else:
                 st.warning(
-                    f"Historical price data for {selected_stock} is temporarily unavailable from Yahoo Finance or is being rate-limited. Try selecting another stock."
+                    f"Historical price data for {selected_stock} is temporarily unavailable."
                 )
 
-    # --- TAB 3: WATCHLIST & PAPER TRADING ---
+    # --- TAB 3: WATCHLIST & PAPER TRADING (WITH REMARKS & STRATEGY) ---
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
         # Order Placement Form
         with st.expander(
-            "➕ Execute New Paper Trade (Enter SL Manually)", expanded=True
+            "➕ Execute New Paper Trade (Manual SL & Trade Remarks)",
+            expanded=True,
         ):
-            col_add1, col_add2, col_add3, col_add4, col_add5, col_btn = (
-                st.columns([1.2, 1, 1, 1, 1, 1.2])
+            col_add1, col_add2, col_add3, col_add4 = st.columns(
+                [1.2, 1, 1, 1]
             )
 
             with col_add1:
@@ -797,11 +817,17 @@ if not df_raw.empty:
                     help="Enter custom Stop Loss level. Leave as 0.0 if no SL is needed.",
                 )
 
-            with col_add5:
+            col_sub1, col_sub2, col_btn = st.columns([1, 2.5, 1])
+            with col_sub1:
                 quantity = st.number_input(
                     "Quantity", value=50, min_value=1, step=1
                 )
-
+            with col_sub2:
+                remarks = st.text_input(
+                    "Trade Remarks / Strategy (Why did you buy?)",
+                    value="9/20 EMA Bullish Cross Breakout",
+                    help="Record the reason or setup condition for entering this trade",
+                )
             with col_btn:
                 st.write("")
                 st.write("")
@@ -818,6 +844,7 @@ if not df_raw.empty:
                         "Buy Price (₹)": buy_price,
                         "SL (₹)": sl_price,
                         "Qty": quantity,
+                        "Remarks": remarks.strip(),
                         "Invested (₹)": round(buy_price * quantity, 2),
                         "Raw_Ticker": trade_stock,
                     }
@@ -854,6 +881,7 @@ if not df_raw.empty:
                 sl = float(pos.get("SL (₹)", 0.0))
                 qty = int(pos.get("Qty", 1))
                 pos_date = str(pos.get("Date", str(date.today())))
+                pos_remarks = str(pos.get("Remarks", "Discretionary"))
 
                 if sl > 0 and curr_p <= sl:
                     status = "🔴 SL Hit (Closed)"
@@ -883,6 +911,7 @@ if not df_raw.empty:
                         "Ticker": pos.get("Ticker", sym.replace(".NS", "")),
                         "Company": pos.get("Company", sym),
                         "Status": status,
+                        "Remarks / Strategy": pos_remarks,
                         "Entry (₹)": buy_p,
                         "SL (₹)": sl if sl > 0 else "None",
                         "Current Price (₹)": curr_p,
@@ -921,7 +950,7 @@ if not df_raw.empty:
                 st.rerun()
         else:
             st.info(
-                "No active paper trades. Use the order form above to enter trades with manual stop loss tracking."
+                "No active paper trades. Use the order form above to enter trades with custom remarks & stop loss tracking."
             )
 else:
     st.warning("No stocks passed the selected filter criteria.")

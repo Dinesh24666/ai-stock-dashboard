@@ -225,22 +225,20 @@ if selected_universe == "🔍 Search Specific Stocks":
         t if (t.endswith(".NS") or t.endswith(".BO")) else f"{t}.NS"
         for t in raw_tickers
     ]
-elif selected_universe in [
-    "Nifty 500 (Broad Market)",
-    "All NSE Stocks (Full Listed)",
-]:
-    preset_type = (
-        "NIFTY_500"
-        if selected_universe == "Nifty 500 (Broad Market)"
-        else "ALL_NSE"
-    )
+elif selected_universe in ["Nifty 500 (Broad Market)", "All NSE Stocks (Full Listed)"]:
+    preset_type = "NIFTY_500" if selected_universe == "Nifty 500 (Broad Market)" else "ALL_NSE"
     all_symbols = get_nse_symbols(preset_type)
+    
+    # If "All NSE Stocks" is chosen, allow sliding up to the full list length (2000+)
+    max_scan = len(all_symbols) if preset_type == "ALL_NSE" else min(500, len(all_symbols))
+    
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
-        10,
-        min(500, len(all_symbols)),
-        100,
-        step=10,
+        min_value=10,
+        max_value=max_scan,
+        value=min(200, max_scan),
+        step=25,
+        help="Slide right to scan more stocks (scanning all 2000+ stocks will take a few minutes on initial load)."
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:

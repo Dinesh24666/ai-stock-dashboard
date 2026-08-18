@@ -207,12 +207,11 @@ mcap_range_cr = st.sidebar.slider(
 )
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, step=0.1)
 
-st.sidebar.header("📈 Technical Filters")
 price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
-    0,
-    50000,
-    (10, 50000),
+    min_value=0,
+    max_value=10000,
+    value=(30, 5000),
     step=10,
     help="Filter stocks within a specific current share price band",
 )

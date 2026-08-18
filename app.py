@@ -670,28 +670,29 @@ def fetch_screener_universe(ticker_list):
 
                 # 2. Moving Average Alignment (25 pts)
                 full_bullish_stack = (curr_price > ema_20) and (ema_20 > sma_50) and (sma_50 > sma_200)
-                ma_score = 25 if full_bullish_stack else (15 if curr_price > ema_20 and ema_20 > sma_50 else 0)
+                ma_score = 25 if full_bullish_stack else (15 if curr_price > ema_20 and ema_20 > sma_50 else (10 if curr_price > ema_9 else 0))
 
                 # 3. Momentum & ADX Trend (25 pts)
-                rsi_tight_score = 15 if 58.0 <= rsi_val <= 72.0 else (8 if 50.0 <= rsi_val < 58.0 else 0)
-                adx_tight_score = 10 if adx_val >= 25.0 else (5 if adx_val >= 20.0 else 0)
+                rsi_tight_score = 15 if 55.0 <= rsi_val <= 75.0 else (8 if 50.0 <= rsi_val < 55.0 else 0)
+                adx_tight_score = 10 if adx_val >= 22.0 else (5 if adx_val >= 18.0 else 0)
                 momentum_score = rsi_tight_score + adx_tight_score
 
                 # 4. Volume Surge & Proximity (25 pts)
-                vol_surge_score = 15 if curr_vol >= (avg_vol_20 * 1.5) else (8 if curr_vol >= avg_vol_20 else 0)
-                proximity_score = 10 if 0.5 <= dist_52w_high <= 12.0 else (5 if dist_52w_high <= 20.0 else 0)
+                vol_surge_score = 15 if vol_surge else 5
+                proximity_score = 10 if dist_52w_high <= 15.0 else (5 if dist_52w_high <= 25.0 else 0)
                 volume_proximity_score = vol_surge_score + proximity_score
 
                 swing_composite = float(candle_score + ma_score + momentum_score + volume_proximity_score)
 
-                if swing_composite >= 85 and full_bullish_stack and curr_vol >= (avg_vol_20 * 1.3):
-                    action_signal = "🟢 HIGH-CONVICTION BREAKOUT"
-                elif swing_composite >= 65 and curr_price >= ema_20:
-                    action_signal = "🟡 BASE PULLBACK / READY"
-                elif swing_composite >= 45:
+                # --- ACCURATE SIGNAL CLASSIFICATION ---
+                if swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20:
+                    action_signal = "🟢 STRONG BUY (Breakout)"
+                elif swing_composite >= 60 and curr_price >= ema_20:
+                    action_signal = "🟡 BUY / PULLBACK"
+                elif swing_composite >= 40:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
-                    action_signal = "🔴 NO SETUP"
+                    action_signal = "🔴 AVOID / WEAK"
 
                 change_display = f"{'+' if price_change_pct >= 0 else ''}{price_change_pct:.2f}%"
 
@@ -1279,7 +1280,7 @@ if not df_raw.empty:
                 except Exception as e:
                     st.error(f"Failed to restore backup: {e}")
 
-        # Always read the current active portfolio
+        # Always read active portfolio
         active_portfolio = st.session_state.get("paper_portfolio", [])
 
         with col_dl:

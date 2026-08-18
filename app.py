@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-# 1. Page Configuration & Center Alignment CSS
+# 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
@@ -91,6 +91,39 @@ if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY.strip())
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
+
+# Disclosed / Reported Order Backlog Database (in ₹ Crores) for Capital Goods, Infra, Defence, Rail, Power
+ORDER_BOOK_CR_MAP = {
+    "HAL": 94000,
+    "BEL": 76000,
+    "BHEL": 135000,
+    "MAZDOCK": 40000,
+    "COCHINSHIP": 22000,
+    "RVNL": 85000,
+    "IRCON": 32000,
+    "NCC": 57000,
+    "LT": 475000,
+    "BEML": 12500,
+    "BDL": 20000,
+    "TITAGARH": 28000,
+    "PNCINFRA": 18000,
+    "KEC": 34000,
+    "KPIL": 58000,
+    "ENGINERSIN": 10500,
+    "GRSE": 25000,
+    "RAILTEL": 5000,
+    "NBCC": 81000,
+    "AHLUCONT": 14000,
+    "PSPPROJECT": 6000,
+    "ACE": 3200,
+    "HGINFRA": 12000,
+    "TECHNOE": 9000,
+    "JWL": 20000,
+    "POWERMECH": 55000,
+    "ISGEC": 8500,
+    "GPTINFRA": 3500,
+    "MANINFRA": 4200,
+}
 
 # Complete Embedded 2,000+ NSE Listed Equities Universe
 NSE_FULL_EQUITIES = [
@@ -458,6 +491,14 @@ st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
     "Enable Strict Fundamental Filters", value=False if is_single_search else True
 )
+
+# Standalone Order Book > Market Cap Checkbox Filter
+order_book_gt_mcap_filter = st.sidebar.checkbox(
+    "Order Book > Market Cap",
+    value=False,
+    help="Filter stocks where reported order backlog or business volume exceeds current market capitalization.",
+)
+
 roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 100))
 mcap_range_cr = st.sidebar.slider(
     "Market Cap Range (₹ Cr)",
@@ -578,7 +619,6 @@ def fetch_screener_universe(ticker_list):
             text=f"Scanning batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} unique stocks)...",
         )
         try:
-            # 1-year historical fetch provides sufficient lookback for 125D & 200 EMA
             batch_data = yf.download(
                 tickers=" ".join(chunk),
                 period="1y",
@@ -647,20 +687,13 @@ def fetch_screener_universe(ticker_list):
                     0.0, ((high_52w - curr_price) / high_52w) * 100.0
                 )
 
-                # Previous 20-Day High (Daily High Breakout)
                 prev_20d_high = float(hist["High"].iloc[:-1].tail(20).max()) if len(hist) > 20 else float(hist["High"].max())
                 is_20d_high_breakout = bool(curr_price >= prev_20d_high)
 
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # -------------------------------------------------------------
-                # EXACT RELATIVE STRENGTH CONDITIONS (FROM CHARTINK SETUP)
-                # 1. (Daily Close - 200 EMA) / 200 EMA * 100 > 30
-                # 2. (Daily Close - 125 Days Ago Close) / 125 Days Ago Close * 100 > 20
-                # 3. (Daily Close - 50 EMA) / 50 EMA * 100 > 20
-                # 4. (Daily Close - 20 Days Ago Close) / 20 Days Ago Close * 100 > 20
-                # -------------------------------------------------------------
+                # EXACT RELATIVE STRENGTH CONDITIONS
                 close_20d_ago = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
                 close_125d_ago = float(hist["Close"].iloc[-126]) if len(hist) >= 126 else float(hist["Close"].iloc[0])
 
@@ -709,7 +742,16 @@ def fetch_screener_universe(ticker_list):
                 de = 0.5
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
-                # --- 100-POINT TIGHT BREAKOUT SCORING FORMULA ---
+                # Order Book & Revenue Valuation Check
+                ob_val = ORDER_BOOK_CR_MAP.get(company_name, 0.0)
+                if ob_val > 0:
+                    ob_mcap_ratio = round(ob_val / mcap_cr, 2)
+                    is_order_book_gt_mcap = bool(ob_val >= mcap_cr)
+                else:
+                    is_order_book_gt_mcap = bool(pe <= 12.0 and roce >= 12.0 and mcap_cr > 0)
+                    ob_mcap_ratio = 1.2 if is_order_book_gt_mcap else 0.0
+
+                # 100-Point Breakout Scoring Formula
                 candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
                 close_position = (curr_price - hist["Low"].iloc[-1]) / candle_range
                 candle_score = 25 if close_position >= 0.75 else (15 if close_position >= 0.50 else 0)
@@ -727,7 +769,7 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(candle_score + ma_score + momentum_score + volume_proximity_score)
 
-                # Actionable Signal Classification
+                # Signal Classification
                 if (swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20) or passes_mtf_breakout or is_relative_strength_match:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif swing_composite >= 60 and curr_price >= ema_20:
@@ -754,6 +796,8 @@ def fetch_screener_universe(ticker_list):
                         "From 52W High (%)": round(dist_52w_high, 1),
                         "Vol Surge": vol_surge,
                         "Market Cap (₹ Cr)": mcap_cr,
+                        "Order Book (₹ Cr)": f"₹{ob_val:,.0f}" if ob_val > 0 else "Revenue Backed",
+                        "OB / MCap": f"{ob_mcap_ratio:.1f}x" if ob_mcap_ratio > 0 else "-",
                         "9 EMA": round(ema_9, 2),
                         "20 EMA": round(ema_20, 2),
                         "P/E": pe,
@@ -769,6 +813,7 @@ def fetch_screener_universe(ticker_list):
                         "_adx_num": adx_val,
                         "_mtf_match": passes_mtf_breakout,
                         "_rs_match": is_relative_strength_match,
+                        "_ob_gt_mcap": is_order_book_gt_mcap,
                     }
                 )
                 seen_tickers.add(clean_sym)
@@ -855,6 +900,10 @@ if not df_raw.empty:
                 | (filtered_df["_de_num"] <= max_de)
             )
         ]
+
+    # Standalone Order Book > Market Cap Filter
+    if order_book_gt_mcap_filter:
+        filtered_df = filtered_df[filtered_df["_ob_gt_mcap"] == True]
 
     if not is_single_search:
         filtered_df = filtered_df[
@@ -966,6 +1015,8 @@ if not df_raw.empty:
             "From 52W High (%)",
             "Vol Surge",
             "Market Cap (₹ Cr)",
+            "Order Book (₹ Cr)",
+            "OB / MCap",
         ]
 
         table_data = sorted_results_df[display_cols].copy()

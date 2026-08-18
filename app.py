@@ -709,10 +709,12 @@ if not df_raw.empty:
 
                 st.subheader("🤖 AI Investment Thesis")
 
-                if selected_stock in st.session_state.ai_analysis_cache:
-                    st.markdown(
-                        st.session_state.ai_analysis_cache[selected_stock]
-                    )
+                if "ai_analysis_cache" not in st.session_state:
+    st.session_state.ai_analysis_cache = {}
+
+cached_thesis = st.session_state.ai_analysis_cache.get(selected_stock)
+if cached_thesis:
+    st.markdown(cached_thesis)
 
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:

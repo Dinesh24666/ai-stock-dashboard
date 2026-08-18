@@ -93,14 +93,6 @@ if GEMINI_API_KEY:
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
 
-# Sidebar Cache Reset Button
-if st.sidebar.button("🔄 Clear Cache & Reset"):
-    st.cache_data.clear()
-    st.session_state["ai_analysis_cache"] = {}
-    st.session_state["screener_data"] = pd.DataFrame()
-    gc.collect()
-    st.rerun()
-
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
@@ -140,7 +132,7 @@ def get_all_nse_symbols():
     unique_symbols = set()
     for url in urls:
         try:
-            resp = requests.get(url, timeout=6)
+            resp = requests.get(url, timeout=4)
             if resp.status_code == 200:
                 lines = [l.strip().split(",") for l in resp.text.split("\n") if l.strip()]
                 for row in lines:
@@ -189,7 +181,7 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=min(600, total_found),
+        value=min(500, total_found),
         step=25,
         help="Slide right to scan more stocks across the NSE universe.",
     )
@@ -293,7 +285,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
-# 4. Memory-Efficient Chunked Batch Fetcher Engine
+# 4. Memory-Safe Chunked Batch Fetcher
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -301,9 +293,9 @@ def fetch_screener_universe(ticker_list):
 
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
-    progress_bar = st.progress(0, text="Downloading market data...")
+    progress_bar = st.progress(0, text="Fetching market data...")
 
-    chunk_size = 40
+    chunk_size = 50
     chunks = [
         unique_tickers[i : i + chunk_size]
         for i in range(0, total, chunk_size)
@@ -315,10 +307,9 @@ def fetch_screener_universe(ticker_list):
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress(
             (c_idx + 1) / len(chunks),
-            text=f"Analyzing {min((c_idx+1)*chunk_size, total)}/{total} stocks...",
+            text=f"Scanning batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...",
         )
         try:
-            # 6-month download saves 50% RAM and prevents Streamlit Cloud memory crash
             batch_data = yf.download(
                 tickers=" ".join(chunk),
                 period="6mo",
@@ -407,7 +398,6 @@ def fetch_screener_universe(ticker_list):
                 de = 0.5
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
-                # Pure Short-Term Momentum Breakout Scoring
                 rsi_momentum_score = (
                     40 if 55.0 <= rsi_val <= 75.0
                     else 25 if 50.0 <= rsi_val < 55.0 or 75.0 < rsi_val <= 80.0
@@ -465,7 +455,6 @@ def fetch_screener_universe(ticker_list):
             except Exception:
                 continue
 
-        # Immediate garbage collection per chunk to release container memory
         del batch_data
         gc.collect()
 
@@ -503,19 +492,35 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-# Trigger scanner computation safely
-if st.session_state["screener_data"].empty or is_single_search:
-    df_raw = fetch_screener_universe(tickers_to_scan)
-    st.session_state["screener_data"] = df_raw
+# Sidebar Action Buttons
+scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
+if st.sidebar.button("🔄 Clear Cache & Reset", use_container_width=True):
+    st.cache_data.clear()
+    st.session_state["ai_analysis_cache"] = {}
+    st.session_state["screener_data"] = pd.DataFrame()
+    gc.collect()
+    st.rerun()
+
+# Run screener when triggered or on initial single search
+if scan_button or (is_single_search and st.session_state["screener_data"].empty):
+    with st.spinner("Analyzing universe..."):
+        df_raw = fetch_screener_universe(tickers_to_scan)
+        st.session_state["screener_data"] = df_raw
 else:
     df_raw = st.session_state["screener_data"]
+
+# If first time loading and empty, initialize with top 50 quick load
+if df_raw.empty and not is_single_search:
+    with st.spinner("Loading initial stock basket..."):
+        df_raw = fetch_screener_universe(tickers_to_scan[:50])
+        st.session_state["screener_data"] = df_raw
 
 if "selected_ticker" not in st.session_state:
     st.session_state["selected_ticker"] = (
         df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "ACE.NS"
     )
 
-# 5. Filtering Engine
+# 5. Filtering & Rendering
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
@@ -1130,4 +1135,4 @@ if not df_raw.empty:
                 "No active paper trades. Use the order form above to enter trades with custom remarks & stop loss tracking."
             )
 else:
-    st.warning("No stocks passed the selected filter criteria.")
+    st.info("👈 Choose your settings in the sidebar and click **'🚀 Run Screener Scan'** to start scanning.")

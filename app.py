@@ -1083,3 +1083,30 @@ if not df_raw.empty:
             )
 else:
     st.warning("No stocks passed the selected filter criteria.")
+# Backup & Restore Bar
+        col_dl, col_up = st.columns([1, 1])
+        with col_dl:
+            if active_portfolio:
+                st.download_button(
+                    label="💾 Download Portfolio Backup (.json)",
+                    data=json.dumps(active_portfolio, indent=4),
+                    file_name="portfolio_backup.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+        with col_up:
+            uploaded_portfolio = st.file_uploader(
+                "📥 Restore Trades from Backup (.json)",
+                type=["json"],
+                label_visibility="collapsed",
+            )
+            if uploaded_portfolio is not None:
+                try:
+                    restored_data = json.load(uploaded_portfolio)
+                    if isinstance(restored_data, list):
+                        st.session_state["paper_portfolio"] = restored_data
+                        save_portfolio(restored_data)
+                        st.success("Portfolio successfully restored!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to restore backup: {e}")

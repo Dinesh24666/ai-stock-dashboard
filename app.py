@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-# 1. Page Configuration & Center-Aligned Table Styling
+# 1. Page Configuration & Center Alignment CSS
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
@@ -20,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for all dataframe columns and headers */
+    /* Full center alignment for all dataframe columns and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
@@ -489,11 +489,12 @@ min_adx = st.sidebar.slider(
 )
 max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 100)
 
-# Multi-Timeframe and Technical Alignment Selection
+# Moving Average Alignment Selection
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
         "Any Trend",
+        "Relative strength",
         "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)",
         "Price > Both 50 & 200 SMA",
         "Golden Cross (50 SMA > 200 SMA)",
@@ -577,9 +578,10 @@ def fetch_screener_universe(ticker_list):
             text=f"Scanning batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} unique stocks)...",
         )
         try:
+            # 1-year historical fetch provides sufficient lookback for 125D & 200 EMA
             batch_data = yf.download(
                 tickers=" ".join(chunk),
-                period="6mo",
+                period="1y",
                 interval="1d",
                 group_by="ticker",
                 threads=False,
@@ -627,6 +629,9 @@ def fetch_screener_universe(ticker_list):
 
                 ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
                 ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                ema_50 = float(hist["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
+                ema_200 = float(hist["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
+
                 sma_50 = (
                     float(hist["Close"].rolling(50).mean().iloc[-1])
                     if len(hist) >= 50
@@ -649,6 +654,23 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
+                # -------------------------------------------------------------
+                # EXACT RELATIVE STRENGTH CONDITIONS (FROM CHARTINK SETUP)
+                # 1. (Daily Close - 200 EMA) / 200 EMA * 100 > 30
+                # 2. (Daily Close - 125 Days Ago Close) / 125 Days Ago Close * 100 > 20
+                # 3. (Daily Close - 50 EMA) / 50 EMA * 100 > 20
+                # 4. (Daily Close - 20 Days Ago Close) / 20 Days Ago Close * 100 > 20
+                # -------------------------------------------------------------
+                close_20d_ago = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
+                close_125d_ago = float(hist["Close"].iloc[-126]) if len(hist) >= 126 else float(hist["Close"].iloc[0])
+
+                cond1_ema200_dist = ((curr_price - ema_200) / ema_200 * 100.0) > 30.0 if ema_200 > 0 else False
+                cond2_ret_125d = ((curr_price - close_125d_ago) / close_125d_ago * 100.0) > 20.0 if close_125d_ago > 0 else False
+                cond3_ema50_dist = ((curr_price - ema_50) / ema_50 * 100.0) > 20.0 if ema_50 > 0 else False
+                cond4_ret_20d = ((curr_price - close_20d_ago) / close_20d_ago * 100.0) > 20.0 if close_20d_ago > 0 else False
+
+                is_relative_strength_match = bool(cond1_ema200_dist and cond2_ret_125d and cond3_ema50_dist and cond4_ret_20d)
+
                 # Weekly Multi-Timeframe Trend Extraction
                 try:
                     weekly_series = hist["Close"].resample("W").last().dropna()
@@ -668,7 +690,6 @@ def fetch_screener_universe(ticker_list):
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
                 vol_surge_1_5x = bool(curr_vol >= (avg_vol_20 * 1.5))
 
-                # Chartink Multi-Timeframe Setup Match Condition
                 passes_mtf_breakout = bool(
                     weekly_bullish
                     and (curr_price >= ema_20)
@@ -689,21 +710,17 @@ def fetch_screener_universe(ticker_list):
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
                 # --- 100-POINT TIGHT BREAKOUT SCORING FORMULA ---
-                # 1. Price vs Candle Range (25 pts)
                 candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
                 close_position = (curr_price - hist["Low"].iloc[-1]) / candle_range
                 candle_score = 25 if close_position >= 0.75 else (15 if close_position >= 0.50 else 0)
 
-                # 2. Moving Average Alignment (25 pts)
                 full_bullish_stack = (curr_price > ema_20) and (ema_20 > sma_50) and (sma_50 > sma_200)
                 ma_score = 25 if full_bullish_stack else (15 if curr_price > ema_20 and ema_20 > sma_50 else (10 if curr_price > ema_9 else 0))
 
-                # 3. Momentum & ADX Trend (25 pts)
                 rsi_tight_score = 15 if 55.0 <= rsi_val <= 75.0 else (8 if 50.0 <= rsi_val < 55.0 else 0)
                 adx_tight_score = 10 if adx_val >= 22.0 else (5 if adx_val >= 18.0 else 0)
                 momentum_score = rsi_tight_score + adx_tight_score
 
-                # 4. Volume Surge & Proximity (25 pts)
                 vol_surge_score = 15 if vol_surge else 5
                 proximity_score = 10 if dist_52w_high <= 15.0 else (5 if dist_52w_high <= 25.0 else 0)
                 volume_proximity_score = vol_surge_score + proximity_score
@@ -711,7 +728,7 @@ def fetch_screener_universe(ticker_list):
                 swing_composite = float(candle_score + ma_score + momentum_score + volume_proximity_score)
 
                 # Actionable Signal Classification
-                if (swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20) or passes_mtf_breakout:
+                if (swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20) or passes_mtf_breakout or is_relative_strength_match:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif swing_composite >= 60 and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -751,6 +768,7 @@ def fetch_screener_universe(ticker_list):
                         "_mcap_num": mcap_cr,
                         "_adx_num": adx_val,
                         "_mtf_match": passes_mtf_breakout,
+                        "_rs_match": is_relative_strength_match,
                     }
                 )
                 seen_tickers.add(clean_sym)
@@ -848,7 +866,9 @@ if not df_raw.empty:
             & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
         ]
 
-        if sma_trend_filter == "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)":
+        if sma_trend_filter == "Relative strength":
+            filtered_df = filtered_df[filtered_df["_rs_match"] == True]
+        elif sma_trend_filter == "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)":
             filtered_df = filtered_df[filtered_df["_mtf_match"] == True]
         elif sma_trend_filter == "Price > Both 50 & 200 SMA":
             filtered_df = filtered_df[
@@ -1181,6 +1201,13 @@ if not df_raw.empty:
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
+        # Dynamic strategy remark based on active sidebar filter
+        selected_strategy_label = (
+            "Relative strength"
+            if sma_trend_filter == "Relative strength"
+            else ("Multi-Timeframe 20D Breakout" if sma_trend_filter == "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)" else "9/20 EMA Breakout Swing Setup")
+        )
+
         # 1. Order Placement Form
         with st.expander(
             "➕ Execute New Paper Trade (Manual SL & Trade Remarks)",
@@ -1238,7 +1265,7 @@ if not df_raw.empty:
             with col_sub2:
                 remarks = st.text_input(
                     "Trade Remarks / Strategy",
-                    value="Multi-Timeframe 20D Breakout"
+                    value=selected_strategy_label,
                 )
             with col_btn:
                 st.write("")
@@ -1263,7 +1290,7 @@ if not df_raw.empty:
                         st.session_state["paper_portfolio"] = []
                     st.session_state["paper_portfolio"].append(new_trade)
                     save_portfolio(st.session_state["paper_portfolio"])
-                    st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']}!")
+                    st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']} ({remarks.strip()})!")
                     st.rerun()
 
         # 2. Backup & Restore
@@ -1309,7 +1336,6 @@ if not df_raw.empty:
                 except Exception as e:
                     st.error(f"Failed to restore backup: {e}")
 
-        # Active Portfolio Reference
         active_portfolio = st.session_state.get("paper_portfolio", [])
 
         with col_dl:
@@ -1366,7 +1392,7 @@ if not df_raw.empty:
                 invested = float(pos.get("Invested (₹)", buy_p * qty))
                 sl = float(pos.get("SL (₹)", 0.0))
                 pos_date = str(pos.get("Date", date.today()))
-                pos_remarks = str(pos.get("Remarks", "Swing Trade"))
+                pos_remarks = str(pos.get("Remarks", "Relative strength"))
 
                 if sl > 0 and curr_p <= sl:
                     status = "🔴 SL Hit (Closed)"

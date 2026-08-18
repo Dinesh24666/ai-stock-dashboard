@@ -40,11 +40,12 @@ def save_portfolio(portfolio_data):
         st.error(f"Error saving portfolio: {e}")
 
 
+# Initialize session states safely
 if "paper_portfolio" not in st.session_state:
-    st.session_state.paper_portfolio = load_portfolio()
+    st.session_state["paper_portfolio"] = load_portfolio()
 
 if "ai_analysis_cache" not in st.session_state:
-    st.session_state.ai_analysis_cache = {}
+    st.session_state["ai_analysis_cache"] = {}
 
 # 2. Sidebar - API Key Configuration
 st.sidebar.header("🔑 API Setup")
@@ -66,10 +67,10 @@ if GEMINI_API_KEY:
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
 
-# Sidebar Cache Reset
+# Sidebar Cache Reset Button
 if st.sidebar.button("🔄 Clear Cache & Re-scan"):
     st.cache_data.clear()
-    st.session_state.ai_analysis_cache = {}
+    st.session_state["ai_analysis_cache"] = {}
     st.rerun()
 
 # Universe Presets
@@ -207,7 +208,6 @@ def get_nse_symbols(universe_type):
         else:
             url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
             df = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
-            # Filter only EQ series (regular equity shares)
             if "SERIES" in df.columns:
                 df = df[df["SERIES"] == "EQ"]
             return [f"{sym}.NS" for sym in df["SYMBOL"].dropna().unique()]
@@ -259,7 +259,7 @@ elif selected_universe in [
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Sidebar Filters
+# 3. Sidebar Quantitative & Technical Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
     "Enable Strict Fundamental Filters", value=True
@@ -312,7 +312,7 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. High-Speed Chunked Batch Fetcher
+# 4. Chunked Batch Fetcher Engine
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -321,7 +321,6 @@ def fetch_screener_universe(ticker_list):
     total = len(ticker_list)
     progress_bar = st.progress(0, text="Downloading market data in batches...")
 
-    # Download in chunks of 50 to prevent URL length limits and rate bans
     chunk_size = 50
     chunks = [
         ticker_list[i : i + chunk_size]
@@ -390,7 +389,6 @@ def fetch_screener_universe(ticker_list):
                 )
                 vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
 
-                # Estimate Market Cap via Volume-Price Liquidity model for speed
                 company_name = ticker.replace(".NS", "").replace(".BO", "")
                 mcap_cr = round(
                     max(100.0, (curr_price * avg_vol_20 * 180) / 1e7), 1
@@ -466,7 +464,7 @@ else:
     df_raw = pd.DataFrame()
 
 if "selected_ticker" not in st.session_state:
-    st.session_state.selected_ticker = (
+    st.session_state["selected_ticker"] = (
         df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "RELIANCE.NS"
     )
 
@@ -608,7 +606,7 @@ if not df_raw.empty:
         ):
             selected_row_idx = selection_event.selection.rows[0]
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
-            st.session_state.selected_ticker = f"{clicked_ticker_sym}.NS"
+            st.session_state["selected_ticker"] = f"{clicked_ticker_sym}.NS"
 
     # --- TAB 2: DEEP DIVE & CHART VIEW ---
     with tab_deepdive:
@@ -618,15 +616,16 @@ if not df_raw.empty:
             else df_raw["Raw_Ticker"].tolist()
         )
 
+        current_choice = st.session_state.get("selected_ticker", "RELIANCE.NS")
         default_index = (
-            stock_options.index(st.session_state.selected_ticker)
-            if st.session_state.selected_ticker in stock_options
+            stock_options.index(current_choice)
+            if current_choice in stock_options
             else 0
         )
         selected_stock = st.selectbox(
             "Selected Stock:", stock_options, index=default_index
         )
-        st.session_state.selected_ticker = selected_stock
+        st.session_state["selected_ticker"] = selected_stock
 
         if selected_stock:
             hist = get_single_stock_history(selected_stock)
@@ -709,12 +708,11 @@ if not df_raw.empty:
 
                 st.subheader("🤖 AI Investment Thesis")
 
-                if "ai_analysis_cache" not in st.session_state:
-    st.session_state.ai_analysis_cache = {}
-
-cached_thesis = st.session_state.ai_analysis_cache.get(selected_stock)
-if cached_thesis:
-    st.markdown(cached_thesis)
+                cached_thesis = st.session_state.get(
+                    "ai_analysis_cache", {}
+                ).get(selected_stock)
+                if cached_thesis:
+                    st.markdown(cached_thesis)
 
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:
@@ -764,7 +762,14 @@ if cached_thesis:
                                     model = genai.GenerativeModel(model_id)
                                     res = model.generate_content(prompt)
                                     if res and res.text:
-                                        st.session_state.ai_analysis_cache[
+                                        if (
+                                            "ai_analysis_cache"
+                                            not in st.session_state
+                                        ):
+                                            st.session_state[
+                                                "ai_analysis_cache"
+                                            ] = {}
+                                        st.session_state["ai_analysis_cache"][
                                             selected_stock
                                         ] = res.text
                                         st.markdown(res.text)
@@ -787,7 +792,7 @@ if cached_thesis:
                     f"Historical price data for {selected_stock} is temporarily unavailable."
                 )
 
-    # --- TAB 3: WATCHLIST & PAPER TRADING (LIVE AUTO-SYNC) ---
+    # --- TAB 3: WATCHLIST & PAPER TRADING ---
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
@@ -805,9 +810,12 @@ if cached_thesis:
                     if not df_raw.empty
                     else ["RELIANCE.NS"]
                 )
+                curr_sel = st.session_state.get(
+                    "selected_ticker", "RELIANCE.NS"
+                )
                 default_trade_idx = (
-                    available_tickers.index(st.session_state.selected_ticker)
-                    if st.session_state.selected_ticker in available_tickers
+                    available_tickers.index(curr_sel)
+                    if curr_sel in available_tickers
                     else 0
                 )
                 trade_stock = st.selectbox(
@@ -873,15 +881,18 @@ if cached_thesis:
                         "Invested (₹)": round(buy_price * quantity, 2),
                         "Raw_Ticker": raw_sym,
                     }
-                    st.session_state.paper_portfolio.append(new_trade)
-                    save_portfolio(st.session_state.paper_portfolio)
+                    if "paper_portfolio" not in st.session_state:
+                        st.session_state["paper_portfolio"] = []
+                    st.session_state["paper_portfolio"].append(new_trade)
+                    save_portfolio(st.session_state["paper_portfolio"])
                     st.success(
                         f"Executed buy for {quantity} shares of {new_trade['Ticker']} at ₹{buy_price}!"
                     )
                     st.rerun()
 
         # Portfolio Tracking
-        if st.session_state.paper_portfolio:
+        active_portfolio = st.session_state.get("paper_portfolio", [])
+        if active_portfolio:
             portfolio_rows = []
             open_invested = 0.0
             open_current_val = 0.0
@@ -892,7 +903,7 @@ if cached_thesis:
                 {
                     pos.get("Raw_Ticker")
                     or f"{pos.get('Ticker', 'RELIANCE')}.NS"
-                    for pos in st.session_state.paper_portfolio
+                    for pos in active_portfolio
                 }
             )
 
@@ -925,7 +936,7 @@ if cached_thesis:
             except Exception:
                 pass
 
-            for pos in st.session_state.paper_portfolio:
+            for pos in active_portfolio:
                 sym = pos.get(
                     "Raw_Ticker", f"{pos.get('Ticker', 'RELIANCE')}.NS"
                 )
@@ -1001,7 +1012,7 @@ if cached_thesis:
             )
 
             if st.button("🗑️ Reset / Clear All Trades"):
-                st.session_state.paper_portfolio = []
+                st.session_state["paper_portfolio"] = []
                 save_portfolio([])
                 st.rerun()
         else:

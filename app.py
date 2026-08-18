@@ -246,18 +246,27 @@ else:
 # 3. Quantitative & Technical Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
-    "Enable Strict Fundamental Filters", value=False
-)
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 60))
-mcap_range_cr = st.sidebar.slider(
-    "Market Cap Range (₹ Cr)",
-    0,
-    2000000,
-    (100, 2000000),
-    step=500,
-    help="Filter by market capitalization in ₹ Crores",
-)
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 2.5, step=0.1)
+# Strict Fundamental Filters
+    if apply_fund_filter:
+        filtered_df = filtered_df[
+            # ROCE Filter
+            (
+                filtered_df["_roce_num"].notna()
+                & (filtered_df["_roce_num"] >= roce_range[0])
+                & (filtered_df["_roce_num"] <= roce_range[1])
+            )
+            # Market Cap Filter (Strictly within range and removes N/A)
+            & (
+                filtered_df["_mcap_num"].notna()
+                & (filtered_df["_mcap_num"] >= mcap_range_cr[0])
+                & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
+            )
+            # Debt to Equity Filter
+            & (
+                filtered_df["_de_num"].isna()
+                | (filtered_df["_de_num"] <= max_de)
+            )
+        ]
 
 st.sidebar.header("📈 Technical Filters")
 rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (20, 85))

@@ -125,7 +125,6 @@ UNIVERSE_PRESETS = {
 
 @st.cache_data(ttl=86400)
 def get_all_nse_symbols():
-    # Direct raw GitHub mirrors of complete NSE Equity universes (2,000+ unique tickers)
     urls = [
         "https://raw.githubusercontent.com/yogeshnarang/Nifty-Index-Clustering/master/nse-indices-symbols.csv",
         "https://raw.githubusercontent.com/parismita/sharesbot/master/NSE-datasets-codes.csv",
@@ -133,7 +132,6 @@ def get_all_nse_symbols():
     ]
     
     unique_symbols = set()
-    
     for url in urls:
         try:
             resp = requests.get(url, timeout=6)
@@ -149,7 +147,6 @@ def get_all_nse_symbols():
         except Exception:
             continue
             
-    # Sort and guarantee clean uniqueness
     final_list = sorted(list(unique_symbols))
     return final_list if len(final_list) >= 500 else [
         "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
@@ -190,7 +187,6 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         step=25,
         help="Slide right to scan more stocks across the NSE universe.",
     )
-    # Strictly unique, no duplication
     tickers_to_scan = all_symbols[:scan_limit]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
@@ -215,8 +211,8 @@ st.sidebar.header("📈 Technical Filters")
 price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
     0,
-    5000,
-    (30, 5000),
+    50000,
+    (10, 50000),
     step=10,
     help="Filter stocks within a specific current share price band",
 )
@@ -297,7 +293,6 @@ def fetch_screener_universe(ticker_list):
     if not ticker_list:
         return pd.DataFrame()
 
-    # Strict Deduplication
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
     progress_bar = st.progress(0, text="Downloading market data in batches...")
@@ -547,7 +542,6 @@ if not df_raw.empty:
         if only_volume_surge:
             filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
-    # Ensure no duplicates in filtered dataset
     filtered_df = filtered_df.drop_duplicates(subset=["Ticker"]).reset_index(drop=True)
 
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
@@ -627,7 +621,6 @@ if not df_raw.empty:
 
         table_data = sorted_results_df[display_cols].copy()
 
-        # Center-aligned formatted values
         table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
         table_data["Composite Score"] = table_data["Composite Score"].apply(lambda x: f"{int(x)}" if pd.notna(x) else "-")
         table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
@@ -859,6 +852,7 @@ if not df_raw.empty:
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
+        # Order Placement Form
         with st.expander(
             "➕ Execute New Paper Trade (Manual SL & Trade Remarks)",
             expanded=True,
@@ -953,8 +947,36 @@ if not df_raw.empty:
                     )
                     st.rerun()
 
-        # Portfolio Tracking
+        # Backup & Restore Bar
         active_portfolio = st.session_state.get("paper_portfolio", [])
+        col_dl, col_up = st.columns([1, 1])
+        with col_dl:
+            if active_portfolio:
+                st.download_button(
+                    label="💾 Download Portfolio Backup (.json)",
+                    data=json.dumps(active_portfolio, indent=4),
+                    file_name="portfolio_backup.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+        with col_up:
+            uploaded_portfolio = st.file_uploader(
+                "📥 Restore Trades from Backup (.json)",
+                type=["json"],
+                label_visibility="collapsed",
+            )
+            if uploaded_portfolio is not None:
+                try:
+                    restored_data = json.load(uploaded_portfolio)
+                    if isinstance(restored_data, list):
+                        st.session_state["paper_portfolio"] = restored_data
+                        save_portfolio(restored_data)
+                        st.success("Portfolio successfully restored!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to restore backup: {e}")
+
+        # Portfolio Tracking
         if active_portfolio:
             portfolio_rows = []
             open_invested = 0.0
@@ -1083,30 +1105,3 @@ if not df_raw.empty:
             )
 else:
     st.warning("No stocks passed the selected filter criteria.")
-# Backup & Restore Bar
-        col_dl, col_up = st.columns([1, 1])
-        with col_dl:
-            if active_portfolio:
-                st.download_button(
-                    label="💾 Download Portfolio Backup (.json)",
-                    data=json.dumps(active_portfolio, indent=4),
-                    file_name="portfolio_backup.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
-        with col_up:
-            uploaded_portfolio = st.file_uploader(
-                "📥 Restore Trades from Backup (.json)",
-                type=["json"],
-                label_visibility="collapsed",
-            )
-            if uploaded_portfolio is not None:
-                try:
-                    restored_data = json.load(uploaded_portfolio)
-                    if isinstance(restored_data, list):
-                        st.session_state["paper_portfolio"] = restored_data
-                        save_portfolio(restored_data)
-                        st.success("Portfolio successfully restored!")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to restore backup: {e}")

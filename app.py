@@ -40,7 +40,7 @@ def save_portfolio(portfolio_data):
         st.error(f"Error saving portfolio: {e}")
 
 
-# Initialize persistent state
+# Initialize session states
 if "paper_portfolio" not in st.session_state:
     st.session_state.paper_portfolio = load_portfolio()
 
@@ -225,20 +225,27 @@ if selected_universe == "🔍 Search Specific Stocks":
         t if (t.endswith(".NS") or t.endswith(".BO")) else f"{t}.NS"
         for t in raw_tickers
     ]
-elif selected_universe in ["Nifty 500 (Broad Market)", "All NSE Stocks (Full Listed)"]:
-    preset_type = "NIFTY_500" if selected_universe == "Nifty 500 (Broad Market)" else "ALL_NSE"
+elif selected_universe in [
+    "Nifty 500 (Broad Market)",
+    "All NSE Stocks (Full Listed)",
+]:
+    preset_type = (
+        "NIFTY_500"
+        if selected_universe == "Nifty 500 (Broad Market)"
+        else "ALL_NSE"
+    )
     all_symbols = get_nse_symbols(preset_type)
-    
-    # If "All NSE Stocks" is chosen, allow sliding up to the full list length (2000+)
-    max_scan = len(all_symbols) if preset_type == "ALL_NSE" else min(500, len(all_symbols))
-    
+    max_scan = (
+        len(all_symbols)
+        if preset_type == "ALL_NSE"
+        else min(500, len(all_symbols))
+    )
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
         min_value=10,
         max_value=max_scan,
-        value=min(200, max_scan),
-        step=25,
-        help="Slide right to scan more stocks (scanning all 2000+ stocks will take a few minutes on initial load)."
+        value=min(500, max_scan),
+        step=50,
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -249,7 +256,7 @@ st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
     "Enable Strict Fundamental Filters", value=True
 )
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 60))
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 80))
 mcap_range_cr = st.sidebar.slider(
     "Market Cap Range (₹ Cr)",
     0,
@@ -298,22 +305,52 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. Data Fetching
-@st.cache_data(ttl=3600)
+# 4. Multi-Threaded Batch Downloader Engine
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_screener_universe(ticker_list):
-    rows = []
-    progress_bar = st.progress(0, text="Fetching stock metrics...")
-    total = len(ticker_list)
+    if not ticker_list:
+        return pd.DataFrame()
 
-    for idx, ticker in enumerate(ticker_list):
-        progress_bar.progress(
-            (idx + 1) / total, text=f"Analyzing {ticker} ({idx+1}/{total})..."
+    total = len(ticker_list)
+    progress_bar = st.progress(0, text="Fetching bulk price data...")
+
+    try:
+        data = yf.download(
+            tickers=" ".join(ticker_list),
+            period="1y",
+            interval="1d",
+            group_by="ticker",
+            threads=True,
+            auto_adjust=True,
+            progress=False,
         )
+    except Exception:
+        data = None
+
+    rows = []
+    for idx, ticker in enumerate(ticker_list):
+        if idx % 20 == 0 or idx == total - 1:
+            progress_bar.progress(
+                (idx + 1) / total,
+                text=f"Screening stock metrics: {idx+1}/{total}...",
+            )
+
         try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="1y")
-            if hist is None or hist.empty or len(hist) < 20:
-                continue
+            hist = pd.DataFrame()
+            if data is not None and not data.empty:
+                if total == 1:
+                    hist = data
+                else:
+                    if ticker in data.columns.levels[0]:
+                        hist = data[ticker].dropna(how="all")
+
+            if hist.empty or len(hist) < 20:
+                t = yf.Ticker(ticker)
+                hist = t.history(period="1y")
+                if hist.empty or len(hist) < 20:
+                    continue
+            else:
+                t = yf.Ticker(ticker)
 
             curr_price = float(hist["Close"].iloc[-1])
             sma_50 = (
@@ -339,33 +376,40 @@ def fetch_screener_universe(ticker_list):
             )
             vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
 
-            info = {}
-            try:
-                info = t.get_info()
-            except Exception:
-                info = {}
-
-            company_name = (
-                info.get("shortName")
-                or info.get("longName")
-                or ticker.replace(".NS", "")
-            )
-            sector = info.get("sector") or info.get("industry") or "Diversified"
-
+            company_name = ticker.replace(".NS", "").replace(".BO", "")
+            sector = "Diversified"
             raw_mcap = None
+
             try:
                 raw_mcap = t.fast_info.market_cap
             except Exception:
-                raw_mcap = info.get("marketCap")
+                pass
+
+            info = {}
+            if raw_mcap is None or raw_mcap == 0:
+                try:
+                    info = t.info
+                    raw_mcap = info.get("marketCap")
+                    company_name = (
+                        info.get("shortName")
+                        or info.get("longName")
+                        or company_name
+                    )
+                    sector = (
+                        info.get("sector")
+                        or info.get("industry")
+                        or "Diversified"
+                    )
+                except Exception:
+                    pass
+
             mcap_cr = (
                 round((raw_mcap / 1e7), 1)
                 if raw_mcap and raw_mcap > 0
                 else np.nan
             )
-
             pe_val = info.get("trailingPE") or info.get("forwardPE")
             pe = round(float(pe_val), 1) if pe_val and pe_val > 0 else np.nan
-
             de_val = info.get("debtToEquity")
             de = (
                 round(float(de_val) / 100.0, 2)
@@ -373,20 +417,8 @@ def fetch_screener_universe(ticker_list):
                 else np.nan
             )
 
-            ebit = info.get("ebitda") or (
-                (info.get("operatingMargins") or 0.12)
-                * (info.get("totalRevenue") or 1)
-            )
-            tot_assets = info.get("totalAssets") or (raw_mcap or 1)
-            curr_liab = info.get("currentLiabilities") or (tot_assets * 0.3)
-            cap_employed = max(1.0, tot_assets - curr_liab)
-
-            if ebit and cap_employed > 0:
-                roce = round((float(ebit) / float(cap_employed)) * 100.0, 1)
-                roce = min(150.0, max(-50.0, roce))
-            else:
-                op_margin = (info.get("operatingMargins") or 0.12) * 100.0
-                roce = round(op_margin * 1.2, 1)
+            op_margin = (info.get("operatingMargins") or 0.14) * 100.0
+            roce = round(op_margin * 1.2, 1)
 
             safe_roce = roce if not np.isnan(roce) else 12.0
             safe_de = de if not np.isnan(de) else 0.8
@@ -456,7 +488,7 @@ if "selected_ticker" not in st.session_state:
         df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "RELIANCE.NS"
     )
 
-# 5. Filtering Logic
+# 5. Filtering Engine
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
@@ -479,7 +511,7 @@ if not df_raw.empty:
             )
         ]
 
-    # Technical Filters
+    # Technical Range Filters
     filtered_df = filtered_df[
         (filtered_df["RSI (14)"] >= rsi_range[0])
         & (filtered_df["RSI (14)"] <= rsi_range[1])
@@ -508,7 +540,7 @@ if not df_raw.empty:
     if only_volume_surge:
         filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
-    # Main Tabs
+    # Main Interface Tabs
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
         [
             "📊 Screener Results",
@@ -607,7 +639,7 @@ if not df_raw.empty:
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
             st.session_state.selected_ticker = f"{clicked_ticker_sym}.NS"
 
-    # --- TAB 2: CHART VIEW & AI THESIS ---
+    # --- TAB 2: DEEP DIVE & CHART VIEW ---
     with tab_deepdive:
         stock_options = (
             sorted_results_df["Raw_Ticker"].tolist()
@@ -738,7 +770,6 @@ if not df_raw.empty:
                             success = False
                             error_logs = []
 
-                            # Dynamically discover available models supported by this key
                             available_models = []
                             try:
                                 for m in genai.list_models():
@@ -898,7 +929,6 @@ if not df_raw.empty:
             unrealised_pnl_total = 0.0
             realised_pnl_total = 0.0
 
-            # Batch fetch live prices for all unique held stocks
             held_symbols = list(
                 {
                     pos.get("Raw_Ticker")
@@ -909,7 +939,6 @@ if not df_raw.empty:
 
             live_prices_map = {}
             for sym in held_symbols:
-                # Check screener df_raw first
                 m_row = (
                     df_raw[df_raw["Raw_Ticker"] == sym]
                     if not df_raw.empty
@@ -1012,3 +1041,5 @@ if not df_raw.empty:
             st.info(
                 "No active paper trades. Use the order form above to enter trades with custom remarks & stop loss tracking."
             )
+else:
+    st.warning("No stocks passed the selected filter criteria.")

@@ -9,10 +9,10 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-# 1. Page Config
+# 1. Page Configuration
 st.set_page_config(
-    page_title="Indian Market AI Screener & Paper Trader",
-    page_icon="📈",
+    page_title="Indian Market AI Stock Screener & Paper Trading",
+    page_icon="⚡",
     layout="wide",
 )
 
@@ -47,7 +47,7 @@ if "paper_portfolio" not in st.session_state:
 if "ai_analysis_cache" not in st.session_state:
     st.session_state.ai_analysis_cache = {}
 
-# 2. Sidebar - API Key
+# 2. Sidebar - API Key Configuration
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -62,7 +62,10 @@ else:
     )
 
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY.strip())
+    try:
+        genai.configure(api_key=GEMINI_API_KEY.strip())
+    except Exception as e:
+        st.sidebar.error(f"Error configuring API: {e}")
 
 # Universe Presets
 NIFTY_50 = [
@@ -212,7 +215,7 @@ selected_universe = st.sidebar.selectbox(
 
 if selected_universe == "🔍 Search Specific Stocks":
     search_query = st.sidebar.text_input(
-        "Search Stock Symbols (e.g. RELIANCE, TCS, LTF)",
+        "Search Stock Symbols (comma-separated)",
         "RELIANCE, LTF, ICICIBANK, TATAMOTORS, HAL",
     )
     raw_tickers = [
@@ -236,37 +239,28 @@ elif selected_universe in [
         "Number of Stocks to Scan",
         10,
         min(500, len(all_symbols)),
-        50,
+        100,
         step=10,
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Quantitative & Technical Filters
+# 3. Sidebar Quantitative & Technical Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
-# Strict Fundamental Filters
-    if apply_fund_filter:
-        filtered_df = filtered_df[
-            # ROCE Filter
-            (
-                filtered_df["_roce_num"].notna()
-                & (filtered_df["_roce_num"] >= roce_range[0])
-                & (filtered_df["_roce_num"] <= roce_range[1])
-            )
-            # Market Cap Filter (Strictly within range and removes N/A)
-            & (
-                filtered_df["_mcap_num"].notna()
-                & (filtered_df["_mcap_num"] >= mcap_range_cr[0])
-                & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
-            )
-            # Debt to Equity Filter
-            & (
-                filtered_df["_de_num"].isna()
-                | (filtered_df["_de_num"] <= max_de)
-            )
-        ]
+    "Enable Strict Fundamental Filters", value=True
+)
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 60))
+mcap_range_cr = st.sidebar.slider(
+    "Market Cap Range (₹ Cr)",
+    0,
+    2000000,
+    (1000, 2000000),
+    step=500,
+    help="Filter by minimum and maximum market capitalization in ₹ Crores",
+)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 2.0, step=0.1)
 
 st.sidebar.header("📈 Technical Filters")
 rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (20, 85))
@@ -286,7 +280,7 @@ only_volume_surge = st.sidebar.checkbox(
 )
 
 
-# Wilder's Exponential Smoothing RSI
+# Wilder's RSI Calculation
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -306,7 +300,7 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. Cached Batch Fetcher
+# 4. Data Fetching
 @st.cache_data(ttl=3600)
 def fetch_screener_universe(ticker_list):
     rows = []
@@ -434,7 +428,7 @@ def fetch_screener_universe(ticker_list):
                     "Raw_Ticker": ticker,
                     "_roce_num": roce if not np.isnan(roce) else np.nan,
                     "_de_num": de if not np.isnan(de) else np.nan,
-                    "_mcap_num": mcap_cr if not np.isnan(mcap_cr) else 0.0,
+                    "_mcap_num": mcap_cr if not np.isnan(mcap_cr) else np.nan,
                 }
             )
         except Exception:
@@ -464,25 +458,22 @@ if "selected_ticker" not in st.session_state:
         df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "RELIANCE.NS"
     )
 
-# 5. Apply User Filters
+# 5. Filtering Logic
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
+    # Strict Fundamental Filters
     if apply_fund_filter:
         filtered_df = filtered_df[
             (
-                filtered_df["_roce_num"].isna()
-                | (
-                    (filtered_df["_roce_num"] >= roce_range[0])
-                    & (filtered_df["_roce_num"] <= roce_range[1])
-                )
+                filtered_df["_roce_num"].notna()
+                & (filtered_df["_roce_num"] >= roce_range[0])
+                & (filtered_df["_roce_num"] <= roce_range[1])
             )
             & (
-                filtered_df["_mcap_num"].isna()
-                | (
-                    (filtered_df["_mcap_num"] >= mcap_range_cr[0])
-                    & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
-                )
+                filtered_df["_mcap_num"].notna()
+                & (filtered_df["_mcap_num"] >= mcap_range_cr[0])
+                & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
             )
             & (
                 filtered_df["_de_num"].isna()
@@ -490,12 +481,14 @@ if not df_raw.empty:
             )
         ]
 
+    # Technical Filters
     filtered_df = filtered_df[
         (filtered_df["RSI (14)"] >= rsi_range[0])
         & (filtered_df["RSI (14)"] <= rsi_range[1])
         & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
     ]
 
+    # Trend Alignment Filters
     if sma_trend_filter == "Price > 50 SMA":
         filtered_df = filtered_df[
             filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
@@ -517,6 +510,7 @@ if not df_raw.empty:
     if only_volume_surge:
         filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
+    # Main Tabs
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
         [
             "📊 Screener Results",
@@ -615,7 +609,7 @@ if not df_raw.empty:
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
             st.session_state.selected_ticker = f"{clicked_ticker_sym}.NS"
 
-    # --- TAB 2: DEEP DIVE & CHART VIEW ---
+    # --- TAB 2: CHART VIEW & AI THESIS ---
     with tab_deepdive:
         stock_options = (
             sorted_results_df["Raw_Ticker"].tolist()
@@ -714,7 +708,6 @@ if not df_raw.empty:
 
                 st.subheader("🤖 AI Investment Thesis")
 
-                # Display cached thesis if exists
                 if selected_stock in st.session_state.ai_analysis_cache:
                     st.markdown(
                         st.session_state.ai_analysis_cache[selected_stock]
@@ -747,7 +740,7 @@ if not df_raw.empty:
                             success = False
                             error_logs = []
 
-                            # Query Gemini for valid models available on this API key
+                            # Dynamically discover available models supported by this key
                             available_models = []
                             try:
                                 for m in genai.list_models():
@@ -759,7 +752,6 @@ if not df_raw.empty:
                             except Exception as e:
                                 error_logs.append(f"Model listing error: {e}")
 
-                            # Fallback candidate list if listing is restricted
                             if not available_models:
                                 available_models = [
                                     "models/gemini-1.5-flash",

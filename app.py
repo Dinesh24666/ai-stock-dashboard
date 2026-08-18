@@ -226,7 +226,7 @@ UNIVERSE_PRESETS = {
 }
 
 
-def @st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)
 def get_nse_symbols(universe_type):
     # Try fetching the official complete NSE equity directory
     sources = [

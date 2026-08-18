@@ -1,4 +1,5 @@
 from datetime import date
+import gc
 import json
 import os
 import time
@@ -69,6 +70,9 @@ if "paper_portfolio" not in st.session_state:
 if "ai_analysis_cache" not in st.session_state:
     st.session_state["ai_analysis_cache"] = {}
 
+if "screener_data" not in st.session_state:
+    st.session_state["screener_data"] = pd.DataFrame()
+
 # 2. Sidebar - API Key Configuration
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
@@ -90,9 +94,11 @@ if GEMINI_API_KEY:
         st.sidebar.error(f"Error configuring API: {e}")
 
 # Sidebar Cache Reset Button
-if st.sidebar.button("🔄 Clear Cache & Re-scan"):
+if st.sidebar.button("🔄 Clear Cache & Reset"):
     st.cache_data.clear()
     st.session_state["ai_analysis_cache"] = {}
+    st.session_state["screener_data"] = pd.DataFrame()
+    gc.collect()
     st.rerun()
 
 UNIVERSE_PRESETS = {
@@ -183,7 +189,7 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=min(1000, total_found),
+        value=min(600, total_found),
         step=25,
         help="Slide right to scan more stocks across the NSE universe.",
     )
@@ -207,11 +213,12 @@ mcap_range_cr = st.sidebar.slider(
 )
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, step=0.1)
 
+st.sidebar.header("📈 Technical Filters")
 price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
-    min_value=0,
-    max_value=5000,
-    value=(30, 5000),
+    0,
+    10000,
+    (30, 5000),
     step=10,
     help="Filter stocks within a specific current share price band",
 )
@@ -286,7 +293,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
-# 4. Chunked Batch Fetcher Engine
+# 4. Memory-Efficient Chunked Batch Fetcher Engine
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -294,39 +301,39 @@ def fetch_screener_universe(ticker_list):
 
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
-    progress_bar = st.progress(0, text="Downloading market data in batches...")
+    progress_bar = st.progress(0, text="Downloading market data...")
 
-    chunk_size = 50
+    chunk_size = 40
     chunks = [
         unique_tickers[i : i + chunk_size]
         for i in range(0, total, chunk_size)
     ]
-    all_dfs = []
+
+    rows = []
+    seen_tickers = set()
 
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress(
             (c_idx + 1) / len(chunks),
-            text=f"Fetching batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} unique stocks)...",
+            text=f"Analyzing {min((c_idx+1)*chunk_size, total)}/{total} stocks...",
         )
         try:
+            # 6-month download saves 50% RAM and prevents Streamlit Cloud memory crash
             batch_data = yf.download(
                 tickers=" ".join(chunk),
-                period="1y",
+                period="6mo",
                 interval="1d",
                 group_by="ticker",
                 threads=True,
                 auto_adjust=True,
                 progress=False,
             )
-            if batch_data is not None and not batch_data.empty:
-                all_dfs.append((chunk, batch_data))
         except Exception:
             continue
 
-    rows = []
-    seen_tickers = set()
+        if batch_data is None or batch_data.empty:
+            continue
 
-    for chunk, batch_data in all_dfs:
         for ticker in chunk:
             clean_sym = ticker.replace(".NS", "").replace(".BO", "")
             if clean_sym in seen_tickers:
@@ -350,10 +357,7 @@ def fetch_screener_universe(ticker_list):
                         hist = batch_data[ticker].dropna(how="all")
 
                 if hist.empty or len(hist) < 20:
-                    t = yf.Ticker(ticker)
-                    hist = t.history(period="1y")
-                    if hist.empty or len(hist) < 20:
-                        continue
+                    continue
 
                 curr_price = float(hist["Close"].iloc[-1])
                 prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else curr_price
@@ -461,6 +465,10 @@ def fetch_screener_universe(ticker_list):
             except Exception:
                 continue
 
+        # Immediate garbage collection per chunk to release container memory
+        del batch_data
+        gc.collect()
+
     progress_bar.empty()
     df_result = pd.DataFrame(rows)
     if not df_result.empty:
@@ -495,10 +503,12 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-if tickers_to_scan:
+# Trigger scanner computation safely
+if st.session_state["screener_data"].empty or is_single_search:
     df_raw = fetch_screener_universe(tickers_to_scan)
+    st.session_state["screener_data"] = df_raw
 else:
-    df_raw = pd.DataFrame()
+    df_raw = st.session_state["screener_data"]
 
 if "selected_ticker" not in st.session_state:
     st.session_state["selected_ticker"] = (

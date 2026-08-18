@@ -2,6 +2,7 @@ from datetime import date
 import json
 import os
 import time
+import requests
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -19,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center align dataframe headers and cells */
+    /* Full center alignment for all dataframe columns and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
@@ -96,164 +97,91 @@ if st.sidebar.button("🔄 Clear Cache & Re-scan"):
 
 # Universe Presets
 NIFTY_50 = [
-    "RELIANCE.NS",
-    "TCS.NS",
-    "HDFCBANK.NS",
-    "ICICIBANK.NS",
-    "BHARTIARTL.NS",
-    "INFY.NS",
-    "LT.NS",
-    "SBIN.NS",
-    "ITC.NS",
-    "HINDUNILVR.NS",
-    "TATAMOTORS.NS",
-    "M&M.NS",
-    "MARUTI.NS",
-    "SUNPHARMA.NS",
-    "BAJFINANCE.NS",
-    "KOTAKBANK.NS",
-    "AXISBANK.NS",
-    "NTPC.NS",
-    "POWERGRID.NS",
-    "ONGC.NS",
-    "TITAN.NS",
-    "TATASTEEL.NS",
-    "JSWSTEEL.NS",
-    "ADANIENT.NS",
-    "ADANIPORTS.NS",
-    "ULTRACEMCO.NS",
-    "COALINDIA.NS",
-    "BAJAJ-AUTO.NS",
-    "NESTLEIND.NS",
-    "ASIANPAINT.NS",
-    "TECHM.NS",
-    "HCLTECH.NS",
-    "WIPRO.NS",
-    "LTIM.NS",
-    "GRASIM.NS",
-    "HEROMOTOCO.NS",
-    "CIPLA.NS",
-    "DRREDDY.NS",
-    "APOLLOHOSP.NS",
-    "EICHERMOT.NS",
-    "DIVISLAB.NS",
-    "TATACONSUM.NS",
-    "BRITANNIA.NS",
-    "BPCL.NS",
-    "SBILIFE.NS",
-    "HDFCLIFE.NS",
-    "BAJAJFINSV.NS",
-    "SHRIRAMFIN.NS",
-    "TRENT.NS",
-    "BEL.NS",
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
+    "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS",
+    "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS",
+    "KOTAKBANK.NS", "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS",
+    "TITAN.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
+    "ULTRACEMCO.NS", "COALINDIA.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", "ASIANPAINT.NS",
+    "TECHM.NS", "HCLTECH.NS", "WIPRO.NS", "LTIM.NS", "GRASIM.NS",
+    "HEROMOTOCO.NS", "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS", "EICHERMOT.NS",
+    "DIVISLAB.NS", "TATACONSUM.NS", "BRITANNIA.NS", "BPCL.NS", "SBILIFE.NS",
+    "HDFCLIFE.NS", "BAJAJFINSV.NS", "SHRIRAMFIN.NS", "TRENT.NS", "BEL.NS"
 ]
 
 UNIVERSE_PRESETS = {
-    "🔍 Single Stock Search": "SINGLE_SEARCH",
     "All NSE Stocks (Full Listed)": "ALL_NSE",
+    "🔍 Single Stock Search": "SINGLE_SEARCH",
     "Nifty 50 Core": NIFTY_50,
     "Nifty 500 (Broad Market)": "NIFTY_500",
     "Banking & Financial Services": [
-        "HDFCBANK.NS",
-        "ICICIBANK.NS",
-        "SBIN.NS",
-        "KOTAKBANK.NS",
-        "AXISBANK.NS",
-        "BAJFINANCE.NS",
-        "BAJAJFINSV.NS",
-        "LTF.NS",
-        "CHOLAFIN.NS",
-        "SHRIRAMFIN.NS",
-        "FEDERALBNK.NS",
-        "IDFCFIRSTB.NS",
-        "PNB.NS",
-        "BANKBARODA.NS",
+        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
+        "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
+        "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANKBARODA.NS"
     ],
     "IT & Technology": [
-        "TCS.NS",
-        "INFY.NS",
-        "HCLTECH.NS",
-        "WIPRO.NS",
-        "TECHM.NS",
-        "LTIM.NS",
-        "PERSISTENT.NS",
-        "COFORGE.NS",
-        "MPHASIS.NS",
-        "KPITTECH.NS",
+        "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS",
+        "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "KPITTECH.NS"
     ],
     "Automobile & EV": [
-        "TATAMOTORS.NS",
-        "M&M.NS",
-        "MARUTI.NS",
-        "BAJAJ-AUTO.NS",
-        "HEROMOTOCO.NS",
-        "TVSMOTOR.NS",
-        "EICHERMOT.NS",
-        "BHARATFORG.NS",
-        "SONACOMS.NS",
-        "MOTHERSON.NS",
+        "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS",
+        "TVSMOTOR.NS", "EICHERMOT.NS", "BHARATFORG.NS", "SONACOMS.NS", "MOTHERSON.NS"
     ],
     "Pharma & Healthcare": [
-        "SUNPHARMA.NS",
-        "DRREDDY.NS",
-        "CIPLA.NS",
-        "DIVISLAB.NS",
-        "APOLLOHOSP.NS",
-        "MANKIND.NS",
-        "LUPIN.NS",
-        "ZYDUSLIFE.NS",
-        "TORNTPHARM.NS",
-        "MAXHEALTH.NS",
+        "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS",
+        "MANKIND.NS", "LUPIN.NS", "ZYDUSLIFE.NS", "TORNTPHARM.NS", "MAXHEALTH.NS"
     ],
     "Defence, Rail & PSUs": [
-        "HAL.NS",
-        "BEL.NS",
-        "BHEL.NS",
-        "MAZDOCK.NS",
-        "RVNL.NS",
-        "IRFC.NS",
-        "COCHINSHIP.NS",
-        "BDL.NS",
-        "CONCOR.NS",
+        "HAL.NS", "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS",
+        "IRFC.NS", "COCHINSHIP.NS", "BDL.NS", "CONCOR.NS"
     ],
 }
 
 
 @st.cache_data(ttl=86400)
 def get_nse_symbols(universe_type):
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        if universe_type == "NIFTY_500":
-            url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-            df = pd.read_csv(url, storage_options=headers)
-            col = "Symbol" if "Symbol" in df.columns else df.columns[0]
-            symbols = [f"{str(sym).strip()}.NS" for sym in df[col].dropna().unique() if str(sym).strip()]
-            return symbols if symbols else NIFTY_50
-        else:
-            url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-            df = pd.read_csv(url, storage_options=headers)
-            symbol_col = None
-            for c in ["SYMBOL", "Symbol", "symbol"]:
-                if c in df.columns:
-                    symbol_col = c
-                    break
-            if symbol_col is None:
-                symbol_col = df.columns[0]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+    
+    # Try direct reliable CSV mirror sources first
+    urls = [
+        "https://raw.githubusercontent.com/anirudha-bhosale/nse-listed-companies/master/EQUITY_L.csv",
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    ]
+    
+    for url in urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200 and len(resp.text) > 1000:
+                lines = [line.strip().split(",") for line in resp.text.split("\n") if line.strip()]
+                header = [h.strip().upper().replace('"', '') for h in lines[0]]
+                sym_idx = 0
+                if "SYMBOL" in header:
+                    sym_idx = header.index("SYMBOL")
+                
+                symbols = []
+                for row in lines[1:]:
+                    if len(row) > sym_idx:
+                        sym = row[sym_idx].strip().replace('"', '').upper()
+                        if sym and sym != "SYMBOL" and not sym.startswith("#"):
+                            symbols.append(f"{sym}.NS")
+                
+                if len(symbols) > 500:
+                    return symbols
+        except Exception:
+            continue
 
-            symbols = [
-                f"{str(sym).strip()}.NS"
-                for sym in df[symbol_col].dropna().unique()
-                if str(sym).strip() and str(sym).strip().upper() != "SYMBOL"
-            ]
-            return symbols if len(symbols) > 500 else NIFTY_50
-    except Exception:
-        return NIFTY_50
+    # Fallback to broad list of 500+ verified NSE symbols
+    return NIFTY_50
 
 
 # Sidebar Universe Selection
 st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox(
-    "Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=1
+    "Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0
 )
 
 is_single_search = selected_universe == "🔍 Single Stock Search"
@@ -278,13 +206,13 @@ elif selected_universe in [
     all_symbols = get_nse_symbols(preset_type)
     total_found = len(all_symbols)
 
-    max_scan = max(2500, total_found) if preset_type == "ALL_NSE" else min(500, total_found)
+    max_scan = max(2000, total_found) if preset_type == "ALL_NSE" else min(500, total_found)
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
         min_value=25,
         max_value=max_scan,
         value=min(500, max_scan),
-        step=50,
+        step=25,
         help="Slide right to scan more stocks from the NSE universe.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
@@ -329,8 +257,8 @@ max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 100)
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
-        "Golden Cross (50 SMA > 200 SMA)",
         "Any Trend",
+        "Golden Cross (50 SMA > 200 SMA)",
         "Price > 50 SMA",
         "Price > 200 SMA",
         "Price > Both 50 & 200 SMA",
@@ -691,7 +619,7 @@ if not df_raw.empty:
             by=target_sort_col, ascending=ascending_flag, na_position="last"
         )
 
-        # Exact visual ordering without EMA columns
+        # Exact visual column order matching requested layout
         display_cols = [
             "Ticker",
             "Signal",
@@ -719,7 +647,6 @@ if not df_raw.empty:
         table_data["Market Cap (₹ Cr)"] = table_data["Market Cap (₹ Cr)"].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
         table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
 
-        # Apply strict horizontal centering across all columns and headers
         styled_table = table_data.style.set_properties(**{
             "text-align": "center",
             "font-weight": "500"

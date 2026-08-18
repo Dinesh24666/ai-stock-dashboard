@@ -1141,14 +1141,12 @@ if not df_raw.empty:
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
-        # Order Placement Form
+        # 1. Order Placement Form
         with st.expander(
             "➕ Execute New Paper Trade (Manual SL & Trade Remarks)",
-            expanded=True,
+            expanded=False,
         ):
-            col_add1, col_add2, col_add3, col_add4 = st.columns(
-                [1.2, 1, 1, 1]
-            )
+            col_add1, col_add2, col_add3, col_add4 = st.columns([1.2, 1, 1, 1])
 
             with col_add1:
                 available_tickers = (
@@ -1156,9 +1154,7 @@ if not df_raw.empty:
                     if not df_raw.empty
                     else ["ACE.NS"]
                 )
-                curr_sel = st.session_state.get(
-                    "selected_ticker", "ACE.NS"
-                )
+                curr_sel = st.session_state.get("selected_ticker", "ACE.NS")
                 default_trade_idx = (
                     available_tickers.index(curr_sel)
                     if curr_sel in available_tickers
@@ -1210,19 +1206,15 @@ if not df_raw.empty:
                 if st.button("📥 Execute Trade", use_container_width=True):
                     raw_sym = (
                         trade_stock
-                        if (
-                            trade_stock.endswith(".NS")
-                            or trade_stock.endswith(".BO")
-                        )
+                        if (trade_stock.endswith(".NS") or trade_stock.endswith(".BO"))
                         else f"{trade_stock}.NS"
                     )
                     new_trade = {
                         "Date": str(trade_date),
                         "Ticker": raw_sym.replace(".NS", "").replace(".BO", ""),
-                        "Company": raw_sym.replace(".NS", ""),
                         "Buy Price (₹)": buy_price,
                         "SL (₹)": sl_price,
-                        "Qty": quantity,
+                        "Qty": int(quantity),
                         "Remarks": remarks.strip(),
                         "Invested (₹)": round(buy_price * quantity, 2),
                         "Raw_Ticker": raw_sym,
@@ -1231,14 +1223,56 @@ if not df_raw.empty:
                         st.session_state["paper_portfolio"] = []
                     st.session_state["paper_portfolio"].append(new_trade)
                     save_portfolio(st.session_state["paper_portfolio"])
-                    st.success(
-                        f"Executed buy for {quantity} shares of {new_trade['Ticker']} at ₹{buy_price}!"
-                    )
+                    st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']}!")
                     st.rerun()
 
-        # Backup & Restore Bar
-        active_portfolio = st.session_state.get("paper_portfolio", [])
+        # 2. Backup & Restore Controls (Processed before rendering table)
         col_dl, col_up = st.columns([1, 1])
+        with col_up:
+            uploaded_portfolio = st.file_uploader(
+                "📥 Restore Trades from Backup (.json)",
+                type=["json"],
+                key="portfolio_uploader",
+            )
+            if uploaded_portfolio is not None:
+                try:
+                    restored_data = json.load(uploaded_portfolio)
+                    if isinstance(restored_data, list) and len(restored_data) > 0:
+                        # Normalize keys for robust parsing
+                        clean_restored = []
+                        for pos in restored_data:
+                            sym = (
+                                pos.get("Raw_Ticker")
+                                or pos.get("Ticker")
+                                or pos.get("Symbol")
+                                or "ACE.NS"
+                            )
+                            clean_sym = sym.replace(".NS", "").replace(".BO", "")
+                            raw_sym = f"{clean_sym}.NS"
+                            entry_p = float(pos.get("Buy Price (₹)") or pos.get("Entry (₹)") or pos.get("Price") or 0.0)
+                            sl_p = float(pos.get("SL (₹)") or pos.get("SL") or 0.0)
+                            qty_val = int(pos.get("Qty") or pos.get("Quantity") or 1)
+
+                            clean_restored.append({
+                                "Date": str(pos.get("Date", date.today())),
+                                "Ticker": clean_sym,
+                                "Buy Price (₹)": entry_p,
+                                "SL (₹)": sl_p,
+                                "Qty": qty_val,
+                                "Remarks": str(pos.get("Remarks") or pos.get("Remarks / Strategy") or "Imported Trade"),
+                                "Invested (₹)": round(entry_p * qty_val, 2),
+                                "Raw_Ticker": raw_sym,
+                            })
+
+                        st.session_state["paper_portfolio"] = clean_restored
+                        save_portfolio(clean_restored)
+                        st.success("Portfolio successfully restored!")
+                except Exception as e:
+                    st.error(f"Failed to restore backup: {e}")
+
+        # Always read the current state directly
+        active_portfolio = st.session_state.get("paper_portfolio", [])
+
         with col_dl:
             if active_portfolio:
                 st.download_button(
@@ -1248,24 +1282,8 @@ if not df_raw.empty:
                     mime="application/json",
                     use_container_width=True,
                 )
-        with col_up:
-            uploaded_portfolio = st.file_uploader(
-                "📥 Restore Trades from Backup (.json)",
-                type=["json"],
-                label_visibility="collapsed",
-            )
-            if uploaded_portfolio is not None:
-                try:
-                    restored_data = json.load(uploaded_portfolio)
-                    if isinstance(restored_data, list):
-                        st.session_state["paper_portfolio"] = restored_data
-                        save_portfolio(restored_data)
-                        st.success("Portfolio successfully restored!")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to restore backup: {e}")
 
-        # Portfolio Tracking
+        # 3. Portfolio Tracking & Metrics
         if active_portfolio:
             portfolio_rows = []
             open_invested = 0.0
@@ -1273,13 +1291,10 @@ if not df_raw.empty:
             unrealised_pnl_total = 0.0
             realised_pnl_total = 0.0
 
-            held_symbols = list(
-                {
-                    pos.get("Raw_Ticker")
-                    or f"{pos.get('Ticker', 'ACE')}.NS"
-                    for pos in active_portfolio
-                }
-            )
+            held_symbols = list({
+                pos.get("Raw_Ticker") or f"{pos.get('Ticker', 'ACE')}.NS"
+                for pos in active_portfolio
+            })
 
             live_prices_map = {}
             try:
@@ -1297,70 +1312,50 @@ if not df_raw.empty:
                         live_prices_map[sym] = round(
                             float(p_bulk["Close"].dropna().iloc[-1]), 2
                         )
-                    elif (
-                        hasattr(p_bulk.columns, "levels")
-                        and sym in p_bulk.columns.levels[0]
-                    ):
+                    elif hasattr(p_bulk.columns, "levels") and sym in p_bulk.columns.levels[0]:
                         c_series = p_bulk[sym]["Close"].dropna()
                         if not c_series.empty:
-                            live_prices_map[sym] = round(
-                                float(c_series.iloc[-1]), 2
-                            )
+                            live_prices_map[sym] = round(float(c_series.iloc[-1]), 2)
             except Exception:
                 pass
 
             for pos in active_portfolio:
-                sym = pos.get(
-                    "Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS"
-                )
+                sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
                 buy_p = float(pos.get("Buy Price (₹)", 0.0))
                 curr_p = live_prices_map.get(sym, buy_p)
                 qty = int(pos.get("Qty", 1))
                 invested = float(pos.get("Invested (₹)", buy_p * qty))
                 sl = float(pos.get("SL (₹)", 0.0))
-                pos_date = str(pos.get("Date", str(date.today())))
+                pos_date = str(pos.get("Date", date.today()))
                 pos_remarks = str(pos.get("Remarks", "Swing Trade"))
 
                 if sl > 0 and curr_p <= sl:
                     status = "🔴 SL Hit (Closed)"
                     exit_price = sl
                     pnl = round((exit_price - buy_p) * qty, 2)
-                    pnl_pct = (
-                        round((pnl / invested) * 100.0, 2)
-                        if invested > 0
-                        else 0.0
-                    )
+                    pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                     realised_pnl_total += pnl
                 else:
                     status = "🟢 Open"
                     pnl = round((curr_p - buy_p) * qty, 2)
-                    pnl_pct = (
-                        round((pnl / invested) * 100.0, 2)
-                        if invested > 0
-                        else 0.0
-                    )
+                    pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                     open_invested += invested
                     open_current_val += round(curr_p * qty, 2)
                     unrealised_pnl_total += pnl
 
-                portfolio_rows.append(
-                    {
-                        "Date": pos_date,
-                        "Ticker": pos.get(
-                            "Ticker",
-                            sym.replace(".NS", "").replace(".BO", ""),
-                        ),
-                        "Status": status,
-                        "Remarks / Strategy": pos_remarks,
-                        "Entry (₹)": buy_p,
-                        "SL (₹)": sl if sl > 0 else "None",
-                        "Current Price (₹)": curr_p,
-                        "Qty": qty,
-                        "Invested (₹)": invested,
-                        "P&L (₹)": pnl,
-                        "P&L (%)": f"{'+' if pnl >= 0 else ''}{pnl_pct}%",
-                    }
-                )
+                portfolio_rows.append({
+                    "Date": pos_date,
+                    "Ticker": pos.get("Ticker", sym.replace(".NS", "").replace(".BO", "")),
+                    "Status": status,
+                    "Remarks / Strategy": pos_remarks,
+                    "Entry (₹)": f"₹{buy_p:,.2f}",
+                    "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "None",
+                    "Current Price (₹)": f"₹{curr_p:,.2f}",
+                    "Qty": qty,
+                    "Invested (₹)": f"₹{invested:,.2f}",
+                    "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
+                    "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
+                })
 
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
             p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
@@ -1368,9 +1363,7 @@ if not df_raw.empty:
             p_col3.metric(
                 "Unrealised P&L (Open)",
                 f"₹{unrealised_pnl_total:,.2f}",
-                delta=f"{(unrealised_pnl_total / open_invested * 100.0):.2f}%"
-                if open_invested > 0
-                else "0.00%",
+                delta=f"{(unrealised_pnl_total / open_invested * 100.0):.2f}%" if open_invested > 0 else "0.00%",
             )
             p_col4.metric(
                 "Realised P&L (SL Hit)",
@@ -1389,8 +1382,4 @@ if not df_raw.empty:
                 save_portfolio([])
                 st.rerun()
         else:
-            st.info(
-                "No active paper trades. Use the order form above to enter trades with custom remarks & stop loss tracking."
-            )
-else:
-    st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to begin.")
+            st.info("No active paper trades. Upload your backup file or place a trade above.")

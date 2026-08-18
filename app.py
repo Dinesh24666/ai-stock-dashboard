@@ -47,12 +47,12 @@ if "paper_portfolio" not in st.session_state:
 if "ai_analysis_cache" not in st.session_state:
     st.session_state.ai_analysis_cache = {}
 
-# 2. Sidebar - API Key (Auto-detects from secrets or text input)
+# 2. Sidebar - API Key
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 
 if api_key_from_secrets:
-    GEMINI_API_KEY = api_key_from_secrets.strip()
+    GEMINI_API_KEY = str(api_key_from_secrets).strip()
     st.sidebar.success("✅ Gemini API Key connected")
 else:
     GEMINI_API_KEY = st.sidebar.text_input(
@@ -212,9 +212,12 @@ selected_universe = st.sidebar.selectbox(
 
 if selected_universe == "🔍 Search Specific Stocks":
     search_query = st.sidebar.text_input(
-        "Search Stock Symbols (e.g. RELIANCE, TCS, LTF)", "RELIANCE, LTF, ICICIBANK, TATAMOTORS, HAL"
+        "Search Stock Symbols (e.g. RELIANCE, TCS, LTF)",
+        "RELIANCE, LTF, ICICIBANK, TATAMOTORS, HAL",
     )
-    raw_tickers = [t.strip().upper() for t in search_query.split(",") if t.strip()]
+    raw_tickers = [
+        t.strip().upper() for t in search_query.split(",") if t.strip()
+    ]
     tickers_to_scan = [
         t if (t.endswith(".NS") or t.endswith(".BO")) else f"{t}.NS"
         for t in raw_tickers
@@ -252,7 +255,7 @@ mcap_range_cr = st.sidebar.slider(
     2000000,
     (100, 2000000),
     step=500,
-    help="Filter by minimum and maximum market capitalization in ₹ Crores",
+    help="Filter by market capitalization in ₹ Crores",
 )
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 2.5, step=0.1)
 
@@ -369,7 +372,6 @@ def fetch_screener_universe(ticker_list):
                 else np.nan
             )
 
-            # ROCE Calculation
             ebit = info.get("ebitda") or (
                 (info.get("operatingMargins") or 0.12)
                 * (info.get("totalRevenue") or 1)
@@ -433,7 +435,6 @@ def fetch_screener_universe(ticker_list):
     return pd.DataFrame(rows)
 
 
-# Cached Single Ticker History Fetcher
 @st.cache_data(ttl=1800)
 def get_single_stock_history(ticker):
     try:
@@ -458,7 +459,6 @@ if "selected_ticker" not in st.session_state:
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
-    # Fundamental Range Filters
     if apply_fund_filter:
         filtered_df = filtered_df[
             (
@@ -481,14 +481,12 @@ if not df_raw.empty:
             )
         ]
 
-    # Technical Filters
     filtered_df = filtered_df[
         (filtered_df["RSI (14)"] >= rsi_range[0])
         & (filtered_df["RSI (14)"] <= rsi_range[1])
         & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
     ]
 
-    # Moving Average Alignment
     if sma_trend_filter == "Price > 50 SMA":
         filtered_df = filtered_df[
             filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
@@ -510,7 +508,6 @@ if not df_raw.empty:
     if only_volume_surge:
         filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
-    # Tabs
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
         [
             "📊 Screener Results",
@@ -708,11 +705,11 @@ if not df_raw.empty:
 
                 st.subheader("🤖 AI Investment Thesis")
 
-                cached_thesis = st.session_state.ai_analysis_cache.get(
-                    selected_stock
-                )
-                if cached_thesis:
-                    st.markdown(cached_thesis)
+                # Display cached thesis if exists
+                if selected_stock in st.session_state.ai_analysis_cache:
+                    st.markdown(
+                        st.session_state.ai_analysis_cache[selected_stock]
+                    )
 
                 if st.button("Generate AI Thesis for " + selected_stock):
                     if not GEMINI_API_KEY:
@@ -738,17 +735,33 @@ if not df_raw.empty:
                         4. **Actionable Verdict** (Bullish / Neutral / Bearish)
                         """
                         with st.spinner("Analyzing stock with Gemini..."):
-                            model_ladder = [
-                                "gemini-1.5-flash",
-                                "gemini-1.5-flash-8b",
-                                "gemini-2.0-flash",
-                                "gemini-3.6-flash",
-                            ]
                             success = False
+                            error_logs = []
 
-                            for mod in model_ladder:
+                            # Query Gemini for valid models available on this API key
+                            available_models = []
+                            try:
+                                for m in genai.list_models():
+                                    if (
+                                        "generateContent"
+                                        in m.supported_generation_methods
+                                    ):
+                                        available_models.append(m.name)
+                            except Exception as e:
+                                error_logs.append(f"Model listing error: {e}")
+
+                            # Fallback candidate list if listing is restricted
+                            if not available_models:
+                                available_models = [
+                                    "models/gemini-1.5-flash",
+                                    "models/gemini-1.5-flash-8b",
+                                    "models/gemini-2.0-flash",
+                                    "models/gemini-pro",
+                                ]
+
+                            for model_id in available_models:
                                 try:
-                                    model = genai.GenerativeModel(mod)
+                                    model = genai.GenerativeModel(model_id)
                                     res = model.generate_content(prompt)
                                     if res and res.text:
                                         st.session_state.ai_analysis_cache[
@@ -757,20 +770,24 @@ if not df_raw.empty:
                                         st.markdown(res.text)
                                         success = True
                                         break
-                                except Exception:
-                                    time.sleep(0.8)
+                                except Exception as err:
+                                    error_logs.append(
+                                        f"{model_id}: {str(err)}"
+                                    )
+                                    time.sleep(0.5)
                                     continue
 
                             if not success:
-                                st.error(
-                                    "Rate limit reached on Free Tier. Please wait 30–45 seconds before clicking again."
-                                )
+                                st.error("Failed to generate AI thesis.")
+                                with st.expander("🔍 View Error Details"):
+                                    for err in error_logs:
+                                        st.code(err)
             else:
                 st.warning(
                     f"Historical price data for {selected_stock} is temporarily unavailable."
                 )
 
-    # --- TAB 3: WATCHLIST & PAPER TRADING (WITH REMARKS & STRATEGY) ---
+    # --- TAB 3: WATCHLIST & PAPER TRADING ---
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 

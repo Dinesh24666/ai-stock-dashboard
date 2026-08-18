@@ -210,7 +210,7 @@ max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, step=0.1)
 price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
     min_value=0,
-    max_value=10000,
+    max_value=5000,
     value=(30, 5000),
     step=10,
     help="Filter stocks within a specific current share price band",

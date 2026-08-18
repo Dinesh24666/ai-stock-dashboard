@@ -277,6 +277,14 @@ mcap_range_cr = st.sidebar.slider(
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, step=0.1)
 
 st.sidebar.header("📈 Technical Filters")
+price_range = st.sidebar.slider(
+    "Stock Price (₹) Range",
+    0,
+    50000,
+    (10, 50000),
+    step=10,
+    help="Filter stocks within a specific current share price band",
+)
 rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (50, 75))
 min_adx = st.sidebar.slider(
     "Min ADX (14) Trend Strength",
@@ -348,7 +356,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
-# 4. Chunked Batch Fetcher Engine with % Change, ADX & Signal Generation
+# 4. Chunked Batch Fetcher Engine
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -439,12 +447,13 @@ def fetch_screener_universe(ticker_list):
                 adx_val = compute_adx(hist, 14)
 
                 vol_series = hist["Volume"].dropna()
+                curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
                 avg_vol_20 = (
                     float(vol_series.rolling(20).mean().iloc[-1])
                     if len(vol_series) >= 20
-                    else float(vol_series.iloc[-1])
+                    else float(curr_vol)
                 )
-                vol_surge = bool(float(vol_series.iloc[-1]) >= (avg_vol_20 * 0.95))
+                vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
 
                 company_name = ticker.replace(".NS", "").replace(".BO", "")
                 mcap_cr = round(
@@ -488,6 +497,7 @@ def fetch_screener_universe(ticker_list):
                         "Signal": action_signal,
                         "Price (₹)": round(curr_price, 2),
                         "Change (%)": change_display,
+                        "Volume": f"{curr_vol:,}",
                         "Composite Score": round(swing_composite, 1),
                         "9 EMA": round(ema_9, 2),
                         "20 EMA": round(ema_20, 2),
@@ -502,6 +512,7 @@ def fetch_screener_universe(ticker_list):
                         "SMA_50": round(sma_50, 2),
                         "SMA_200": round(sma_200, 2),
                         "Raw_Ticker": ticker,
+                        "_raw_vol": curr_vol,
                         "_change_num": price_change_pct,
                         "_roce_num": roce,
                         "_de_num": de,
@@ -560,7 +571,9 @@ if not df_raw.empty:
 
     if not is_single_search:
         filtered_df = filtered_df[
-            (filtered_df["RSI (14)"] >= rsi_range[0])
+            (filtered_df["Price (₹)"] >= price_range[0])
+            & (filtered_df["Price (₹)"] <= price_range[1])
+            & (filtered_df["RSI (14)"] >= rsi_range[0])
             & (filtered_df["RSI (14)"] <= rsi_range[1])
             & (filtered_df["_adx_num"] >= min_adx)
             & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
@@ -598,7 +611,7 @@ if not df_raw.empty:
     # --- TAB 1: SCREENER & SIGNAL TABLE ---
     with tab_screener:
         st.info(
-            "💡 **Momentum Engine:** Evaluates 9/20 EMA Breakouts, % Price Change, RSI momentum zone (50–75), ADX trend strength, and Volume surges for pure short-term swing trades."
+            "💡 **Momentum Engine:** Evaluates 9/20 EMA Breakouts, % Price Change, Volume, RSI (50–75), ADX trend strength, and Volume surges for swing trades."
         )
 
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
@@ -613,6 +626,7 @@ if not df_raw.empty:
                     "Composite Score",
                     "Change (%)",
                     "Price (₹)",
+                    "Volume",
                     "ADX (14)",
                     "ROCE (%)",
                     "RSI (14)",
@@ -632,6 +646,7 @@ if not df_raw.empty:
             "Composite Score": "Composite Score",
             "Change (%)": "_change_num",
             "Price (₹)": "Price (₹)",
+            "Volume": "_raw_vol",
             "ADX (14)": "_adx_num",
             "ROCE (%)": "_roce_num",
             "RSI (14)": "RSI (14)",
@@ -650,6 +665,7 @@ if not df_raw.empty:
             "Signal",
             "Price (₹)",
             "Change (%)",
+            "Volume",
             "Composite Score",
             "9 EMA",
             "20 EMA",
@@ -718,11 +734,12 @@ if not df_raw.empty:
                 curr_score = stock_row["Composite Score"] if stock_row is not None else 0
                 curr_adx = stock_row["ADX (14)"] if stock_row is not None else 25.0
                 curr_change = stock_row["Change (%)"] if stock_row is not None else "0.00%"
+                curr_volume = stock_row["Volume"] if stock_row is not None else "N/A"
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Current Price", f"₹{curr_p:,.2f}", delta=curr_change)
                 c2.metric("9 / 20 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f}")
-                c3.metric("ADX (14) Trend Strength", f"{curr_adx} {'(Strong)' if curr_adx >= 25 else '(Weak)'}")
+                c3.metric("Volume / ADX", f"{curr_volume} | ADX: {curr_adx}")
                 c4.metric("Action Signal", curr_signal)
 
                 fig = go.Figure(
@@ -796,6 +813,7 @@ if not df_raw.empty:
 
                         - Stock: {selected_stock}
                         - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
+                        - Traded Volume: {curr_volume}
                         - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} (Status: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish Cross'})
                         - ADX (14) Trend Strength: {curr_adx}
                         - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, Dist from 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%

@@ -211,8 +211,8 @@ st.sidebar.header("📈 Technical Filters")
 price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
     0,
-    5000,
-    (30, 5000),
+    50000,
+    (10, 50000),
     step=10,
     help="Filter stocks within a specific current share price band",
 )
@@ -472,7 +472,6 @@ def fetch_screener_universe(ticker_list):
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_single_stock_history(ticker):
     try:
-        # Use bulk download endpoint for single ticker to prevent 429 block
         clean_ticker = ticker.strip()
         if not (clean_ticker.endswith(".NS") or clean_ticker.endswith(".BO")):
             clean_ticker = f"{clean_ticker}.NS"
@@ -487,16 +486,24 @@ def get_single_stock_history(ticker):
         )
 
         if df is not None and not df.empty:
-            # Flatten multi-index columns if returned
             if isinstance(df.columns, pd.MultiIndex):
                 df = df.droplevel(1, axis=1) if df.columns.nlevels > 1 else df
             return df.dropna(how="all")
 
-        # Fallback fetch
         t = yf.Ticker(clean_ticker)
         return t.history(period="1y")
     except Exception:
         return pd.DataFrame()
+
+
+if tickers_to_scan:
+    df_raw = fetch_screener_universe(tickers_to_scan)
+else:
+    df_raw = pd.DataFrame()
+
+if "selected_ticker" not in st.session_state:
+    st.session_state["selected_ticker"] = (
+        df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "ACE.NS"
     )
 
 # 5. Filtering Engine

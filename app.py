@@ -221,17 +221,19 @@ selected_universe = st.sidebar.selectbox(
     "Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0
 )
 
-if selected_universe == "🔍 Single Stock Search":
+is_single_search = selected_universe == "🔍 Single Stock Search"
+
+if is_single_search:
     raw_sym_input = st.sidebar.text_input(
         "Enter NSE Symbol",
-        value="TATAMOTORS",
-        help="Type single NSE symbol e.g., RELIANCE, INFY, ICICIBANK, LTF",
+        value="ACE",
+        help="Type single NSE symbol e.g., ACE, RELIANCE, INFY, ICICIBANK",
     )
     clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
     if clean_sym:
         tickers_to_scan = [f"{clean_sym}.NS"]
     else:
-        tickers_to_scan = ["RELIANCE.NS"]
+        tickers_to_scan = ["ACE.NS"]
 elif selected_universe in [
     "Nifty 500 (Broad Market)",
     "All NSE Stocks (Full Listed)",
@@ -261,37 +263,46 @@ else:
 # 3. Sidebar Quantitative & Technical Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
-    "Enable Strict Fundamental Filters", value=False if selected_universe == "🔍 Single Stock Search" else True
+    "Enable Strict Fundamental Filters", value=False if is_single_search else True
 )
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 80))
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 100))
 mcap_range_cr = st.sidebar.slider(
     "Market Cap Range (₹ Cr)",
     0,
     2000000,
-    (500, 2000000),
+    (1500, 2000000),
     step=500,
     help="Filter by minimum and maximum market capitalization in ₹ Crores",
 )
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 2.5, step=0.1)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, step=0.1)
 
 st.sidebar.header("📈 Technical Filters")
-rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (20, 85))
-max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 60)
+rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (50, 75))
+min_adx = st.sidebar.slider(
+    "Min ADX (14) Trend Strength",
+    0,
+    50,
+    0 if is_single_search else 20,
+    step=1,
+    help="ADX > 25 indicates strong trending momentum. Leave as 0 to include all.",
+)
+max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 100)
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
+        "Golden Cross (50 SMA > 200 SMA)",
         "Any Trend",
         "Price > 50 SMA",
         "Price > 200 SMA",
         "Price > Both 50 & 200 SMA",
-        "Golden Cross (50 SMA > 200 SMA)",
     ],
 )
 only_volume_surge = st.sidebar.checkbox(
-    "Volume Surge (Today > 20-Day Avg Volume)", value=False
+    "Volume Surge (Today > 20-Day Avg Volume)", value=False if is_single_search else True
 )
 
 
+# Technical Indicator Calculations (RSI & ADX)
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -299,19 +310,45 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
 
-    avg_gain = gain.ewm(
-        alpha=1.0 / period, min_periods=period, adjust=False
-    ).mean()
-    avg_loss = loss.ewm(
-        alpha=1.0 / period, min_periods=period, adjust=False
-    ).mean()
+    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
     rs = avg_gain.iloc[-1] / (avg_loss.iloc[-1] + 1e-9)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. Chunked Batch Fetcher Engine with Swing Breakout Signal Generation
+def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
+    if len(df) < period * 2:
+        return 25.0
+    try:
+        high = df["High"]
+        low = df["Low"]
+        close = df["Close"]
+
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
+        up_move = high - high.shift(1)
+        down_move = low.shift(1) - low
+
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr)
+
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9))
+        adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().iloc[-1]
+        return round(float(adx), 1) if not pd.isna(adx) else 25.0
+    except Exception:
+        return 25.0
+
+
+# 4. Chunked Batch Fetcher Engine with % Change, ADX & Signal Generation
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -353,7 +390,13 @@ def fetch_screener_universe(ticker_list):
             try:
                 hist = pd.DataFrame()
                 if len(chunk) == 1:
-                    hist = batch_data.dropna(how="all")
+                    if isinstance(batch_data.columns, pd.MultiIndex):
+                        if ticker in batch_data.columns.levels[0]:
+                            hist = batch_data[ticker].dropna(how="all")
+                        else:
+                            hist = batch_data.droplevel(0, axis=1).dropna(how="all")
+                    else:
+                        hist = batch_data.dropna(how="all")
                 else:
                     if (
                         hasattr(batch_data.columns, "levels")
@@ -362,9 +405,19 @@ def fetch_screener_universe(ticker_list):
                         hist = batch_data[ticker].dropna(how="all")
 
                 if hist.empty or len(hist) < 20:
-                    continue
+                    t = yf.Ticker(ticker)
+                    hist = t.history(period="1y")
+                    if hist.empty or len(hist) < 20:
+                        continue
 
                 curr_price = float(hist["Close"].iloc[-1])
+                prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else curr_price
+                price_change_pct = (
+                    round(((curr_price - prev_close) / prev_close) * 100.0, 2)
+                    if prev_close > 0
+                    else 0.0
+                )
+
                 ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
                 ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
                 sma_50 = (
@@ -383,16 +436,19 @@ def fetch_screener_universe(ticker_list):
                 )
 
                 rsi_val = compute_rsi(hist["Close"], 14)
+                adx_val = compute_adx(hist, 14)
+
+                vol_series = hist["Volume"].dropna()
                 avg_vol_20 = (
-                    float(hist["Volume"].rolling(20).mean().iloc[-1])
-                    if len(hist) >= 20
-                    else float(hist["Volume"].iloc[-1])
+                    float(vol_series.rolling(20).mean().iloc[-1])
+                    if len(vol_series) >= 20
+                    else float(vol_series.iloc[-1])
                 )
-                vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
+                vol_surge = bool(float(vol_series.iloc[-1]) >= (avg_vol_20 * 0.95))
 
                 company_name = ticker.replace(".NS", "").replace(".BO", "")
                 mcap_cr = round(
-                    max(100.0, (curr_price * avg_vol_20 * 180) / 1e7), 1
+                    max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1
                 )
                 pe = round(
                     float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)),
@@ -401,10 +457,10 @@ def fetch_screener_universe(ticker_list):
                 de = 0.5
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
-                # Pure Short-Term Momentum Breakout Composite Scoring
+                # Pure Short-Term Momentum Breakout Scoring
                 rsi_momentum_score = (
-                    40 if 55.0 <= rsi_val <= 72.0
-                    else 25 if 50.0 <= rsi_val < 55.0 or 72.0 < rsi_val <= 78.0
+                    40 if 55.0 <= rsi_val <= 75.0
+                    else 25 if 50.0 <= rsi_val < 55.0 or 75.0 < rsi_val <= 80.0
                     else 10 if 40.0 <= rsi_val < 50.0
                     else 0
                 )
@@ -414,8 +470,7 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(rsi_momentum_score + ema_trend_score + proximity_score + vol_score)
 
-                # Actionable Pure Swing Signal
-                if swing_composite >= 80 and curr_price >= ema_9 and ema_9 > ema_20:
+                if swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif swing_composite >= 60 and ema_9 >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -424,15 +479,19 @@ def fetch_screener_universe(ticker_list):
                 else:
                     action_signal = "🔴 AVOID / WEAK"
 
+                change_display = f"{'+' if price_change_pct >= 0 else ''}{price_change_pct:.2f}%"
+
                 rows.append(
                     {
                         "Ticker": company_name,
                         "Company": company_name,
                         "Signal": action_signal,
                         "Price (₹)": round(curr_price, 2),
+                        "Change (%)": change_display,
                         "Composite Score": round(swing_composite, 1),
                         "9 EMA": round(ema_9, 2),
                         "20 EMA": round(ema_20, 2),
+                        "ADX (14)": adx_val,
                         "ROCE (%)": roce,
                         "RSI (14)": round(rsi_val, 1),
                         "From 52W High (%)": round(dist_52w_high, 1),
@@ -443,9 +502,11 @@ def fetch_screener_universe(ticker_list):
                         "SMA_50": round(sma_50, 2),
                         "SMA_200": round(sma_200, 2),
                         "Raw_Ticker": ticker,
+                        "_change_num": price_change_pct,
                         "_roce_num": roce,
                         "_de_num": de,
                         "_mcap_num": mcap_cr,
+                        "_adx_num": adx_val,
                     }
                 )
             except Exception:
@@ -472,7 +533,7 @@ else:
 
 if "selected_ticker" not in st.session_state:
     st.session_state["selected_ticker"] = (
-        df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "RELIANCE.NS"
+        df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "ACE.NS"
     )
 
 # 5. Filtering Engine
@@ -497,32 +558,34 @@ if not df_raw.empty:
             )
         ]
 
-    filtered_df = filtered_df[
-        (filtered_df["RSI (14)"] >= rsi_range[0])
-        & (filtered_df["RSI (14)"] <= rsi_range[1])
-        & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
-    ]
-
-    if sma_trend_filter == "Price > 50 SMA":
+    if not is_single_search:
         filtered_df = filtered_df[
-            filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
-        ]
-    elif sma_trend_filter == "Price > 200 SMA":
-        filtered_df = filtered_df[
-            filtered_df["Price (₹)"] >= filtered_df["SMA_200"]
-        ]
-    elif sma_trend_filter == "Price > Both 50 & 200 SMA":
-        filtered_df = filtered_df[
-            (filtered_df["Price (₹)"] >= filtered_df["SMA_50"])
-            & (filtered_df["Price (₹)"] >= filtered_df["SMA_200"])
-        ]
-    elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
-        filtered_df = filtered_df[
-            filtered_df["SMA_50"] >= filtered_df["SMA_200"]
+            (filtered_df["RSI (14)"] >= rsi_range[0])
+            & (filtered_df["RSI (14)"] <= rsi_range[1])
+            & (filtered_df["_adx_num"] >= min_adx)
+            & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
         ]
 
-    if only_volume_surge:
-        filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
+        if sma_trend_filter == "Price > 50 SMA":
+            filtered_df = filtered_df[
+                filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
+            ]
+        elif sma_trend_filter == "Price > 200 SMA":
+            filtered_df = filtered_df[
+                filtered_df["Price (₹)"] >= filtered_df["SMA_200"]
+            ]
+        elif sma_trend_filter == "Price > Both 50 & 200 SMA":
+            filtered_df = filtered_df[
+                (filtered_df["Price (₹)"] >= filtered_df["SMA_50"])
+                & (filtered_df["Price (₹)"] >= filtered_df["SMA_200"])
+            ]
+        elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
+            filtered_df = filtered_df[
+                filtered_df["SMA_50"] >= filtered_df["SMA_200"]
+            ]
+
+        if only_volume_surge:
+            filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
         [
@@ -535,7 +598,7 @@ if not df_raw.empty:
     # --- TAB 1: SCREENER & SIGNAL TABLE ---
     with tab_screener:
         st.info(
-            "💡 **Momentum Engine:** Evaluates 9/20 EMA Breakouts, RSI momentum zone (55–72), and Volume surges for pure short-term swing trades."
+            "💡 **Momentum Engine:** Evaluates 9/20 EMA Breakouts, % Price Change, RSI momentum zone (50–75), ADX trend strength, and Volume surges for pure short-term swing trades."
         )
 
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
@@ -548,7 +611,9 @@ if not df_raw.empty:
                 "Sort Results By:",
                 [
                     "Composite Score",
+                    "Change (%)",
                     "Price (₹)",
+                    "ADX (14)",
                     "ROCE (%)",
                     "RSI (14)",
                     "From 52W High (%)",
@@ -565,7 +630,9 @@ if not df_raw.empty:
 
         sort_col_map = {
             "Composite Score": "Composite Score",
+            "Change (%)": "_change_num",
             "Price (₹)": "Price (₹)",
+            "ADX (14)": "_adx_num",
             "ROCE (%)": "_roce_num",
             "RSI (14)": "RSI (14)",
             "From 52W High (%)": "From 52W High (%)",
@@ -582,9 +649,11 @@ if not df_raw.empty:
             "Ticker",
             "Signal",
             "Price (₹)",
+            "Change (%)",
             "Composite Score",
             "9 EMA",
             "20 EMA",
+            "ADX (14)",
             "RSI (14)",
             "From 52W High (%)",
             "Vol Surge",
@@ -618,7 +687,7 @@ if not df_raw.empty:
             else df_raw["Raw_Ticker"].tolist()
         )
 
-        current_choice = st.session_state.get("selected_ticker", "RELIANCE.NS")
+        current_choice = st.session_state.get("selected_ticker", "ACE.NS")
         default_index = (
             stock_options.index(current_choice)
             if current_choice in stock_options
@@ -647,11 +716,13 @@ if not df_raw.empty:
                 ema20_val = float(hist["EMA_20"].iloc[-1])
                 curr_signal = stock_row["Signal"] if stock_row is not None else "N/A"
                 curr_score = stock_row["Composite Score"] if stock_row is not None else 0
+                curr_adx = stock_row["ADX (14)"] if stock_row is not None else 25.0
+                curr_change = stock_row["Change (%)"] if stock_row is not None else "0.00%"
 
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Current Price", f"₹{curr_p:,.2f}")
+                c1.metric("Current Price", f"₹{curr_p:,.2f}", delta=curr_change)
                 c2.metric("9 / 20 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f}")
-                c3.metric("Breakout Score", f"{curr_score}/100")
+                c3.metric("ADX (14) Trend Strength", f"{curr_adx} {'(Strong)' if curr_adx >= 25 else '(Weak)'}")
                 c4.metric("Action Signal", curr_signal)
 
                 fig = go.Figure(
@@ -724,8 +795,9 @@ if not df_raw.empty:
                         Evaluate this pure Short-Term Swing / Momentum Breakout trade setup:
 
                         - Stock: {selected_stock}
-                        - Current Price: ₹{curr_p:.2f}
+                        - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
                         - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} (Status: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish Cross'})
+                        - ADX (14) Trend Strength: {curr_adx}
                         - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, Dist from 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
                         - Volume Surge: {stock_row['Vol Surge'] if stock_row is not None else 'False'}
                         - Breakout Composite Score: {curr_score}/100
@@ -814,10 +886,10 @@ if not df_raw.empty:
                 available_tickers = (
                     df_raw["Raw_Ticker"].tolist()
                     if not df_raw.empty
-                    else ["RELIANCE.NS"]
+                    else ["ACE.NS"]
                 )
                 curr_sel = st.session_state.get(
-                    "selected_ticker", "RELIANCE.NS"
+                    "selected_ticker", "ACE.NS"
                 )
                 default_trade_idx = (
                     available_tickers.index(curr_sel)
@@ -908,7 +980,7 @@ if not df_raw.empty:
             held_symbols = list(
                 {
                     pos.get("Raw_Ticker")
-                    or f"{pos.get('Ticker', 'RELIANCE')}.NS"
+                    or f"{pos.get('Ticker', 'ACE')}.NS"
                     for pos in active_portfolio
                 }
             )
@@ -943,7 +1015,7 @@ if not df_raw.empty:
 
             for pos in active_portfolio:
                 sym = pos.get(
-                    "Raw_Ticker", f"{pos.get('Ticker', 'RELIANCE')}.NS"
+                    "Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS"
                 )
                 buy_p = float(pos.get("Buy Price (₹)", 0.0))
                 curr_p = live_prices_map.get(sym, buy_p)

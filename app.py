@@ -128,6 +128,7 @@ NIFTY_50 = [
 ]
 
 UNIVERSE_PRESETS = {
+    "🔍 Single Stock Search": "SINGLE_SEARCH",
     "Nifty 50 Core": NIFTY_50,
     "Nifty 500 (Broad Market)": "NIFTY_500",
     "Banking & Financial Services": [
@@ -194,7 +195,6 @@ UNIVERSE_PRESETS = {
         "CONCOR.NS",
     ],
     "All NSE Stocks (Full Listed)": "ALL_NSE",
-    "🔍 Search Specific Stocks": "SEARCH_BAR",
 }
 
 
@@ -218,21 +218,20 @@ def get_nse_symbols(universe_type):
 # Sidebar Universe Selection
 st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox(
-    "Select Stock Basket", list(UNIVERSE_PRESETS.keys())
+    "Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0
 )
 
-if selected_universe == "🔍 Search Specific Stocks":
-    search_query = st.sidebar.text_input(
-        "Search Stock Symbols (comma-separated)",
-        "RELIANCE, LTF, ICICIBANK, TATAMOTORS, HAL",
+if selected_universe == "🔍 Single Stock Search":
+    raw_sym_input = st.sidebar.text_input(
+        "Enter NSE Symbol",
+        value="TATAMOTORS",
+        help="Type single NSE symbol e.g., RELIANCE, INFY, ICICIBANK, LTF",
     )
-    raw_tickers = [
-        t.strip().upper() for t in search_query.split(",") if t.strip()
-    ]
-    tickers_to_scan = [
-        t if (t.endswith(".NS") or t.endswith(".BO")) else f"{t}.NS"
-        for t in raw_tickers
-    ]
+    clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
+    if clean_sym:
+        tickers_to_scan = [f"{clean_sym}.NS"]
+    else:
+        tickers_to_scan = ["RELIANCE.NS"]
 elif selected_universe in [
     "Nifty 500 (Broad Market)",
     "All NSE Stocks (Full Listed)",
@@ -262,7 +261,7 @@ else:
 # 3. Sidebar Quantitative & Technical Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
-    "Enable Strict Fundamental Filters", value=True
+    "Enable Strict Fundamental Filters", value=False if selected_universe == "🔍 Single Stock Search" else True
 )
 roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 80))
 mcap_range_cr = st.sidebar.slider(
@@ -312,7 +311,7 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. Chunked Batch Fetcher Engine
+# 4. Chunked Batch Fetcher Engine with Swing Breakout Signal Generation
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -366,6 +365,8 @@ def fetch_screener_universe(ticker_list):
                     continue
 
                 curr_price = float(hist["Close"].iloc[-1])
+                ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
+                ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
                 sma_50 = (
                     float(hist["Close"].rolling(50).mean().iloc[-1])
                     if len(hist) >= 50
@@ -400,32 +401,38 @@ def fetch_screener_universe(ticker_list):
                 de = 0.5
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
-                safe_roce = roce
-                safe_de = de
-                fund_score = min(
-                    100,
-                    max(
-                        0,
-                        (safe_roce / 25.0) * 60
-                        + ((2.0 - min(safe_de, 2.0)) / 2.0) * 40,
-                    ),
+                # Pure Short-Term Momentum Breakout Composite Scoring
+                rsi_momentum_score = (
+                    40 if 55.0 <= rsi_val <= 72.0
+                    else 25 if 50.0 <= rsi_val < 55.0 or 72.0 < rsi_val <= 78.0
+                    else 10 if 40.0 <= rsi_val < 50.0
+                    else 0
                 )
-                rsi_score = max(0, 100 - 4 * abs(rsi_val - 60))
-                trend_score = (
-                    (30 if curr_price >= sma_50 else 0)
-                    + (40 if curr_price >= sma_200 else 0)
-                    + (30 if sma_50 >= sma_200 else 0)
-                )
-                tech_score = 0.5 * trend_score + 0.5 * rsi_score
-                composite = round(0.55 * fund_score + 0.45 * tech_score, 1)
+                ema_trend_score = 30 if (curr_price >= ema_9 and ema_9 >= ema_20) else (15 if ema_9 >= ema_20 else 0)
+                proximity_score = 15 if dist_52w_high <= 15.0 else (8 if dist_52w_high <= 25.0 else 0)
+                vol_score = 15 if vol_surge else 5
+
+                swing_composite = float(rsi_momentum_score + ema_trend_score + proximity_score + vol_score)
+
+                # Actionable Pure Swing Signal
+                if swing_composite >= 80 and curr_price >= ema_9 and ema_9 > ema_20:
+                    action_signal = "🟢 STRONG BUY (Breakout)"
+                elif swing_composite >= 60 and ema_9 >= ema_20:
+                    action_signal = "🟡 BUY / PULLBACK"
+                elif swing_composite >= 40:
+                    action_signal = "🟠 WAIT / WATCH"
+                else:
+                    action_signal = "🔴 AVOID / WEAK"
 
                 rows.append(
                     {
                         "Ticker": company_name,
                         "Company": company_name,
-                        "Sector": "NSE Equity",
+                        "Signal": action_signal,
                         "Price (₹)": round(curr_price, 2),
-                        "Composite Score": composite,
+                        "Composite Score": round(swing_composite, 1),
+                        "9 EMA": round(ema_9, 2),
+                        "20 EMA": round(ema_20, 2),
                         "ROCE (%)": roce,
                         "RSI (14)": round(rsi_val, 1),
                         "From 52W High (%)": round(dist_52w_high, 1),
@@ -519,16 +526,16 @@ if not df_raw.empty:
 
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
         [
-            "📊 Screener Results",
+            "📊 Screener & Momentum Signals",
             "🔬 Single Stock Chart & AI Thesis",
             "💼 Paper Trading Portfolio",
         ]
     )
 
-    # --- TAB 1: SCREENER TABLE ---
+    # --- TAB 1: SCREENER & SIGNAL TABLE ---
     with tab_screener:
         st.info(
-            "💡 **Tip:** Click any row below to view its 9/20 EMA chart or place a Paper Trade."
+            "💡 **Momentum Engine:** Evaluates 9/20 EMA Breakouts, RSI momentum zone (55–72), and Volume surges for pure short-term swing trades."
         )
 
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
@@ -545,8 +552,6 @@ if not df_raw.empty:
                     "ROCE (%)",
                     "RSI (14)",
                     "From 52W High (%)",
-                    "P/E",
-                    "D/E",
                     "Market Cap (₹ Cr)",
                 ],
                 index=0,
@@ -564,8 +569,6 @@ if not df_raw.empty:
             "ROCE (%)": "_roce_num",
             "RSI (14)": "RSI (14)",
             "From 52W High (%)": "From 52W High (%)",
-            "P/E": "P/E",
-            "D/E": "_de_num",
             "Market Cap (₹ Cr)": "_mcap_num",
         }
 
@@ -577,16 +580,15 @@ if not df_raw.empty:
 
         display_cols = [
             "Ticker",
-            "Company",
-            "Sector",
+            "Signal",
             "Price (₹)",
             "Composite Score",
-            "ROCE (%)",
+            "9 EMA",
+            "20 EMA",
             "RSI (14)",
             "From 52W High (%)",
-            "P/E",
-            "D/E",
             "Vol Surge",
+            "ROCE (%)",
             "Market Cap (₹ Cr)",
         ]
 
@@ -643,17 +645,14 @@ if not df_raw.empty:
                 curr_p = float(hist["Close"].iloc[-1])
                 ema9_val = float(hist["EMA_9"].iloc[-1])
                 ema20_val = float(hist["EMA_20"].iloc[-1])
+                curr_signal = stock_row["Signal"] if stock_row is not None else "N/A"
+                curr_score = stock_row["Composite Score"] if stock_row is not None else 0
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Current Price", f"₹{curr_p:,.2f}")
-                c2.metric("9 EMA", f"₹{ema9_val:,.2f}")
-                c3.metric("20 EMA", f"₹{ema20_val:,.2f}")
-                c4.metric(
-                    "Short-Term Trend",
-                    "🚀 Bullish (9 > 20 EMA)"
-                    if ema9_val >= ema20_val
-                    else "🔻 Bearish (9 < 20 EMA)",
-                )
+                c2.metric("9 / 20 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f}")
+                c3.metric("Breakout Score", f"{curr_score}/100")
+                c4.metric("Action Signal", curr_signal)
 
                 fig = go.Figure(
                     data=[
@@ -706,7 +705,7 @@ if not df_raw.empty:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.subheader("🤖 AI Investment Thesis")
+                st.subheader("🤖 AI Short-Term Swing Thesis & Trade Setup")
 
                 cached_thesis = st.session_state.get(
                     "ai_analysis_cache", {}
@@ -714,27 +713,34 @@ if not df_raw.empty:
                 if cached_thesis:
                     st.markdown(cached_thesis)
 
-                if st.button("Generate AI Thesis for " + selected_stock):
+                if st.button("Generate Short-Term Swing Setup for " + selected_stock):
                     if not GEMINI_API_KEY:
                         st.warning(
                             "Please provide your Gemini API Key in the left sidebar."
                         )
                     else:
                         prompt = f"""
-                        Analyze this Indian stock:
-                        - Company: {selected_stock}
-                        - Current Price: ₹{curr_p:.2f}
-                        - Moving Averages: 9 EMA = ₹{ema9_val:.2f}, 20 EMA = ₹{ema20_val:.2f}, Trend: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish'}
-                        - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, From 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
-                        - Quality Composite Score: {stock_row['Composite Score'] if stock_row is not None else 'N/A'}/100
+                        You are a Professional Swing Trader & Technical Analyst specializing in Indian Equities (NSE).
+                        Evaluate this pure Short-Term Swing / Momentum Breakout trade setup:
 
-                        Provide a clean analyst breakdown:
-                        1. **Technical & EMA Trend Analysis**
-                        2. **Fundamental Quality & ROCE Evaluation**
-                        3. **Key Risks & Valuation Check**
-                        4. **Actionable Verdict** (Bullish / Neutral / Bearish)
+                        - Stock: {selected_stock}
+                        - Current Price: ₹{curr_p:.2f}
+                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} (Status: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish Cross'})
+                        - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, Dist from 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
+                        - Volume Surge: {stock_row['Vol Surge'] if stock_row is not None else 'False'}
+                        - Breakout Composite Score: {curr_score}/100
+                        - System Signal: {curr_signal}
+
+                        Provide a structured swing trade plan:
+                        1. **Breakout Setup Assessment**: Is momentum active or exhausted?
+                        2. **Exact Actionable Verdict**: Choose one strictly: [STRONG BUY | BUY ON PULLBACK | WAIT | AVOID].
+                        3. **Trade Blueprint**:
+                           - Ideal Entry Range (₹)
+                           - Strict Stop-Loss (₹) (below recent 20 EMA/swing low)
+                           - Realistic Targets (Target 1 & Target 2 with Risk:Reward $\\ge$ 1:2)
+                        4. **Exit Trigger**: Invalidation condition for swing trades.
                         """
-                        with st.spinner("Analyzing stock with Gemini..."):
+                        with st.spinner("Analyzing momentum setup with Gemini..."):
                             success = False
                             error_logs = []
 
@@ -842,10 +848,10 @@ if not df_raw.empty:
             with col_add4:
                 sl_price = st.number_input(
                     "Stop Loss (SL ₹)",
-                    value=0.0,
+                    value=round(buy_price * 0.96, 1),
                     min_value=0.0,
                     step=0.5,
-                    help="Enter custom Stop Loss level. Leave as 0.0 if no SL is needed.",
+                    help="Enter custom Stop Loss level.",
                 )
 
             col_sub1, col_sub2, col_btn = st.columns([1, 2.5, 1])
@@ -855,8 +861,8 @@ if not df_raw.empty:
                 )
             with col_sub2:
                 remarks = st.text_input(
-                    "Trade Remarks / Strategy (Why did you buy?)",
-                    value="9/20 EMA Bullish Cross Breakout",
+                    "Trade Remarks / Strategy",
+                    value="9/20 EMA Breakout Swing Setup",
                 )
             with col_btn:
                 st.write("")
@@ -907,7 +913,6 @@ if not df_raw.empty:
                 }
             )
 
-            # Direct bulk fetch for all portfolio tickers
             live_prices_map = {}
             try:
                 p_bulk = yf.download(
@@ -946,7 +951,7 @@ if not df_raw.empty:
                 invested = float(pos.get("Invested (₹)", buy_p * qty))
                 sl = float(pos.get("SL (₹)", 0.0))
                 pos_date = str(pos.get("Date", str(date.today())))
-                pos_remarks = str(pos.get("Remarks", "Discretionary"))
+                pos_remarks = str(pos.get("Remarks", "Swing Trade"))
 
                 if sl > 0 and curr_p <= sl:
                     status = "🔴 SL Hit (Closed)"

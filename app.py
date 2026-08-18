@@ -691,7 +691,7 @@ if not df_raw.empty:
             by=target_sort_col, ascending=ascending_flag, na_position="last"
         )
 
-        # Exact ordering matching the visual image (9 and 20 SMA/EMA removed)
+        # Exact visual ordering without EMA columns
         display_cols = [
             "Ticker",
             "Signal",
@@ -708,28 +708,30 @@ if not df_raw.empty:
         ]
 
         table_data = sorted_results_df[display_cols].copy()
-        
-        # Center-aligned DataFrame column configuration
-        column_config = {
-            "Ticker": st.column_config.TextColumn("Ticker"),
-            "Signal": st.column_config.TextColumn("Signal"),
-            "Price (₹)": st.column_config.NumberColumn("Price (₹)", format="₹%.2f"),
-            "Change (%)": st.column_config.TextColumn("Change (%)"),
-            "Volume": st.column_config.TextColumn("Volume"),
-            "Composite Score": st.column_config.NumberColumn("Composite Score", format="%d"),
-            "ROCE (%)": st.column_config.NumberColumn("ROCE (%)", format="%.1f"),
-            "ADX (14)": st.column_config.NumberColumn("ADX (14)", format="%.1f"),
-            "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.1f"),
-            "From 52W High (%)": st.column_config.NumberColumn("From 52W High (%)", format="%.1f"),
-            "Vol Surge": st.column_config.CheckboxColumn("Vol Surge"),
-            "Market Cap (₹ Cr)": st.column_config.NumberColumn("Market Cap (₹ Cr)", format="%.1f"),
-        }
+
+        # Format number representations as strings for uniform center-alignment
+        table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
+        table_data["Composite Score"] = table_data["Composite Score"].apply(lambda x: f"{int(x)}" if pd.notna(x) else "-")
+        table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["RSI (14)"] = table_data["RSI (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["From 52W High (%)"] = table_data["From 52W High (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["Market Cap (₹ Cr)"] = table_data["Market Cap (₹ Cr)"].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+        table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
+
+        # Apply strict horizontal centering across all columns and headers
+        styled_table = table_data.style.set_properties(**{
+            "text-align": "center",
+            "font-weight": "500"
+        }).set_table_styles([
+            {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+        ])
 
         selection_event = st.dataframe(
-            table_data,
+            styled_table,
             use_container_width=True,
             hide_index=True,
-            column_config=column_config,
             on_select="rerun",
             selection_mode="single-row",
         )

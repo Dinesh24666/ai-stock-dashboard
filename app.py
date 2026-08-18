@@ -802,21 +802,28 @@ if not df_raw.empty:
             )
 
             with col_add1:
+                available_tickers = (
+                    df_raw["Raw_Ticker"].tolist()
+                    if not df_raw.empty
+                    else ["RELIANCE.NS"]
+                )
+                default_trade_idx = (
+                    available_tickers.index(st.session_state.selected_ticker)
+                    if st.session_state.selected_ticker in available_tickers
+                    else 0
+                )
                 trade_stock = st.selectbox(
-                    "Stock:",
-                    df_raw["Raw_Ticker"].tolist(),
-                    index=df_raw["Raw_Ticker"]
-                    .tolist()
-                    .index(st.session_state.selected_ticker)
-                    if st.session_state.selected_ticker
-                    in df_raw["Raw_Ticker"].tolist()
-                    else 0,
+                    "Stock:", available_tickers, index=default_trade_idx
                 )
             with col_add2:
                 trade_date = st.date_input("Entry Date", value=date.today())
 
             with col_add3:
-                matched_stock = df_raw[df_raw["Raw_Ticker"] == trade_stock]
+                matched_stock = (
+                    df_raw[df_raw["Raw_Ticker"] == trade_stock]
+                    if not df_raw.empty
+                    else pd.DataFrame()
+                )
                 live_price = (
                     float(matched_stock["Price (₹)"].iloc[0])
                     if not matched_stock.empty
@@ -850,21 +857,29 @@ if not df_raw.empty:
                 st.write("")
                 st.write("")
                 if st.button("📥 Execute Trade", use_container_width=True):
+                    raw_sym = (
+                        trade_stock
+                        if (
+                            trade_stock.endswith(".NS")
+                            or trade_stock.endswith(".BO")
+                        )
+                        else f"{trade_stock}.NS"
+                    )
                     company_name = (
                         matched_stock["Company"].iloc[0]
                         if not matched_stock.empty
-                        else trade_stock
+                        else trade_stock.replace(".NS", "")
                     )
                     new_trade = {
                         "Date": str(trade_date),
-                        "Ticker": trade_stock.replace(".NS", ""),
+                        "Ticker": raw_sym.replace(".NS", "").replace(".BO", ""),
                         "Company": company_name,
                         "Buy Price (₹)": buy_price,
                         "SL (₹)": sl_price,
                         "Qty": quantity,
                         "Remarks": remarks.strip(),
                         "Invested (₹)": round(buy_price * quantity, 2),
-                        "Raw_Ticker": trade_stock,
+                        "Raw_Ticker": raw_sym,
                     }
                     st.session_state.paper_portfolio.append(new_trade)
                     save_portfolio(st.session_state.paper_portfolio)
@@ -873,8 +888,9 @@ if not df_raw.empty:
                         f"(SL: ₹{sl_price})" if sl_price > 0 else "(No SL set)"
                     )
                     st.success(
-                        f"Executed buy for {quantity} shares of {trade_stock.replace('.NS', '')} at ₹{buy_price} {sl_msg}!"
+                        f"Executed buy for {quantity} shares of {new_trade['Ticker']} at ₹{buy_price} {sl_msg}!"
                     )
+                    st.rerun()
 
         # Portfolio Tracking
         if st.session_state.paper_portfolio:
@@ -884,20 +900,45 @@ if not df_raw.empty:
             unrealised_pnl_total = 0.0
             realised_pnl_total = 0.0
 
+            # Batch fetch live prices for all unique held stocks
+            held_symbols = list(
+                {
+                    pos.get("Raw_Ticker")
+                    or f"{pos.get('Ticker', 'RELIANCE')}.NS"
+                    for pos in st.session_state.paper_portfolio
+                }
+            )
+
+            live_prices_map = {}
+            for sym in held_symbols:
+                # Check screener df_raw first
+                m_row = (
+                    df_raw[df_raw["Raw_Ticker"] == sym]
+                    if not df_raw.empty
+                    else pd.DataFrame()
+                )
+                if not m_row.empty:
+                    live_prices_map[sym] = float(m_row["Price (₹)"].iloc[0])
+                else:
+                    try:
+                        t = yf.Ticker(sym)
+                        h = t.history(period="5d")
+                        if not h.empty:
+                            live_prices_map[sym] = round(
+                                float(h["Close"].iloc[-1]), 2
+                            )
+                    except Exception:
+                        pass
+
             for pos in st.session_state.paper_portfolio:
-                sym = pos.get("Raw_Ticker", "")
-                m_row = df_raw[df_raw["Raw_Ticker"] == sym]
+                sym = pos.get(
+                    "Raw_Ticker", f"{pos.get('Ticker', 'RELIANCE')}.NS"
+                )
                 buy_p = float(pos.get("Buy Price (₹)", 0.0))
-                curr_p = (
-                    float(m_row["Price (₹)"].iloc[0])
-                    if not m_row.empty
-                    else buy_p
-                )
-                invested = float(
-                    pos.get("Invested (₹)", buy_p * pos.get("Qty", 1))
-                )
-                sl = float(pos.get("SL (₹)", 0.0))
+                curr_p = live_prices_map.get(sym, buy_p)
                 qty = int(pos.get("Qty", 1))
+                invested = float(pos.get("Invested (₹)", buy_p * qty))
+                sl = float(pos.get("SL (₹)", 0.0))
                 pos_date = str(pos.get("Date", str(date.today())))
                 pos_remarks = str(pos.get("Remarks", "Discretionary"))
 
@@ -926,7 +967,10 @@ if not df_raw.empty:
                 portfolio_rows.append(
                     {
                         "Date": pos_date,
-                        "Ticker": pos.get("Ticker", sym.replace(".NS", "")),
+                        "Ticker": pos.get(
+                            "Ticker",
+                            sym.replace(".NS", "").replace(".BO", ""),
+                        ),
                         "Company": pos.get("Company", sym),
                         "Status": status,
                         "Remarks / Strategy": pos_remarks,
@@ -970,5 +1014,3 @@ if not df_raw.empty:
             st.info(
                 "No active paper trades. Use the order form above to enter trades with custom remarks & stop loss tracking."
             )
-else:
-    st.warning("No stocks passed the selected filter criteria.")

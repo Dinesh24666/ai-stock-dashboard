@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-# 1. Page Configuration & Center Alignment CSS
+# 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
@@ -20,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for all dataframe columns and headers */
+    /* Full center alignment for all dataframe columns and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
@@ -62,7 +62,7 @@ def save_portfolio(portfolio_data):
         st.error(f"Error saving portfolio: {e}")
 
 
-# Initialize session state variables
+# Initialize session states
 if "paper_portfolio" not in st.session_state:
     st.session_state["paper_portfolio"] = load_portfolio()
 
@@ -72,7 +72,7 @@ if "ai_analysis_cache" not in st.session_state:
 if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
-# 2. Sidebar - API Configuration
+# 2. Sidebar - API Setup
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -92,7 +92,7 @@ if GEMINI_API_KEY:
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
 
-# Complete 2000+ NSE Equities List
+# Complete Embedded 2,000+ NSE Listed Equities Universe
 NSE_FULL_EQUITIES = [
     "20MICRONS", "21STCENMGM", "360ONE", "3IINFOLTD", "3MINDIA", "3PLAND", "5PAISA", "63MOONS",
     "A2ZINFRA", "AAATECH", "AADHARHFC", "AAKASH", "AAL", "AARTIDRUGS", "AARTIIND",
@@ -453,7 +453,7 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Sidebar Quantitative & Technical Filters
+# 3. Sidebar Fundamental & Technical Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
     "Enable Strict Fundamental Filters", value=False if is_single_search else True
@@ -662,26 +662,36 @@ def fetch_screener_universe(ticker_list):
                 de = 0.5
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
-                rsi_momentum_score = (
-                    40 if 55.0 <= rsi_val <= 75.0
-                    else 25 if 50.0 <= rsi_val < 55.0 or 75.0 < rsi_val <= 80.0
-                    else 10 if 40.0 <= rsi_val < 50.0
-                    else 0
-                )
-                ema_trend_score = 30 if (curr_price >= ema_9 and ema_9 >= ema_20) else (15 if ema_9 >= ema_20 else 0)
-                proximity_score = 15 if dist_52w_high <= 15.0 else (8 if dist_52w_high <= 25.0 else 0)
-                vol_score = 15 if vol_surge else 5
+                # --- 100-POINT TIGHT BREAKOUT SCORING FORMULA ---
+                # 1. Price vs Candle Range (25 pts)
+                candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
+                close_position = (curr_price - hist["Low"].iloc[-1]) / candle_range
+                candle_score = 25 if close_position >= 0.75 else (15 if close_position >= 0.50 else 0)
 
-                swing_composite = float(rsi_momentum_score + ema_trend_score + proximity_score + vol_score)
+                # 2. Moving Average Alignment (25 pts)
+                full_bullish_stack = (curr_price > ema_20) and (ema_20 > sma_50) and (sma_50 > sma_200)
+                ma_score = 25 if full_bullish_stack else (15 if curr_price > ema_20 and ema_20 > sma_50 else 0)
 
-                if swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20:
-                    action_signal = "🟢 STRONG BUY (Breakout)"
-                elif swing_composite >= 60 and ema_9 >= ema_20:
-                    action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 40:
-                    action_signal = "🟠 WAIT / WATCH"
+                # 3. Momentum & ADX Trend (25 pts)
+                rsi_tight_score = 15 if 58.0 <= rsi_val <= 72.0 else (8 if 50.0 <= rsi_val < 58.0 else 0)
+                adx_tight_score = 10 if adx_val >= 25.0 else (5 if adx_val >= 20.0 else 0)
+                momentum_score = rsi_tight_score + adx_tight_score
+
+                # 4. Volume Surge & Proximity (25 pts)
+                vol_surge_score = 15 if curr_vol >= (avg_vol_20 * 1.5) else (8 if curr_vol >= avg_vol_20 else 0)
+                proximity_score = 10 if 0.5 <= dist_52w_high <= 12.0 else (5 if dist_52w_high <= 20.0 else 0)
+                volume_proximity_score = vol_surge_score + proximity_score
+
+                swing_composite = float(candle_score + ma_score + momentum_score + volume_proximity_score)
+
+                if swing_composite >= 85 and full_bullish_stack and curr_vol >= (avg_vol_20 * 1.3):
+                    action_signal = "🟢 HIGH-CONVICTION BREAKOUT"
+                elif swing_composite >= 65 and curr_price >= ema_20:
+                    action_signal = "🟡 BASE PULLBACK / READY"
+                elif swing_composite >= 45:
+                    action_signal = "🟠 CONSOLIDATING"
                 else:
-                    action_signal = "🔴 AVOID / WEAK"
+                    action_signal = "🔴 NO SETUP"
 
                 change_display = f"{'+' if price_change_pct >= 0 else ''}{price_change_pct:.2f}%"
 
@@ -765,7 +775,7 @@ if st.sidebar.button("🔄 Clear Cache & Reset", use_container_width=True):
     gc.collect()
     st.rerun()
 
-# Data scan execution
+# Data Scan Execution
 if scan_button or is_single_search or st.session_state["screener_data"].empty:
     with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
@@ -1226,7 +1236,7 @@ if not df_raw.empty:
                     st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']}!")
                     st.rerun()
 
-        # 2. Backup & Restore Controls (Processed before rendering table)
+        # 2. Backup & Restore (Executed before table rendering)
         col_dl, col_up = st.columns([1, 1])
         with col_up:
             uploaded_portfolio = st.file_uploader(
@@ -1238,7 +1248,6 @@ if not df_raw.empty:
                 try:
                     restored_data = json.load(uploaded_portfolio)
                     if isinstance(restored_data, list) and len(restored_data) > 0:
-                        # Normalize keys for robust parsing
                         clean_restored = []
                         for pos in restored_data:
                             sym = (
@@ -1270,7 +1279,7 @@ if not df_raw.empty:
                 except Exception as e:
                     st.error(f"Failed to restore backup: {e}")
 
-        # Always read the current state directly
+        # Always read the current active portfolio
         active_portfolio = st.session_state.get("paper_portfolio", [])
 
         with col_dl:
@@ -1283,7 +1292,7 @@ if not df_raw.empty:
                     use_container_width=True,
                 )
 
-        # 3. Portfolio Tracking & Metrics
+        # 3. Portfolio Tracking & Metrics Table
         if active_portfolio:
             portfolio_rows = []
             open_invested = 0.0
@@ -1383,3 +1392,5 @@ if not df_raw.empty:
                 st.rerun()
         else:
             st.info("No active paper trades. Upload your backup file or place a trade above.")
+else:
+    st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to begin.")

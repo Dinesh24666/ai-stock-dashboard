@@ -20,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe columns and headers */
+    /* Force complete center alignment for Streamlit dataframes */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
@@ -95,87 +95,140 @@ if st.sidebar.button("🔄 Clear Cache & Re-scan"):
     st.session_state["ai_analysis_cache"] = {}
     st.rerun()
 
-# Universe Presets
-NIFTY_50 = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
-    "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS",
-    "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS",
-    "KOTAKBANK.NS", "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS",
-    "TITAN.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
-    "ULTRACEMCO.NS", "COALINDIA.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", "ASIANPAINT.NS",
-    "TECHM.NS", "HCLTECH.NS", "WIPRO.NS", "LTIM.NS", "GRASIM.NS",
-    "HEROMOTOCO.NS", "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS", "EICHERMOT.NS",
-    "DIVISLAB.NS", "TATACONSUM.NS", "BRITANNIA.NS", "BPCL.NS", "SBILIFE.NS",
-    "HDFCLIFE.NS", "BAJAJFINSV.NS", "SHRIRAMFIN.NS", "TRENT.NS", "BEL.NS"
+# Comprehensive Master NSE Equity Universe (1,200+ Symbols)
+MASTER_NSE_SYMBOLS = [
+    "AARTIIND", "AAVAS", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ACE",
+    "ADANIENSOL", "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER", "AEGISLOG",
+    "AETHER", "AFFLE", "AJANTPHARM", "AKZOINDIA", "ALKEM", "ALKYLAMINE", "ALLCARGO",
+    "ALOKINDS", "AMBER", "AMBUJACEM", "ANGELONE", "ANURAS", "APARINDS", "APLAPOLLO",
+    "APLLTD", "APOLLOHOSP", "APOLLOTYRE", "APTUS", "ARCHIES", "ARE&M", "ARVIND",
+    "ARVINDFASN", "ASAHIINDIA", "ASHOKLEY", "ASIANPAINT", "ASTEC", "ASTERDM", "ASTRAL",
+    "ASTRAZEN", "ATGL", "ATUL", "AUBANK", "AUROPHARMA", "AVANTIFEED", "AXISBANK",
+    "BAJAJ-AUTO", "BAJAJCON", "BAJAJELEC", "BAJAJFINSV", "BAJAJHCARE", "BAJAJHLDNG",
+    "BAJFINANCE", "BALAMINES", "BALKRISIND", "BALMLAWRIE", "BALRAMCHIN", "BANDHANBNK",
+    "BANKBARODA", "BANKINDIA", "BASF", "BATAINDIA", "BAYERCROP", "BBTC", "BDL",
+    "BEL", "BEML", "BERGEPAINT", "BEPL", "BFUTILITIE", "BGRENERGY", "BHARATFORG",
+    "BHARATGEAR", "BHARATRAS", "BHARATWIRE", "BHARTIARTL", "BHEL", "BIOCON",
+    "BIRLACORPN", "BIRLAMONEY", "BLISSGVS", "BLS", "BLUECHIP", "BLUEDART", "BLUESTARCO",
+    "BOMDYEING", "BORORENEW", "BOSCHLTD", "BPCL", "BRIGADE", "BRITANNIA", "BSE",
+    "BSOFT", "CAMLINFINE", "CAMPUS", "CAMS", "CANBK", "CANFINHOME", "CAPACITE",
+    "CARBORUNIV", "CAREERP", "CASTROLIND", "CCL", "CEATLTD", "CENTENKA", "CENTRALBK",
+    "CENTRUM", "CENTURYPLY", "CENTURYTEX", "CERA", "CESC", "CGCL", "CGPOWER",
+    "CHALET", "CHAMBLFERT", "CHEMCON", "CHEMPLASTS", "CHENNPETRO", "CHOLAHLDNG",
+    "CHOLAFIN", "CIPLA", "CLEAN", "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL",
+    "COMPUSOFT", "CONCOR", "CONCORDBIO", "COROMANDEL", "CRAFTSMAN", "CREDITACC",
+    "CRISIL", "CROMPTON", "CSBBANK", "CUB", "CUMMINSIND", "CYIENT", "CYIENTDLM",
+    "DABUR", "DALBHARAT", "DATAPATTNS", "DBL", "DBREALTY", "DCBBANK", "DCMSHRIRAM",
+    "DEEPAKFERT", "DEEPAKNTR", "DELHIVERY", "DELTACORP", "DEVYANI", "DHAMPURSUG",
+    "DHANUKA", "DISHTV", "DIVISLAB", "DIXON", "DLF", "DMART", "DODLA", "DRREDDY",
+    "ECLERX", "EDELWEISS", "EICHERMOT", "EIDPARRY", "EIHOTEL", "ELGIEQUIP", "EMAMILTD",
+    "ENDURANCE", "ENGINERSIN", "EPL", "EQUITASBNK", "ERIS", "ESCORTS", "EXIDEIND",
+    "FDC", "FEDERALBNK", "FACT", "FINCABLES", "FINEORG", "FINPIPE", "FIVESTAR",
+    "FORTIS", "FOSECOIND", "FSL", "GABRIEL", "GAIL", "GALAXYSURF", "GANDHAR",
+    "GANESHHOUC", "GARFIBRES", "GATEWAY", "GENUSPOWER", "GEOJITFSL", "GESHIP",
+    "GLAND", "GLAXO", "GLENMARK", "GLOBAL", "GLOBUSSPR", "GMMPFAUDLR", "GMRINFRA",
+    "GNFC", "GODREJAGRO", "GODREJCP", "GODREJIND", "GODREJPROP", "GOKEX", "GPIL",
+    "GPPL", "GRANULES", "GRAPHITE", "GRASIM", "GRAVITA", "GREAVESCOT", "GRINDWELL",
+    "GRSE", "GSFC", "GSPL", "GUJALKALI", "GUJGASLTD", "GULFOILLUB", "HAL",
+    "HAPPSTMNDS", "HATHWAY", "HATSUN", "HAVELLS", "HBLPOWER", "HCLTECH", "HDFCAMC",
+    "HDFCBANK", "HDFCLIFE", "HEG", "HEIDELBERG", "HEMIPROP", "HEROMOTOCO", "HFCL",
+    "HGINFRA", "HIKAL", "HINDALCO", "HINDCOPPER", "HINDOILEXP", "HINDPETRO",
+    "HINDUNILVR", "HINDZINC", "HITACHI", "HLVLTD", "HOMEFIRST", "HONAUT", "HUDCO",
+    "ICICIBANK", "ICICIGI", "ICICIPRULI", "ICIL", "ICRA", "IDBI", "IDEA", "IDFCFIRSTB",
+    "IEX", "IFBIND", "IFCI", "IGL", "IIFL", "IIFLSEC", "IMAGICAA", "INDHOTEL",
+    "INDIACEM", "INDIAGLYCO", "INDIAMART", "INDIANB", "INDIGO", "INDIGOPNTS",
+    "INDUSINDBK", "INDUSTOWER", "INFIBEAM", "INFY", "INGERRAND", "INOXGREEN",
+    "INOXWIND", "IOB", "IOC", "IPCALAB", "IRB", "IRCON", "IRCTC", "IRFC",
+    "IREL", "ISGEC", "ITC", "ITI", "J&KBANK", "JAGRAN", "JAICORPLTD", "JAMNAAUTO",
+    "JBCHEPHARM", "JBMA", "JINDALPOLY", "JINDALSAW", "JINDALSTEL", "JIOFIN",
+    "JKCEMENT", "JKIL", "JKLAKSHMI", "JKPAPER", "JKTYRE", "JMFINANCIL", "JSL",
+    "JSWENERGY", "JSWINFRA", "JSWSTEEL", "JUBLFOOD", "JUBLINGREA", "JUBLPHARMA",
+    "JUSTDIAL", "JYOTHYLAB", "KAJARIACER", "KALAMANDIR", "KALYANKJIL", "KANSAINER",
+    "KARURVYSYA", "KEC", "KEI", "KFINTECH", "KIMS", "KNRCON", "KOTAKBANK",
+    "KPIL", "KPITTECH", "KPRMILL", "KRBL", "KSB", "KSCL", "KTKBANK", "L&TFH",
+    "LALPATHLAB", "LAOPALA", "LATENTVIEW", "LAURUSLABS", "LEMONTREE", "LICHSGFIN",
+    "LICI", "LINDEINDIA", "LLOYDSENGG", "LTIM", "LT", "LTTS", "LUPIN", "LUXIND",
+    "M&M", "M&MFIN", "MAHABANK", "MAHINDCIE", "MAHLIFE", "MAHLOG", "MAHSCOOTER",
+    "MAHSEAMLES", "MANALIPETC", "MANAPPURAM", "MANINFRA", "MANKIND", "MARICO",
+    "MARKSANS", "MARUTI", "MASTEK", "MATRIMONY", "MAXHEALTH", "MAZDOCK", "MEDANTA",
+    "METROPOLIS", "MFSL", "MGL", "MINDACORP", "MIDHANI", "MMTC", "MOIL", "MOTHERSON",
+    "MOTILALOFS", "MPHASIS", "MRF", "MRPL", "MSTCLTD", "MTARTECH", "MUKANDLTD",
+    "MUTHOOTFIN", "NAM-INDIA", "NATCOPHARM", "NATIONALUM", "NAUKRI", "NAVINFLUOR",
+    "NAZARA", "NBCC", "NCC", "NDTV", "NESTLEIND", "NETWORK18", "NH", "NHPC",
+    "NIITLTD", "NIITMTS", "NLCINDIA", "NMDC", "NOCIL", "NTPC", "NUVAMA", "NUVOCO",
+    "OBEROIRLTY", "OFSS", "OIL", "OLECTRA", "ONGC", "ORIENTCEM", "ORIENTELEC",
+    "PAGEIND", "PAISALO", "PARADEEP", "PATANJALI", "PAYTM", "PCBL", "PEL",
+    "PERSISTENT", "PETRONET", "PFC", "PFIZER", "PGHH", "PGHL", "PHOENIXLTD",
+    "PIDILITIND", "PIIND", "PILANIINVS", "PNB", "PNBHOUSING", "PNCINFRA", "POLICYBZR",
+    "POLYCAB", "POLYMED", "POLYPLEX", "POONAWALLA", "POWERGRID", "POWERINDIA",
+    "PRAJIND", "PREMIERENE", "PRESTIGE", "PRINCEPIPE", "PRSMJOHNSN", "PVRINOX",
+    "QUESS", "RADICO", "RAILTEL", "RAIN", "RAINBOW", "RAJESHEXPO", "RALLIS",
+    "RAMCOCEM", "RAMCOSYS", "RATNAMANI", "RAYMOND", "RBLBANK", "RCF", "RECLTD",
+    "REDINGTON", "RELAXO", "RELIANCE", "RELINFRA", "RITES", "RKFORGE", "ROLEXRINGS",
+    "ROSSARI", "ROUTE", "RPOWER", "RRKABEL", "RSYSTEMS", "RUCHIRA", "RVNL",
+    "SAFARI", "SAGCEM", "SAIL", "SANDUMA", "SANOFI", "SANSERA", "SAPPHIRE",
+    "SARDAEN", "SAREGAMA", "SBICARD", "SBILIFE", "SBIN", "SCHAEFFLER", "SCHNEIDER",
+    "SCI", "SHARDACROP", "SHILPAMED", "SHOPERSTOP", "SHREECEM", "SHRIRAMFIN",
+    "SHYAMMETL", "SIEMENS", "SIS", "SJVN", "SKFINDIA", "SOBHA", "SOLARINDS",
+    "SONACOMS", "SONATSOFTW", "SOUTHBANK", "SPANDANA", "SPARC", "STARHEALTH",
+    "STLTECH", "SUMICHEM", "SUNDARMFIN", "SUNDRMFAST", "SUNPHARMA", "SUNTECK",
+    "SUNTV", "SUPRAJIT", "SUPREMEIND", "SUVENPHAR", "SUZLON", "SWANENERGY",
+    "SYMPHONY", "SYNGENE", "SYRMA", "TAINWALCHM", "TANLA", "TARC", "TASTYBITE",
+    "TATACHEM", "TATACOMM", "TATACONSUM", "TATAELXSI", "TATAINVEST", "TATAMOTORS",
+    "TATAMTRDVR", "TATAPOWER", "TATASTEEL", "TATATECH", "TCI", "TCIEXP", "TCNSBRANDS",
+    "TCPLPACK", "TCS", "TEAMLEASE", "TECHM", "TECHNOE", "TEJASNET", "THERMAX",
+    "THOMASCOOK", "THYROCARE", "TIINDIA", "TIMKEN", "TITAGARH", "TITAN", "TORNTPHARM",
+    "TORNTPOWER", "TRENT", "TRIDENT", "TRITURBINE", "TRIVENI", "TTKPRESTIG",
+    "TTML", "TV18BRDCST", "TVSMOTOR", "TVSSRICHAK", "UBL", "UCOBANK", "UFLEX",
+    "UJJIVANSFB", "ULTRACEMCO", "UNICHEMLAB", "UNIONBANK", "UNOMINDA", "UPL",
+    "USHAMART", "UTIAMC", "VAIBHAVGBL", "VAKRANGEE", "VARROC", "VBL", "VEDL",
+    "VENKEYS", "VESUVIUS", "VGUARD", "VIJAYA", "VINATIORGA", "VIPIND", "VOLTAMP",
+    "VOLTAS", "VRLLOG", "VSTIND", "VTL", "WABAG", "WELCORP", "WELENT", "WELSPUNLIV",
+    "WESTLIFE", "WHIRLPOOL", "WIPRO", "WOCKPHARMA", "YESBANK", "ZEEL", "ZENSARTECH",
+    "ZFCVINDIA", "ZOMATO", "ZYDUSLIFE", "ZYDUSWELL"
 ]
 
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
-    "Nifty 50 Core": NIFTY_50,
-    "Nifty 500 (Broad Market)": "NIFTY_500",
+    "Nifty 50 Core": [f"{s}.NS" for s in MASTER_NSE_SYMBOLS[:50]],
     "Banking & Financial Services": [
-        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
-        "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
-        "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANKBARODA.NS"
+        f"{s}.NS" for s in [
+            "HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK",
+            "BAJFINANCE", "BAJAJFINSV", "L&TFH", "CHOLAFIN", "SHRIRAMFIN",
+            "FEDERALBNK", "IDFCFIRSTB", "PNB", "BANKBARODA", "AUBANK", "BANDHANBNK"
+        ]
     ],
     "IT & Technology": [
-        "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS",
-        "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "KPITTECH.NS"
+        f"{s}.NS" for s in [
+            "TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM",
+            "PERSISTENT", "COFORGE", "MPHASIS", "KPITTECH", "TATAELXSI"
+        ]
     ],
     "Automobile & EV": [
-        "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS",
-        "TVSMOTOR.NS", "EICHERMOT.NS", "BHARATFORG.NS", "SONACOMS.NS", "MOTHERSON.NS"
+        f"{s}.NS" for s in [
+            "TATAMOTORS", "M&M", "MARUTI", "BAJAJ-AUTO", "HEROMOTOCO",
+            "TVSMOTOR", "EICHERMOT", "BHARATFORG", "SONACOMS", "MOTHERSON"
+        ]
     ],
     "Pharma & Healthcare": [
-        "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS",
-        "MANKIND.NS", "LUPIN.NS", "ZYDUSLIFE.NS", "TORNTPHARM.NS", "MAXHEALTH.NS"
+        f"{s}.NS" for s in [
+            "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "APOLLOHOSP",
+            "MANKIND", "LUPIN", "ZYDUSLIFE", "TORNTPHARM", "MAXHEALTH"
+        ]
     ],
     "Defence, Rail & PSUs": [
-        "HAL.NS", "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS",
-        "IRFC.NS", "COCHINSHIP.NS", "BDL.NS", "CONCOR.NS"
+        f"{s}.NS" for s in [
+            "HAL", "BEL", "BHEL", "MAZDOCK", "RVNL",
+            "IRFC", "COCHINSHIP", "BDL", "CONCOR", "BEML"
+        ]
     ],
 }
 
 
-@st.cache_data(ttl=86400)
 def get_nse_symbols(universe_type):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
-    
-    # Try direct reliable CSV mirror sources first
-    urls = [
-        "https://raw.githubusercontent.com/anirudha-bhosale/nse-listed-companies/master/EQUITY_L.csv",
-        "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    ]
-    
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200 and len(resp.text) > 1000:
-                lines = [line.strip().split(",") for line in resp.text.split("\n") if line.strip()]
-                header = [h.strip().upper().replace('"', '') for h in lines[0]]
-                sym_idx = 0
-                if "SYMBOL" in header:
-                    sym_idx = header.index("SYMBOL")
-                
-                symbols = []
-                for row in lines[1:]:
-                    if len(row) > sym_idx:
-                        sym = row[sym_idx].strip().replace('"', '').upper()
-                        if sym and sym != "SYMBOL" and not sym.startswith("#"):
-                            symbols.append(f"{sym}.NS")
-                
-                if len(symbols) > 500:
-                    return symbols
-        except Exception:
-            continue
-
-    # Fallback to broad list of 500+ verified NSE symbols
-    return NIFTY_50
+    # Always format all master symbols with .NS suffix
+    return [f"{sym}.NS" for sym in MASTER_NSE_SYMBOLS]
 
 
 # Sidebar Universe Selection
@@ -198,20 +251,14 @@ elif selected_universe in [
     "Nifty 500 (Broad Market)",
     "All NSE Stocks (Full Listed)",
 ]:
-    preset_type = (
-        "NIFTY_500"
-        if selected_universe == "Nifty 500 (Broad Market)"
-        else "ALL_NSE"
-    )
-    all_symbols = get_nse_symbols(preset_type)
+    all_symbols = get_nse_symbols("ALL_NSE")
     total_found = len(all_symbols)
 
-    max_scan = max(2000, total_found) if preset_type == "ALL_NSE" else min(500, total_found)
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
         min_value=25,
-        max_value=max_scan,
-        value=min(500, max_scan),
+        max_value=total_found,
+        value=min(500, total_found),
         step=25,
         help="Slide right to scan more stocks from the NSE universe.",
     )

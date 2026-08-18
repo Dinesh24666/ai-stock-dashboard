@@ -211,8 +211,8 @@ st.sidebar.header("📈 Technical Filters")
 price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
     0,
-    50000,
-    (10, 50000),
+    5000,
+    (30, 5000),
     step=10,
     help="Filter stocks within a specific current share price band",
 )

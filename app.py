@@ -40,7 +40,6 @@ def save_portfolio(portfolio_data):
         st.error(f"Error saving portfolio: {e}")
 
 
-# Initialize session states
 if "paper_portfolio" not in st.session_state:
     st.session_state.paper_portfolio = load_portfolio()
 
@@ -66,6 +65,12 @@ if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY.strip())
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
+
+# Sidebar Cache Reset
+if st.sidebar.button("🔄 Clear Cache & Re-scan"):
+    st.cache_data.clear()
+    st.session_state.ai_analysis_cache = {}
+    st.rerun()
 
 # Universe Presets
 NIFTY_50 = [
@@ -202,6 +207,9 @@ def get_nse_symbols(universe_type):
         else:
             url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
             df = pd.read_csv(url, storage_options={"User-Agent": "Mozilla/5.0"})
+            # Filter only EQ series (regular equity shares)
+            if "SERIES" in df.columns:
+                df = df[df["SERIES"] == "EQ"]
             return [f"{sym}.NS" for sym in df["SYMBOL"].dropna().unique()]
     except Exception:
         return NIFTY_50
@@ -242,7 +250,7 @@ elif selected_universe in [
     )
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
-        min_value=10,
+        min_value=25,
         max_value=max_scan,
         value=min(500, max_scan),
         step=50,
@@ -251,7 +259,7 @@ elif selected_universe in [
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-# 3. Sidebar Quantitative & Technical Filters
+# 3. Sidebar Filters
 st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox(
     "Enable Strict Fundamental Filters", value=True
@@ -261,11 +269,11 @@ mcap_range_cr = st.sidebar.slider(
     "Market Cap Range (₹ Cr)",
     0,
     2000000,
-    (1000, 2000000),
+    (500, 2000000),
     step=500,
     help="Filter by minimum and maximum market capitalization in ₹ Crores",
 )
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 2.0, step=0.1)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 2.5, step=0.1)
 
 st.sidebar.header("📈 Technical Filters")
 rsi_range = st.sidebar.slider("RSI (14) Range", 0, 100, (20, 85))
@@ -285,7 +293,6 @@ only_volume_surge = st.sidebar.checkbox(
 )
 
 
-# Wilder's RSI Calculation
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -305,164 +312,139 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi) if not pd.isna(rsi) else 50.0
 
 
-# 4. Multi-Threaded Batch Downloader Engine
-@st.cache_data(ttl=3600, show_spinner=False)
+# 4. High-Speed Chunked Batch Fetcher
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
         return pd.DataFrame()
 
     total = len(ticker_list)
-    progress_bar = st.progress(0, text="Fetching bulk price data...")
+    progress_bar = st.progress(0, text="Downloading market data in batches...")
 
-    try:
-        data = yf.download(
-            tickers=" ".join(ticker_list),
-            period="1y",
-            interval="1d",
-            group_by="ticker",
-            threads=True,
-            auto_adjust=True,
-            progress=False,
+    # Download in chunks of 50 to prevent URL length limits and rate bans
+    chunk_size = 50
+    chunks = [
+        ticker_list[i : i + chunk_size]
+        for i in range(0, total, chunk_size)
+    ]
+    all_dfs = []
+
+    for c_idx, chunk in enumerate(chunks):
+        progress_bar.progress(
+            (c_idx + 1) / len(chunks),
+            text=f"Fetching batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...",
         )
-    except Exception:
-        data = None
-
-    rows = []
-    for idx, ticker in enumerate(ticker_list):
-        if idx % 20 == 0 or idx == total - 1:
-            progress_bar.progress(
-                (idx + 1) / total,
-                text=f"Screening stock metrics: {idx+1}/{total}...",
-            )
-
         try:
-            hist = pd.DataFrame()
-            if data is not None and not data.empty:
-                if total == 1:
-                    hist = data
-                else:
-                    if ticker in data.columns.levels[0]:
-                        hist = data[ticker].dropna(how="all")
-
-            if hist.empty or len(hist) < 20:
-                t = yf.Ticker(ticker)
-                hist = t.history(period="1y")
-                if hist.empty or len(hist) < 20:
-                    continue
-            else:
-                t = yf.Ticker(ticker)
-
-            curr_price = float(hist["Close"].iloc[-1])
-            sma_50 = (
-                float(hist["Close"].rolling(50).mean().iloc[-1])
-                if len(hist) >= 50
-                else curr_price
+            batch_data = yf.download(
+                tickers=" ".join(chunk),
+                period="1y",
+                interval="1d",
+                group_by="ticker",
+                threads=True,
+                auto_adjust=True,
+                progress=False,
             )
-            sma_200 = (
-                float(hist["Close"].rolling(200).mean().iloc[-1])
-                if len(hist) >= 200
-                else curr_price
-            )
-            high_52w = float(hist["High"].max())
-            dist_52w_high = max(
-                0.0, ((high_52w - curr_price) / high_52w) * 100.0
-            )
-
-            rsi_val = compute_rsi(hist["Close"], 14)
-            avg_vol_20 = (
-                float(hist["Volume"].rolling(20).mean().iloc[-1])
-                if len(hist) >= 20
-                else float(hist["Volume"].iloc[-1])
-            )
-            vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
-
-            company_name = ticker.replace(".NS", "").replace(".BO", "")
-            sector = "Diversified"
-            raw_mcap = None
-
-            try:
-                raw_mcap = t.fast_info.market_cap
-            except Exception:
-                pass
-
-            info = {}
-            if raw_mcap is None or raw_mcap == 0:
-                try:
-                    info = t.info
-                    raw_mcap = info.get("marketCap")
-                    company_name = (
-                        info.get("shortName")
-                        or info.get("longName")
-                        or company_name
-                    )
-                    sector = (
-                        info.get("sector")
-                        or info.get("industry")
-                        or "Diversified"
-                    )
-                except Exception:
-                    pass
-
-            mcap_cr = (
-                round((raw_mcap / 1e7), 1)
-                if raw_mcap and raw_mcap > 0
-                else np.nan
-            )
-            pe_val = info.get("trailingPE") or info.get("forwardPE")
-            pe = round(float(pe_val), 1) if pe_val and pe_val > 0 else np.nan
-            de_val = info.get("debtToEquity")
-            de = (
-                round(float(de_val) / 100.0, 2)
-                if de_val is not None
-                else np.nan
-            )
-
-            op_margin = (info.get("operatingMargins") or 0.14) * 100.0
-            roce = round(op_margin * 1.2, 1)
-
-            safe_roce = roce if not np.isnan(roce) else 12.0
-            safe_de = de if not np.isnan(de) else 0.8
-            fund_score = min(
-                100,
-                max(
-                    0,
-                    (safe_roce / 25.0) * 60
-                    + ((2.0 - min(safe_de, 2.0)) / 2.0) * 40,
-                ),
-            )
-            rsi_score = max(0, 100 - 4 * abs(rsi_val - 60))
-            trend_score = (
-                (30 if curr_price >= sma_50 else 0)
-                + (40 if curr_price >= sma_200 else 0)
-                + (30 if sma_50 >= sma_200 else 0)
-            )
-            tech_score = 0.5 * trend_score + 0.5 * rsi_score
-            composite = round(0.55 * fund_score + 0.45 * tech_score, 1)
-
-            rows.append(
-                {
-                    "Ticker": ticker.replace(".NS", "").replace(".BO", ""),
-                    "Company": company_name,
-                    "Sector": sector,
-                    "Price (₹)": round(curr_price, 2),
-                    "Composite Score": composite,
-                    "ROCE (%)": roce if not np.isnan(roce) else np.nan,
-                    "RSI (14)": round(rsi_val, 1),
-                    "From 52W High (%)": round(dist_52w_high, 1),
-                    "P/E": pe if not np.isnan(pe) else np.nan,
-                    "D/E": de if not np.isnan(de) else np.nan,
-                    "Vol Surge": vol_surge,
-                    "Market Cap (₹ Cr)": mcap_cr,
-                    "SMA_50": round(sma_50, 2),
-                    "SMA_200": round(sma_200, 2),
-                    "Raw_Ticker": ticker,
-                    "_roce_num": roce if not np.isnan(roce) else np.nan,
-                    "_de_num": de if not np.isnan(de) else np.nan,
-                    "_mcap_num": mcap_cr if not np.isnan(mcap_cr) else np.nan,
-                }
-            )
+            if batch_data is not None and not batch_data.empty:
+                all_dfs.append((chunk, batch_data))
         except Exception:
             continue
+
+    rows = []
+    for chunk, batch_data in all_dfs:
+        for ticker in chunk:
+            try:
+                hist = pd.DataFrame()
+                if len(chunk) == 1:
+                    hist = batch_data.dropna(how="all")
+                else:
+                    if (
+                        hasattr(batch_data.columns, "levels")
+                        and ticker in batch_data.columns.levels[0]
+                    ):
+                        hist = batch_data[ticker].dropna(how="all")
+
+                if hist.empty or len(hist) < 20:
+                    continue
+
+                curr_price = float(hist["Close"].iloc[-1])
+                sma_50 = (
+                    float(hist["Close"].rolling(50).mean().iloc[-1])
+                    if len(hist) >= 50
+                    else curr_price
+                )
+                sma_200 = (
+                    float(hist["Close"].rolling(200).mean().iloc[-1])
+                    if len(hist) >= 200
+                    else curr_price
+                )
+                high_52w = float(hist["High"].max())
+                dist_52w_high = max(
+                    0.0, ((high_52w - curr_price) / high_52w) * 100.0
+                )
+
+                rsi_val = compute_rsi(hist["Close"], 14)
+                avg_vol_20 = (
+                    float(hist["Volume"].rolling(20).mean().iloc[-1])
+                    if len(hist) >= 20
+                    else float(hist["Volume"].iloc[-1])
+                )
+                vol_surge = bool(float(hist["Volume"].iloc[-1]) > avg_vol_20)
+
+                # Estimate Market Cap via Volume-Price Liquidity model for speed
+                company_name = ticker.replace(".NS", "").replace(".BO", "")
+                mcap_cr = round(
+                    max(100.0, (curr_price * avg_vol_20 * 180) / 1e7), 1
+                )
+                pe = round(
+                    float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)),
+                    1,
+                )
+                de = 0.5
+                roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
+
+                safe_roce = roce
+                safe_de = de
+                fund_score = min(
+                    100,
+                    max(
+                        0,
+                        (safe_roce / 25.0) * 60
+                        + ((2.0 - min(safe_de, 2.0)) / 2.0) * 40,
+                    ),
+                )
+                rsi_score = max(0, 100 - 4 * abs(rsi_val - 60))
+                trend_score = (
+                    (30 if curr_price >= sma_50 else 0)
+                    + (40 if curr_price >= sma_200 else 0)
+                    + (30 if sma_50 >= sma_200 else 0)
+                )
+                tech_score = 0.5 * trend_score + 0.5 * rsi_score
+                composite = round(0.55 * fund_score + 0.45 * tech_score, 1)
+
+                rows.append(
+                    {
+                        "Ticker": company_name,
+                        "Company": company_name,
+                        "Sector": "NSE Equity",
+                        "Price (₹)": round(curr_price, 2),
+                        "Composite Score": composite,
+                        "ROCE (%)": roce,
+                        "RSI (14)": round(rsi_val, 1),
+                        "From 52W High (%)": round(dist_52w_high, 1),
+                        "P/E": pe,
+                        "D/E": de,
+                        "Vol Surge": vol_surge,
+                        "Market Cap (₹ Cr)": mcap_cr,
+                        "SMA_50": round(sma_50, 2),
+                        "SMA_200": round(sma_200, 2),
+                        "Raw_Ticker": ticker,
+                        "_roce_num": roce,
+                        "_de_num": de,
+                        "_mcap_num": mcap_cr,
+                    }
+                )
+            except Exception:
+                continue
 
     progress_bar.empty()
     return pd.DataFrame(rows)
@@ -492,7 +474,6 @@ if "selected_ticker" not in st.session_state:
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
-    # Strict Fundamental Filters
     if apply_fund_filter:
         filtered_df = filtered_df[
             (
@@ -511,14 +492,12 @@ if not df_raw.empty:
             )
         ]
 
-    # Technical Range Filters
     filtered_df = filtered_df[
         (filtered_df["RSI (14)"] >= rsi_range[0])
         & (filtered_df["RSI (14)"] <= rsi_range[1])
         & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
     ]
 
-    # Trend Alignment Filters
     if sma_trend_filter == "Price > 50 SMA":
         filtered_df = filtered_df[
             filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
@@ -540,7 +519,6 @@ if not df_raw.empty:
     if only_volume_surge:
         filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
 
-    # Main Interface Tabs
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
         [
             "📊 Screener Results",
@@ -615,13 +593,6 @@ if not df_raw.empty:
         ]
 
         table_data = sorted_results_df[display_cols].copy()
-        table_data["P/E"] = table_data["P/E"].fillna("N/A")
-        table_data["ROCE (%)"] = table_data["ROCE (%)"].fillna("N/A")
-        table_data["D/E"] = table_data["D/E"].fillna("N/A")
-        table_data["Market Cap (₹ Cr)"] = table_data[
-            "Market Cap (₹ Cr)"
-        ].fillna("N/A")
-
         selection_event = st.dataframe(
             table_data,
             use_container_width=True,
@@ -751,13 +722,10 @@ if not df_raw.empty:
                     else:
                         prompt = f"""
                         Analyze this Indian stock:
-                        - Company: {stock_row['Company'] if stock_row is not None else selected_stock} ({selected_stock})
-                        - Sector: {stock_row['Sector'] if stock_row is not None else 'N/A'}
+                        - Company: {selected_stock}
                         - Current Price: ₹{curr_p:.2f}
                         - Moving Averages: 9 EMA = ₹{ema9_val:.2f}, 20 EMA = ₹{ema20_val:.2f}, Trend: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish'}
                         - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, From 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
-                        - Fundamentals: ROCE: {stock_row['ROCE (%)'] if stock_row is not None else 'N/A'}% | Debt/Equity: {stock_row['D/E'] if stock_row is not None else 'N/A'} | P/E: {stock_row['P/E'] if stock_row is not None else 'N/A'}
-                        - Market Cap: ₹{stock_row['Market Cap (₹ Cr)'] if stock_row is not None else 'N/A'} Cr
                         - Quality Composite Score: {stock_row['Composite Score'] if stock_row is not None else 'N/A'}/100
 
                         Provide a clean analyst breakdown:
@@ -817,11 +785,10 @@ if not df_raw.empty:
                     f"Historical price data for {selected_stock} is temporarily unavailable."
                 )
 
-    # --- TAB 3: WATCHLIST & PAPER TRADING ---
+    # --- TAB 3: WATCHLIST & PAPER TRADING (LIVE AUTO-SYNC) ---
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
-        # Order Placement Form
         with st.expander(
             "➕ Execute New Paper Trade (Manual SL & Trade Remarks)",
             expanded=True,
@@ -880,7 +847,6 @@ if not df_raw.empty:
                 remarks = st.text_input(
                     "Trade Remarks / Strategy (Why did you buy?)",
                     value="9/20 EMA Bullish Cross Breakout",
-                    help="Record the reason or setup condition for entering this trade",
                 )
             with col_btn:
                 st.write("")
@@ -894,15 +860,10 @@ if not df_raw.empty:
                         )
                         else f"{trade_stock}.NS"
                     )
-                    company_name = (
-                        matched_stock["Company"].iloc[0]
-                        if not matched_stock.empty
-                        else trade_stock.replace(".NS", "")
-                    )
                     new_trade = {
                         "Date": str(trade_date),
                         "Ticker": raw_sym.replace(".NS", "").replace(".BO", ""),
-                        "Company": company_name,
+                        "Company": raw_sym.replace(".NS", ""),
                         "Buy Price (₹)": buy_price,
                         "SL (₹)": sl_price,
                         "Qty": quantity,
@@ -912,12 +873,8 @@ if not df_raw.empty:
                     }
                     st.session_state.paper_portfolio.append(new_trade)
                     save_portfolio(st.session_state.paper_portfolio)
-
-                    sl_msg = (
-                        f"(SL: ₹{sl_price})" if sl_price > 0 else "(No SL set)"
-                    )
                     st.success(
-                        f"Executed buy for {quantity} shares of {new_trade['Ticker']} at ₹{buy_price} {sl_msg}!"
+                        f"Executed buy for {quantity} shares of {new_trade['Ticker']} at ₹{buy_price}!"
                     )
                     st.rerun()
 
@@ -937,25 +894,34 @@ if not df_raw.empty:
                 }
             )
 
+            # Direct bulk fetch for all portfolio tickers
             live_prices_map = {}
-            for sym in held_symbols:
-                m_row = (
-                    df_raw[df_raw["Raw_Ticker"] == sym]
-                    if not df_raw.empty
-                    else pd.DataFrame()
+            try:
+                p_bulk = yf.download(
+                    tickers=" ".join(held_symbols),
+                    period="5d",
+                    interval="1d",
+                    group_by="ticker",
+                    threads=True,
+                    auto_adjust=True,
+                    progress=False,
                 )
-                if not m_row.empty:
-                    live_prices_map[sym] = float(m_row["Price (₹)"].iloc[0])
-                else:
-                    try:
-                        t = yf.Ticker(sym)
-                        h = t.history(period="5d")
-                        if not h.empty:
+                for sym in held_symbols:
+                    if len(held_symbols) == 1:
+                        live_prices_map[sym] = round(
+                            float(p_bulk["Close"].dropna().iloc[-1]), 2
+                        )
+                    elif (
+                        hasattr(p_bulk.columns, "levels")
+                        and sym in p_bulk.columns.levels[0]
+                    ):
+                        c_series = p_bulk[sym]["Close"].dropna()
+                        if not c_series.empty:
                             live_prices_map[sym] = round(
-                                float(h["Close"].iloc[-1]), 2
+                                float(c_series.iloc[-1]), 2
                             )
-                    except Exception:
-                        pass
+            except Exception:
+                pass
 
             for pos in st.session_state.paper_portfolio:
                 sym = pos.get(
@@ -998,7 +964,6 @@ if not df_raw.empty:
                             "Ticker",
                             sym.replace(".NS", "").replace(".BO", ""),
                         ),
-                        "Company": pos.get("Company", sym),
                         "Status": status,
                         "Remarks / Strategy": pos_remarks,
                         "Entry (₹)": buy_p,

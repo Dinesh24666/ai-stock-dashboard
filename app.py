@@ -20,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Force complete center alignment for Streamlit dataframes */
+    /* Full center alignment for all dataframe columns and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
@@ -95,169 +95,68 @@ if st.sidebar.button("🔄 Clear Cache & Re-scan"):
     st.session_state["ai_analysis_cache"] = {}
     st.rerun()
 
-# Comprehensive Master NSE Equity Universe (1,200+ Symbols)
-MASTER_NSE_SYMBOLS = [
-    "AARTIIND", "AAVAS", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ACE",
-    "ADANIENSOL", "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER", "AEGISLOG",
-    "AETHER", "AFFLE", "AJANTPHARM", "AKZOINDIA", "ALKEM", "ALKYLAMINE", "ALLCARGO",
-    "ALOKINDS", "AMBER", "AMBUJACEM", "ANGELONE", "ANURAS", "APARINDS", "APLAPOLLO",
-    "APLLTD", "APOLLOHOSP", "APOLLOTYRE", "APTUS", "ARCHIES", "ARE&M", "ARVIND",
-    "ARVINDFASN", "ASAHIINDIA", "ASHOKLEY", "ASIANPAINT", "ASTEC", "ASTERDM", "ASTRAL",
-    "ASTRAZEN", "ATGL", "ATUL", "AUBANK", "AUROPHARMA", "AVANTIFEED", "AXISBANK",
-    "BAJAJ-AUTO", "BAJAJCON", "BAJAJELEC", "BAJAJFINSV", "BAJAJHCARE", "BAJAJHLDNG",
-    "BAJFINANCE", "BALAMINES", "BALKRISIND", "BALMLAWRIE", "BALRAMCHIN", "BANDHANBNK",
-    "BANKBARODA", "BANKINDIA", "BASF", "BATAINDIA", "BAYERCROP", "BBTC", "BDL",
-    "BEL", "BEML", "BERGEPAINT", "BEPL", "BFUTILITIE", "BGRENERGY", "BHARATFORG",
-    "BHARATGEAR", "BHARATRAS", "BHARATWIRE", "BHARTIARTL", "BHEL", "BIOCON",
-    "BIRLACORPN", "BIRLAMONEY", "BLISSGVS", "BLS", "BLUECHIP", "BLUEDART", "BLUESTARCO",
-    "BOMDYEING", "BORORENEW", "BOSCHLTD", "BPCL", "BRIGADE", "BRITANNIA", "BSE",
-    "BSOFT", "CAMLINFINE", "CAMPUS", "CAMS", "CANBK", "CANFINHOME", "CAPACITE",
-    "CARBORUNIV", "CAREERP", "CASTROLIND", "CCL", "CEATLTD", "CENTENKA", "CENTRALBK",
-    "CENTRUM", "CENTURYPLY", "CENTURYTEX", "CERA", "CESC", "CGCL", "CGPOWER",
-    "CHALET", "CHAMBLFERT", "CHEMCON", "CHEMPLASTS", "CHENNPETRO", "CHOLAHLDNG",
-    "CHOLAFIN", "CIPLA", "CLEAN", "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL",
-    "COMPUSOFT", "CONCOR", "CONCORDBIO", "COROMANDEL", "CRAFTSMAN", "CREDITACC",
-    "CRISIL", "CROMPTON", "CSBBANK", "CUB", "CUMMINSIND", "CYIENT", "CYIENTDLM",
-    "DABUR", "DALBHARAT", "DATAPATTNS", "DBL", "DBREALTY", "DCBBANK", "DCMSHRIRAM",
-    "DEEPAKFERT", "DEEPAKNTR", "DELHIVERY", "DELTACORP", "DEVYANI", "DHAMPURSUG",
-    "DHANUKA", "DISHTV", "DIVISLAB", "DIXON", "DLF", "DMART", "DODLA", "DRREDDY",
-    "ECLERX", "EDELWEISS", "EICHERMOT", "EIDPARRY", "EIHOTEL", "ELGIEQUIP", "EMAMILTD",
-    "ENDURANCE", "ENGINERSIN", "EPL", "EQUITASBNK", "ERIS", "ESCORTS", "EXIDEIND",
-    "FDC", "FEDERALBNK", "FACT", "FINCABLES", "FINEORG", "FINPIPE", "FIVESTAR",
-    "FORTIS", "FOSECOIND", "FSL", "GABRIEL", "GAIL", "GALAXYSURF", "GANDHAR",
-    "GANESHHOUC", "GARFIBRES", "GATEWAY", "GENUSPOWER", "GEOJITFSL", "GESHIP",
-    "GLAND", "GLAXO", "GLENMARK", "GLOBAL", "GLOBUSSPR", "GMMPFAUDLR", "GMRINFRA",
-    "GNFC", "GODREJAGRO", "GODREJCP", "GODREJIND", "GODREJPROP", "GOKEX", "GPIL",
-    "GPPL", "GRANULES", "GRAPHITE", "GRASIM", "GRAVITA", "GREAVESCOT", "GRINDWELL",
-    "GRSE", "GSFC", "GSPL", "GUJALKALI", "GUJGASLTD", "GULFOILLUB", "HAL",
-    "HAPPSTMNDS", "HATHWAY", "HATSUN", "HAVELLS", "HBLPOWER", "HCLTECH", "HDFCAMC",
-    "HDFCBANK", "HDFCLIFE", "HEG", "HEIDELBERG", "HEMIPROP", "HEROMOTOCO", "HFCL",
-    "HGINFRA", "HIKAL", "HINDALCO", "HINDCOPPER", "HINDOILEXP", "HINDPETRO",
-    "HINDUNILVR", "HINDZINC", "HITACHI", "HLVLTD", "HOMEFIRST", "HONAUT", "HUDCO",
-    "ICICIBANK", "ICICIGI", "ICICIPRULI", "ICIL", "ICRA", "IDBI", "IDEA", "IDFCFIRSTB",
-    "IEX", "IFBIND", "IFCI", "IGL", "IIFL", "IIFLSEC", "IMAGICAA", "INDHOTEL",
-    "INDIACEM", "INDIAGLYCO", "INDIAMART", "INDIANB", "INDIGO", "INDIGOPNTS",
-    "INDUSINDBK", "INDUSTOWER", "INFIBEAM", "INFY", "INGERRAND", "INOXGREEN",
-    "INOXWIND", "IOB", "IOC", "IPCALAB", "IRB", "IRCON", "IRCTC", "IRFC",
-    "IREL", "ISGEC", "ITC", "ITI", "J&KBANK", "JAGRAN", "JAICORPLTD", "JAMNAAUTO",
-    "JBCHEPHARM", "JBMA", "JINDALPOLY", "JINDALSAW", "JINDALSTEL", "JIOFIN",
-    "JKCEMENT", "JKIL", "JKLAKSHMI", "JKPAPER", "JKTYRE", "JMFINANCIL", "JSL",
-    "JSWENERGY", "JSWINFRA", "JSWSTEEL", "JUBLFOOD", "JUBLINGREA", "JUBLPHARMA",
-    "JUSTDIAL", "JYOTHYLAB", "KAJARIACER", "KALAMANDIR", "KALYANKJIL", "KANSAINER",
-    "KARURVYSYA", "KEC", "KEI", "KFINTECH", "KIMS", "KNRCON", "KOTAKBANK",
-    "KPIL", "KPITTECH", "KPRMILL", "KRBL", "KSB", "KSCL", "KTKBANK", "L&TFH",
-    "LALPATHLAB", "LAOPALA", "LATENTVIEW", "LAURUSLABS", "LEMONTREE", "LICHSGFIN",
-    "LICI", "LINDEINDIA", "LLOYDSENGG", "LTIM", "LT", "LTTS", "LUPIN", "LUXIND",
-    "M&M", "M&MFIN", "MAHABANK", "MAHINDCIE", "MAHLIFE", "MAHLOG", "MAHSCOOTER",
-    "MAHSEAMLES", "MANALIPETC", "MANAPPURAM", "MANINFRA", "MANKIND", "MARICO",
-    "MARKSANS", "MARUTI", "MASTEK", "MATRIMONY", "MAXHEALTH", "MAZDOCK", "MEDANTA",
-    "METROPOLIS", "MFSL", "MGL", "MINDACORP", "MIDHANI", "MMTC", "MOIL", "MOTHERSON",
-    "MOTILALOFS", "MPHASIS", "MRF", "MRPL", "MSTCLTD", "MTARTECH", "MUKANDLTD",
-    "MUTHOOTFIN", "NAM-INDIA", "NATCOPHARM", "NATIONALUM", "NAUKRI", "NAVINFLUOR",
-    "NAZARA", "NBCC", "NCC", "NDTV", "NESTLEIND", "NETWORK18", "NH", "NHPC",
-    "NIITLTD", "NIITMTS", "NLCINDIA", "NMDC", "NOCIL", "NTPC", "NUVAMA", "NUVOCO",
-    "OBEROIRLTY", "OFSS", "OIL", "OLECTRA", "ONGC", "ORIENTCEM", "ORIENTELEC",
-    "PAGEIND", "PAISALO", "PARADEEP", "PATANJALI", "PAYTM", "PCBL", "PEL",
-    "PERSISTENT", "PETRONET", "PFC", "PFIZER", "PGHH", "PGHL", "PHOENIXLTD",
-    "PIDILITIND", "PIIND", "PILANIINVS", "PNB", "PNBHOUSING", "PNCINFRA", "POLICYBZR",
-    "POLYCAB", "POLYMED", "POLYPLEX", "POONAWALLA", "POWERGRID", "POWERINDIA",
-    "PRAJIND", "PREMIERENE", "PRESTIGE", "PRINCEPIPE", "PRSMJOHNSN", "PVRINOX",
-    "QUESS", "RADICO", "RAILTEL", "RAIN", "RAINBOW", "RAJESHEXPO", "RALLIS",
-    "RAMCOCEM", "RAMCOSYS", "RATNAMANI", "RAYMOND", "RBLBANK", "RCF", "RECLTD",
-    "REDINGTON", "RELAXO", "RELIANCE", "RELINFRA", "RITES", "RKFORGE", "ROLEXRINGS",
-    "ROSSARI", "ROUTE", "RPOWER", "RRKABEL", "RSYSTEMS", "RUCHIRA", "RVNL",
-    "SAFARI", "SAGCEM", "SAIL", "SANDUMA", "SANOFI", "SANSERA", "SAPPHIRE",
-    "SARDAEN", "SAREGAMA", "SBICARD", "SBILIFE", "SBIN", "SCHAEFFLER", "SCHNEIDER",
-    "SCI", "SHARDACROP", "SHILPAMED", "SHOPERSTOP", "SHREECEM", "SHRIRAMFIN",
-    "SHYAMMETL", "SIEMENS", "SIS", "SJVN", "SKFINDIA", "SOBHA", "SOLARINDS",
-    "SONACOMS", "SONATSOFTW", "SOUTHBANK", "SPANDANA", "SPARC", "STARHEALTH",
-    "STLTECH", "SUMICHEM", "SUNDARMFIN", "SUNDRMFAST", "SUNPHARMA", "SUNTECK",
-    "SUNTV", "SUPRAJIT", "SUPREMEIND", "SUVENPHAR", "SUZLON", "SWANENERGY",
-    "SYMPHONY", "SYNGENE", "SYRMA", "TAINWALCHM", "TANLA", "TARC", "TASTYBITE",
-    "TATACHEM", "TATACOMM", "TATACONSUM", "TATAELXSI", "TATAINVEST", "TATAMOTORS",
-    "TATAMTRDVR", "TATAPOWER", "TATASTEEL", "TATATECH", "TCI", "TCIEXP", "TCNSBRANDS",
-    "TCPLPACK", "TCS", "TEAMLEASE", "TECHM", "TECHNOE", "TEJASNET", "THERMAX",
-    "THOMASCOOK", "THYROCARE", "TIINDIA", "TIMKEN", "TITAGARH", "TITAN", "TORNTPHARM",
-    "TORNTPOWER", "TRENT", "TRIDENT", "TRITURBINE", "TRIVENI", "TTKPRESTIG",
-    "TTML", "TV18BRDCST", "TVSMOTOR", "TVSSRICHAK", "UBL", "UCOBANK", "UFLEX",
-    "UJJIVANSFB", "ULTRACEMCO", "UNICHEMLAB", "UNIONBANK", "UNOMINDA", "UPL",
-    "USHAMART", "UTIAMC", "VAIBHAVGBL", "VAKRANGEE", "VARROC", "VBL", "VEDL",
-    "VENKEYS", "VESUVIUS", "VGUARD", "VIJAYA", "VINATIORGA", "VIPIND", "VOLTAMP",
-    "VOLTAS", "VRLLOG", "VSTIND", "VTL", "WABAG", "WELCORP", "WELENT", "WELSPUNLIV",
-    "WESTLIFE", "WHIRLPOOL", "WIPRO", "WOCKPHARMA", "YESBANK", "ZEEL", "ZENSARTECH",
-    "ZFCVINDIA", "ZOMATO", "ZYDUSLIFE", "ZYDUSWELL"
-]
-
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
-    "Nifty 50 Core": [f"{s}.NS" for s in MASTER_NSE_SYMBOLS[:50]],
+    "Nifty 50 Core": "NIFTY_50",
     "Banking & Financial Services": [
-        f"{s}.NS" for s in [
-            "HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK",
-            "BAJFINANCE", "BAJAJFINSV", "L&TFH", "CHOLAFIN", "SHRIRAMFIN",
-            "FEDERALBNK", "IDFCFIRSTB", "PNB", "BANKBARODA", "AUBANK", "BANDHANBNK"
-        ]
+        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
+        "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
+        "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANKBARODA.NS", "AUBANK.NS", "BANDHANBNK.NS"
     ],
     "IT & Technology": [
-        f"{s}.NS" for s in [
-            "TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM",
-            "PERSISTENT", "COFORGE", "MPHASIS", "KPITTECH", "TATAELXSI"
-        ]
+        "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS",
+        "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "KPITTECH.NS", "TATAELXSI.NS"
     ],
     "Automobile & EV": [
-        f"{s}.NS" for s in [
-            "TATAMOTORS", "M&M", "MARUTI", "BAJAJ-AUTO", "HEROMOTOCO",
-            "TVSMOTOR", "EICHERMOT", "BHARATFORG", "SONACOMS", "MOTHERSON"
-        ]
+        "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS",
+        "TVSMOTOR.NS", "EICHERMOT.NS", "BHARATFORG.NS", "SONACOMS.NS", "MOTHERSON.NS"
     ],
     "Pharma & Healthcare": [
-        f"{s}.NS" for s in [
-            "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "APOLLOHOSP",
-            "MANKIND", "LUPIN", "ZYDUSLIFE", "TORNTPHARM", "MAXHEALTH"
-        ]
+        "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS",
+        "MANKIND.NS", "LUPIN.NS", "ZYDUSLIFE.NS", "TORNTPHARM.NS", "MAXHEALTH.NS"
     ],
     "Defence, Rail & PSUs": [
-        f"{s}.NS" for s in [
-            "HAL", "BEL", "BHEL", "MAZDOCK", "RVNL",
-            "IRFC", "COCHINSHIP", "BDL", "CONCOR", "BEML"
-        ]
+        "HAL.NS", "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS",
+        "IRFC.NS", "COCHINSHIP.NS", "BDL.NS", "CONCOR.NS", "BEML.NS"
     ],
 }
 
 
 @st.cache_data(ttl=86400)
-def get_nse_symbols(universe_type):
-    # Try fetching the official complete NSE equity directory
-    sources = [
-        "https://raw.githubusercontent.com/datasets/nse-stocks-data/master/data/EQUITY_L.csv",
-        "https://raw.githubusercontent.com/anirudha-bhosale/nse-listed-companies/master/EQUITY_L.csv",
-        "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+def get_all_nse_symbols():
+    # Direct raw GitHub mirrors of complete NSE Equity universes (2,000+ unique tickers)
+    urls = [
+        "https://raw.githubusercontent.com/yogeshnarang/Nifty-Index-Clustering/master/nse-indices-symbols.csv",
+        "https://raw.githubusercontent.com/parismita/sharesbot/master/NSE-datasets-codes.csv",
+        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
     ]
     
-    headers = {"User-Agent": "Mozilla/5.0"}
-    for url in sources:
+    unique_symbols = set()
+    
+    for url in urls:
         try:
-            resp = requests.get(url, headers=headers, timeout=5)
-            if resp.status_code == 200 and len(resp.text) > 2000:
-                lines = [line.strip().split(",") for line in resp.text.split("\n") if line.strip()]
-                header = [h.strip().upper().replace('"', '') for h in lines[0]]
-                sym_idx = header.index("SYMBOL") if "SYMBOL" in header else 0
-                
-                parsed_symbols = []
-                for row in lines[1:]:
-                    if len(row) > sym_idx:
-                        s = row[sym_idx].strip().replace('"', '').upper()
-                        if s and s != "SYMBOL" and not s.startswith("#"):
-                            parsed_symbols.append(f"{s}.NS")
-                
-                if len(parsed_symbols) >= 1000:
-                    return parsed_symbols
+            resp = requests.get(url, timeout=6)
+            if resp.status_code == 200:
+                lines = [l.strip().split(",") for l in resp.text.split("\n") if l.strip()]
+                for row in lines:
+                    for item in row:
+                        clean = item.strip().replace('"', '').replace("NSE/", "").upper()
+                        if clean.endswith(".NS"):
+                            clean = clean.replace(".NS", "")
+                        if clean.isalpha() and 2 <= len(clean) <= 15:
+                            unique_symbols.add(f"{clean}.NS")
         except Exception:
             continue
-
-    # Fallback to embedded symbols formatted with .NS
-    return [f"{s}.NS" for s in MASTER_NSE_SYMBOLS]
+            
+    # Sort and guarantee clean uniqueness
+    final_list = sorted(list(unique_symbols))
+    return final_list if len(final_list) >= 500 else [
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
+        "INFY.NS", "LT.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS", "TATAMOTORS.NS",
+        "M&M.NS", "MARUTI.NS", "SUNPHARMA.NS", "BAJFINANCE.NS", "KOTAKBANK.NS",
+        "AXISBANK.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "TITAN.NS", "ACE.NS"
+    ]
 
 
 # Sidebar Universe Selection
@@ -276,28 +175,22 @@ if is_single_search:
     )
     clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
     tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
-elif selected_universe in [
-    "Nifty 500 (Broad Market)",
-    "All NSE Stocks (Full Listed)",
-]:
-    all_symbols = get_nse_symbols("ALL_NSE")
-    
-    # Enforce maximum slider bound up to full 2,500 stocks
-    slider_max = max(2500, len(all_symbols))
-    
+elif selected_universe == "Nifty 50 Core":
+    all_symbols = get_all_nse_symbols()
+    tickers_to_scan = all_symbols[:50]
+elif selected_universe == "All NSE Stocks (Full Listed)":
+    all_symbols = get_all_nse_symbols()
+    total_found = len(all_symbols)
+
     scan_limit = st.sidebar.slider(
         "Number of Stocks to Scan",
         min_value=25,
-        max_value=slider_max,
-        value=min(2000, slider_max),
+        max_value=total_found,
+        value=min(1000, total_found),
         step=25,
-        help="Slide right to scan more stocks from the NSE universe.",
+        help="Slide right to scan more stocks across the NSE universe.",
     )
-    
-    # Repeat / cycle symbols if external source fails so it always fulfills the requested scan count
-    if len(all_symbols) < scan_limit:
-        all_symbols = (all_symbols * ((scan_limit // len(all_symbols)) + 1))
-        
+    # Strictly unique, no duplication
     tickers_to_scan = all_symbols[:scan_limit]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
@@ -323,7 +216,7 @@ price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
     0,
     5000,
-    (10, 5000),
+    (30, 5000),
     step=10,
     help="Filter stocks within a specific current share price band",
 )
@@ -341,10 +234,10 @@ sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
         "Any Trend",
+        "Price > Both 50 & 200 SMA",
         "Golden Cross (50 SMA > 200 SMA)",
         "Price > 50 SMA",
         "Price > 200 SMA",
-        "Price > Both 50 & 200 SMA",
     ],
 )
 only_volume_surge = st.sidebar.checkbox(
@@ -404,12 +297,14 @@ def fetch_screener_universe(ticker_list):
     if not ticker_list:
         return pd.DataFrame()
 
-    total = len(ticker_list)
+    # Strict Deduplication
+    unique_tickers = list(dict.fromkeys(ticker_list))
+    total = len(unique_tickers)
     progress_bar = st.progress(0, text="Downloading market data in batches...")
 
     chunk_size = 50
     chunks = [
-        ticker_list[i : i + chunk_size]
+        unique_tickers[i : i + chunk_size]
         for i in range(0, total, chunk_size)
     ]
     all_dfs = []
@@ -417,7 +312,7 @@ def fetch_screener_universe(ticker_list):
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress(
             (c_idx + 1) / len(chunks),
-            text=f"Fetching batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...",
+            text=f"Fetching batch {c_idx+1} of {len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} unique stocks)...",
         )
         try:
             batch_data = yf.download(
@@ -435,8 +330,14 @@ def fetch_screener_universe(ticker_list):
             continue
 
     rows = []
+    seen_tickers = set()
+
     for chunk, batch_data in all_dfs:
         for ticker in chunk:
+            clean_sym = ticker.replace(".NS", "").replace(".BO", "")
+            if clean_sym in seen_tickers:
+                continue
+
             try:
                 hist = pd.DataFrame()
                 if len(chunk) == 1:
@@ -497,7 +398,7 @@ def fetch_screener_universe(ticker_list):
                 )
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
 
-                company_name = ticker.replace(".NS", "").replace(".BO", "")
+                company_name = clean_sym
                 mcap_cr = round(
                     max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1
                 )
@@ -562,11 +463,15 @@ def fetch_screener_universe(ticker_list):
                         "_adx_num": adx_val,
                     }
                 )
+                seen_tickers.add(clean_sym)
             except Exception:
                 continue
 
     progress_bar.empty()
-    return pd.DataFrame(rows)
+    df_result = pd.DataFrame(rows)
+    if not df_result.empty:
+        df_result = df_result.drop_duplicates(subset=["Ticker"]).reset_index(drop=True)
+    return df_result
 
 
 @st.cache_data(ttl=1800)
@@ -621,15 +526,7 @@ if not df_raw.empty:
             & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
         ]
 
-        if sma_trend_filter == "Price > 50 SMA":
-            filtered_df = filtered_df[
-                filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
-            ]
-        elif sma_trend_filter == "Price > 200 SMA":
-            filtered_df = filtered_df[
-                filtered_df["Price (₹)"] >= filtered_df["SMA_200"]
-            ]
-        elif sma_trend_filter == "Price > Both 50 & 200 SMA":
+        if sma_trend_filter == "Price > Both 50 & 200 SMA":
             filtered_df = filtered_df[
                 (filtered_df["Price (₹)"] >= filtered_df["SMA_50"])
                 & (filtered_df["Price (₹)"] >= filtered_df["SMA_200"])
@@ -638,9 +535,20 @@ if not df_raw.empty:
             filtered_df = filtered_df[
                 filtered_df["SMA_50"] >= filtered_df["SMA_200"]
             ]
+        elif sma_trend_filter == "Price > 50 SMA":
+            filtered_df = filtered_df[
+                filtered_df["Price (₹)"] >= filtered_df["SMA_50"]
+            ]
+        elif sma_trend_filter == "Price > 200 SMA":
+            filtered_df = filtered_df[
+                filtered_df["Price (₹)"] >= filtered_df["SMA_200"]
+            ]
 
         if only_volume_surge:
             filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
+
+    # Ensure no duplicates in filtered dataset
+    filtered_df = filtered_df.drop_duplicates(subset=["Ticker"]).reset_index(drop=True)
 
     tab_screener, tab_deepdive, tab_watchlist = st.tabs(
         [
@@ -665,10 +573,10 @@ if not df_raw.empty:
             sort_metric = st.selectbox(
                 "Sort Results By:",
                 [
+                    "Volume",
                     "Composite Score",
                     "Change (%)",
                     "Price (₹)",
-                    "Volume",
                     "ADX (14)",
                     "ROCE (%)",
                     "RSI (14)",
@@ -685,10 +593,10 @@ if not df_raw.empty:
             )
 
         sort_col_map = {
+            "Volume": "_raw_vol",
             "Composite Score": "Composite Score",
             "Change (%)": "_change_num",
             "Price (₹)": "Price (₹)",
-            "Volume": "_raw_vol",
             "ADX (14)": "_adx_num",
             "ROCE (%)": "_roce_num",
             "RSI (14)": "RSI (14)",
@@ -696,13 +604,12 @@ if not df_raw.empty:
             "Market Cap (₹ Cr)": "_mcap_num",
         }
 
-        target_sort_col = sort_col_map.get(sort_metric, "Composite Score")
+        target_sort_col = sort_col_map.get(sort_metric, "_raw_vol")
         ascending_flag = sort_order == "Low to High (Asc)"
         sorted_results_df = filtered_df.sort_values(
             by=target_sort_col, ascending=ascending_flag, na_position="last"
         )
 
-        # Exact visual column order matching requested layout
         display_cols = [
             "Ticker",
             "Signal",
@@ -720,7 +627,7 @@ if not df_raw.empty:
 
         table_data = sorted_results_df[display_cols].copy()
 
-        # Format number representations as strings for uniform center-alignment
+        # Center-aligned formatted values
         table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
         table_data["Composite Score"] = table_data["Composite Score"].apply(lambda x: f"{int(x)}" if pd.notna(x) else "-")
         table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")

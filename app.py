@@ -20,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe columns and headers */
+    /* Center alignment for all dataframe columns and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
@@ -488,10 +488,13 @@ min_adx = st.sidebar.slider(
     help="ADX > 25 indicates strong trending momentum. Leave as 0 to include all.",
 )
 max_dist_52w_high = st.sidebar.slider("Within % of 52-Week High", 0, 100, 100)
+
+# Multi-Timeframe and Technical Alignment Selection
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
         "Any Trend",
+        "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)",
         "Price > Both 50 & 200 SMA",
         "Golden Cross (50 SMA > 200 SMA)",
         "Price > 50 SMA",
@@ -639,8 +642,21 @@ def fetch_screener_universe(ticker_list):
                     0.0, ((high_52w - curr_price) / high_52w) * 100.0
                 )
 
+                # Previous 20-Day High (Daily High Breakout)
+                prev_20d_high = float(hist["High"].iloc[:-1].tail(20).max()) if len(hist) > 20 else float(hist["High"].max())
+                is_20d_high_breakout = bool(curr_price >= prev_20d_high)
+
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
+
+                # Weekly Multi-Timeframe Trend Extraction
+                try:
+                    weekly_series = hist["Close"].resample("W").last().dropna()
+                    weekly_ema_20 = float(weekly_series.ewm(span=20, adjust=False).mean().iloc[-1]) if len(weekly_series) >= 5 else curr_price * 0.95
+                    weekly_rsi = compute_rsi(weekly_series, 14) if len(weekly_series) >= 14 else rsi_val
+                    weekly_bullish = bool(curr_price >= weekly_ema_20 and weekly_rsi >= 55.0)
+                except Exception:
+                    weekly_bullish = bool(curr_price >= ema_20 and rsi_val >= 55.0)
 
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
@@ -650,6 +666,16 @@ def fetch_screener_universe(ticker_list):
                     else float(curr_vol)
                 )
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
+                vol_surge_1_5x = bool(curr_vol >= (avg_vol_20 * 1.5))
+
+                # Chartink Multi-Timeframe Setup Match Condition
+                passes_mtf_breakout = bool(
+                    weekly_bullish
+                    and (curr_price >= ema_20)
+                    and (curr_price >= ema_9)
+                    and is_20d_high_breakout
+                    and vol_surge_1_5x
+                )
 
                 company_name = clean_sym
                 mcap_cr = round(
@@ -684,8 +710,8 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(candle_score + ma_score + momentum_score + volume_proximity_score)
 
-                # --- ACCURATE SIGNAL CLASSIFICATION ---
-                if swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20:
+                # Actionable Signal Classification
+                if (swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20) or passes_mtf_breakout:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif swing_composite >= 60 and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -724,6 +750,7 @@ def fetch_screener_universe(ticker_list):
                         "_de_num": de,
                         "_mcap_num": mcap_cr,
                         "_adx_num": adx_val,
+                        "_mtf_match": passes_mtf_breakout,
                     }
                 )
                 seen_tickers.add(clean_sym)
@@ -821,7 +848,9 @@ if not df_raw.empty:
             & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
         ]
 
-        if sma_trend_filter == "Price > Both 50 & 200 SMA":
+        if sma_trend_filter == "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)":
+            filtered_df = filtered_df[filtered_df["_mtf_match"] == True]
+        elif sma_trend_filter == "Price > Both 50 & 200 SMA":
             filtered_df = filtered_df[
                 (filtered_df["Price (₹)"] >= filtered_df["SMA_50"])
                 & (filtered_df["Price (₹)"] >= filtered_df["SMA_200"])
@@ -1237,7 +1266,7 @@ if not df_raw.empty:
                     st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']}!")
                     st.rerun()
 
-        # 2. Backup & Restore (Executed before table rendering)
+        # 2. Backup & Restore
         col_dl, col_up = st.columns([1, 1])
         with col_up:
             uploaded_portfolio = st.file_uploader(
@@ -1280,7 +1309,7 @@ if not df_raw.empty:
                 except Exception as e:
                     st.error(f"Failed to restore backup: {e}")
 
-        # Always read active portfolio
+        # Active Portfolio Reference
         active_portfolio = st.session_state.get("paper_portfolio", [])
 
         with col_dl:

@@ -1238,7 +1238,7 @@ if not df_raw.empty:
             with col_sub2:
                 remarks = st.text_input(
                     "Trade Remarks / Strategy",
-                    value="9/20 EMA Breakout Swing Setup",
+                    value="Multi-Timeframe 20D Breakout"
                 )
             with col_btn:
                 st.write("")

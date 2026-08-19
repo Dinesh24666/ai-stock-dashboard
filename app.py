@@ -843,12 +843,21 @@ def fetch_screener_universe(ticker_list):
                 if hist.empty or len(hist) < 20:
                     continue
 
-                curr_price = float(hist["Close"].iloc[-1])
-                prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else curr_price
-                price_change_pct = (
-                    round(((curr_price - prev_close) / prev_close) * 100.0, 2)
-                    if prev_close > 0
-                    else 0.0
+                # Clean duplicate daily timestamps if yfinance appends live intraday ticks
+hist = hist[~hist.index.duplicated(keep="last")]
+
+# If today is an active intraday candle, pick the true previous completed day's close
+if len(hist) >= 3 and hist.index[-1].date() == hist.index[-2].date():
+    curr_price = float(hist["Close"].iloc[-1])
+    prev_close = float(hist["Close"].iloc[-3])
+elif len(hist) >= 2:
+    curr_price = float(hist["Close"].iloc[-1])
+    prev_close = float(hist["Close"].iloc[-2])
+else:
+    curr_price = float(hist["Close"].iloc[-1])
+    prev_close = curr_price
+
+price_change_pct = round(((curr_price - prev_close) / prev_close) * 100.0, 2) if prev_close > 0 else 0.0
                 )
 
                 ema_9_series = hist["Close"].ewm(span=9, adjust=False).mean()

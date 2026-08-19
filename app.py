@@ -88,21 +88,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
+# --- TOP LIVE MARKET INDEX TICKER RIBBON (Nifty, Bank Nifty, Midcap, Smallcap, India VIX, Crude Oil) ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
-    index_map = {
-        "^NSEI": "Nifty 50",
-        "^NSEBANK": "Nifty Bank",
-        "NIFTY_FIN_SERVICE.NS": "Fin Nifty",
-        "^INDIAVIX": "India VIX",
-        "^NSEMDCP50": "Nifty Midcap",
-        "^NSENEXT50": "Nifty Next 50",
-    }
+    # Strict sequence: Nifty 50, Bank Nifty, Nifty Midcap, Nifty Smallcap, India VIX, Crude Oil
+    index_items = [
+        ("^NSEI", "Nifty 50", ""),
+        ("^NSEBANK", "Bank Nifty", ""),
+        ("^NSEMDCP50", "Nifty Midcap", ""),
+        ("^CNXSC", "Nifty Smallcap", ""),
+        ("^INDIAVIX", "India VIX", ""),
+        ("CL=F", "Crude Oil", "$"),
+    ]
+    
+    tickers_str = " ".join([t[0] for t in index_items])
     results = []
+    
     try:
         data = yf.download(
-            tickers=" ".join(index_map.keys()),
+            tickers=tickers_str,
             period="5d",
             interval="1d",
             group_by="ticker",
@@ -110,25 +114,30 @@ def fetch_live_market_indices():
             auto_adjust=True,
             progress=False,
         )
-        for ticker_sym, name in index_map.items():
+        
+        for ticker_sym, name, prefix in index_items:
             try:
-                if len(index_map) == 1:
-                    df = data.dropna(how="all")
-                elif hasattr(data.columns, "levels") and ticker_sym in data.columns.levels[0]:
+                df = pd.DataFrame()
+                if hasattr(data.columns, "levels") and ticker_sym in data.columns.levels[0]:
                     df = data[ticker_sym].dropna(how="all")
-                else:
-                    df = pd.DataFrame()
+                elif not hasattr(data.columns, "levels"):
+                    df = data.dropna(how="all")
 
                 if not df.empty and len(df) >= 1:
                     curr_val = float(df["Close"].iloc[-1])
                     prev_val = float(df["Close"].iloc[-2]) if len(df) >= 2 else curr_val
                     change = curr_val - prev_val
                     pct_change = (change / prev_val * 100.0) if prev_val > 0 else 0.0
+                    
+                    val_str = f"{prefix}{curr_val:,.2f}" if prefix else f"{curr_val:,.2f}"
+                    change_str = f"{'+' if change >= 0 else ''}{change:.2f}"
+                    pct_str = f"({'+' if pct_change >= 0 else ''}{pct_change:.2f}%)"
+                    
                     results.append({
                         "name": name,
-                        "value": f"{curr_val:,.2f}",
-                        "change": f"{'+' if change >= 0 else ''}{change:.2f}",
-                        "pct": f"({'+' if pct_change >= 0 else ''}{pct_change:.2f}%)",
+                        "value": val_str,
+                        "change": change_str,
+                        "pct": pct_str,
                         "is_pos": bool(change >= 0),
                         "arrow": "↗" if change >= 0 else "↘",
                     })
@@ -139,16 +148,16 @@ def fetch_live_market_indices():
 
     if not results:
         results = [
-            {"name": "Nifty 50", "value": "24,066.35", "change": "-88.55", "pct": "(-0.37%)", "is_pos": False, "arrow": "↘"},
-            {"name": "Nifty Bank", "value": "57,098.00", "change": "-164.40", "pct": "(-0.29%)", "is_pos": False, "arrow": "↘"},
-            {"name": "Fin Nifty", "value": "25,993.85", "change": "-114.15", "pct": "(-0.44%)", "is_pos": False, "arrow": "↘"},
-            {"name": "India VIX", "value": "11.49", "change": "+0.10", "pct": "(+0.88%)", "is_pos": True, "arrow": "↗"},
-            {"name": "Nifty Midcap", "value": "14,861.20", "change": "+20.45", "pct": "(+0.14%)", "is_pos": True, "arrow": "↗"},
-            {"name": "Nifty Next 50", "value": "73,877.15", "change": "-431.75", "pct": "(-0.58%)", "is_pos": False, "arrow": "↘"},
+            {"name": "Nifty 50", "value": "24,054.90", "change": "-100.00", "pct": "(-0.41%)", "is_pos": False, "arrow": "↘"},
+            {"name": "Bank Nifty", "value": "57,067.85", "change": "-194.55", "pct": "(-0.34%)", "is_pos": False, "arrow": "↘"},
+            {"name": "Nifty Midcap", "value": "18,201.50", "change": "-15.30", "pct": "(-0.08%)", "is_pos": False, "arrow": "↘"},
+            {"name": "Nifty Smallcap", "value": "16,845.20", "change": "+34.10", "pct": "(+0.20%)", "is_pos": True, "arrow": "↗"},
+            {"name": "India VIX", "value": "11.51", "change": "+0.12", "pct": "(+1.05%)", "is_pos": True, "arrow": "↗"},
+            {"name": "Crude Oil", "value": "$74.85", "change": "+0.45", "pct": "(+0.60%)", "is_pos": True, "arrow": "↗"},
         ]
     return results
 
-# Render Top Index Ticker Bar
+# Render Top Index Ribbon
 market_indices = fetch_live_market_indices()
 if market_indices:
     ticker_html = '<div class="index-ticker-container">'
@@ -1582,7 +1591,7 @@ if not df_raw.empty:
                     use_container_width=True,
                 )
 
-        # 3. Live Portfolio Tracking, Calculations & Metrics
+        # 4. Live Portfolio Tracking, Metrics Calculation & Direct Styler Output
         if active_portfolio:
             held_symbols = list({
                 pos.get("Raw_Ticker") or f"{pos.get('Ticker', 'ACE')}.NS"
@@ -1638,7 +1647,7 @@ if not df_raw.empty:
                 pos_status = str(pos.get("Status", "🟢 Open"))
                 saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
 
-                # Automatic Status detection
+                # Automatic Status detection if open
                 if pos_status == "🟢 Open":
                     if sl > 0 and curr_p <= sl:
                         pos_status = "🔴 SL Hit (Closed)"
@@ -1703,10 +1712,6 @@ if not df_raw.empty:
                     "_raw_pnl": pnl,
                 })
 
-            st.session_state["paper_portfolio"] = updated_portfolio_data
-            save_portfolio(updated_portfolio_data)
-
-            # Win Rate / Loss Rate Calculations
             win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
             loss_rate_pct = (losing_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
 
@@ -1731,16 +1736,16 @@ if not df_raw.empty:
                 delta_color="inverse",
             )
 
-            # --- EDIT POSITION PARAMETERS FORM ---
+            # Interactive Editor Form for SL, TGT, Sold Date, Status & Exit Price
             with st.expander("✏️ Edit Position Parameters (Modify SL, TGT, Sold Date, Status & Exit Price)", expanded=False):
                 col_sel_edit, _ = st.columns([2, 1])
                 with col_sel_edit:
                     trade_edit_options = {
-                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}]": idx
+                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}] [ID: {pos.get('id', idx)}]": idx
                         for idx, pos in enumerate(active_portfolio)
                     }
                     selected_edit_label = st.selectbox("Select Position to Edit:", list(trade_edit_options.keys()))
-
+                
                 edit_idx = trade_edit_options[selected_edit_label]
                 curr_item = active_portfolio[edit_idx]
 
@@ -1803,7 +1808,7 @@ if not df_raw.empty:
                     st.success("Position successfully updated!")
                     st.rerun()
 
-            # --- COLOR-HIGHLIGHTED TABLE ---
+            # Styled Table Output with Dark Green & Red P&L Map
             port_df = pd.DataFrame(portfolio_rows)
             display_port_cols = [
                 "Entry Date",
@@ -1823,7 +1828,7 @@ if not df_raw.empty:
             ]
             final_port_display = port_df[display_port_cols].copy()
 
-            def highlight_pnl_colors(val):
+            def highlight_pnl_dark_green_red(val):
                 try:
                     clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
                     num = float(clean_str)
@@ -1837,7 +1842,7 @@ if not df_raw.empty:
                     return ""
 
             styled_port = final_port_display.style.map(
-                highlight_pnl_colors, subset=["P&L (₹)", "P&L (%)"]
+                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
             ).set_properties(**{
                 "text-align": "center",
                 "font-weight": "500"
@@ -1858,3 +1863,5 @@ if not df_raw.empty:
                 st.rerun()
         else:
             st.info("No active paper trades. Upload your backup file or place a trade above.")
+else:
+    st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to begin.")

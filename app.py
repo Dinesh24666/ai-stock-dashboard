@@ -20,19 +20,16 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe and data_editor columns */
-    [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
-    [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
+    /* Full center alignment for all dataframe columns and headers */
+    [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
         text-align: center !important;
         vertical-align: middle !important;
     }
-    div[data-testid="stDataFrame"] div[role="columnheader"],
-    div[data-testid="stDataEditor"] div[role="columnheader"] {
+    div[data-testid="stDataFrame"] div[role="columnheader"] {
         text-align: center !important;
         justify-content: center !important;
     }
-    div[data-testid="stDataFrame"] div[role="gridcell"],
-    div[data-testid="stDataEditor"] div[role="gridcell"] {
+    div[data-testid="stDataFrame"] div[role="gridcell"] {
         text-align: center !important;
         justify-content: center !important;
     }
@@ -141,7 +138,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- TOP LIVE MARKET INDEX TICKER RIBBON (Nifty 50, Bank Nifty, Midcap, Smallcap, India VIX, Crude Oil) ---
+# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
     index_items = [
@@ -445,7 +442,7 @@ NSE_FULL_EQUITIES = [
     "LOYAL", "LT", "LTF", "LTIM", "LTTS", "LUMAXIND", "LUMAXTECH", "LUPIN",
     "LUXIND", "LXCHEM", "LYKALABS", "LYPSAGEMS", "M&M", "M&MFIN", "MAANALU",
     "MACPOWER", "MADHAV", "MADHUCON", "MADRASFERT", "MAGADSUGAR", "MAGNUM",
-    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHinDCIE",
+    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHINDCIE",
     "MAHLIFE", "MAHLOG", "MAHSCOOTER", "MAHSEAMLES", "MAITHANALL", "MALLCOM",
     "MALUPAPER", "MANAKALUCO", "MANAKCOAT", "MANAKSIA", "MANAKSTEEL", "MANALIPETC",
     "MANAPPURAM", "MANBA", "MANCREDIT", "MANGALAM", "MANGCHEFER", "MANGLMCEM",
@@ -843,22 +840,26 @@ def fetch_screener_universe(ticker_list):
                 if hist.empty or len(hist) < 20:
                     continue
 
-                # Clean duplicate daily timestamps if yfinance appends live intraday ticks
-hist = hist[~hist.index.duplicated(keep="last")]
+                # Remove duplicate index stamps if live intraday candle is appended
+                hist = hist[~hist.index.duplicated(keep="last")]
 
-# If today is an active intraday candle, pick the true previous completed day's close
-if len(hist) >= 3 and hist.index[-1].date() == hist.index[-2].date():
-    curr_price = float(hist["Close"].iloc[-1])
-    prev_close = float(hist["Close"].iloc[-3])
-elif len(hist) >= 2:
-    curr_price = float(hist["Close"].iloc[-1])
-    prev_close = float(hist["Close"].iloc[-2])
-else:
-    curr_price = float(hist["Close"].iloc[-1])
-    prev_close = curr_price
+                # Accurate Previous Close & Price Change Calculation
+                if len(hist) >= 3 and hist.index[-1].date() == hist.index[-2].date():
+                    curr_price = float(hist["Close"].iloc[-1])
+                    prev_close = float(hist["Close"].iloc[-3])
+                elif len(hist) >= 2:
+                    curr_price = float(hist["Close"].iloc[-1])
+                    prev_close = float(hist["Close"].iloc[-2])
+                else:
+                    curr_price = float(hist["Close"].iloc[-1])
+                    prev_close = curr_price
 
-price_change_pct = round(((curr_price - prev_close) / prev_close) * 100.0, 2) if prev_close > 0 else 0.0
+                price_change_pct = (
+                    round(((curr_price - prev_close) / prev_close) * 100.0, 2)
+                    if prev_close > 0
+                    else 0.0
                 )
+
                 ema_9_series = hist["Close"].ewm(span=9, adjust=False).mean()
                 ema_20_series = hist["Close"].ewm(span=20, adjust=False).mean()
                 ema_44_series = hist["Close"].ewm(span=44, adjust=False).mean()
@@ -947,7 +948,7 @@ price_change_pct = round(((curr_price - prev_close) / prev_close) * 100.0, 2) if
                 is_relative_strength_match = bool(cond1_ema200_dist and cond2_ret_125d and cond3_ema50_dist and cond4_ret_20d)
 
                 # -------------------------------------------------------------
-                # SETUP 3: MULTI-TIMEFRAME 20D BREAKOUT SETUP
+                # SETUP 3: MULTI-TIMEFRAME 20D BREAKOUT SETUP (IMAGE CRITERIA)
                 # -------------------------------------------------------------
                 weekly_df = hist.resample("W").agg({
                     "Open": "first",
@@ -1844,7 +1845,7 @@ if not df_raw.empty:
             win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
             loss_rate_pct = (losing_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
 
-            # 4-Box Performance Summary Grid (Total Trades, Winning Trades, Losing Trades, Open Trades)
+            # 4-Box Performance Summary Grid
             trade_summary_html = f"""
             <div class="trade-summary-card">
                 <div class="trade-stat-box">

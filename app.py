@@ -20,16 +20,19 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe columns and headers */
-    [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
+    /* Full center alignment for all dataframe and data_editor columns */
+    [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
+    [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
         vertical-align: middle !important;
     }
-    div[data-testid="stDataFrame"] div[role="columnheader"] {
+    div[data-testid="stDataFrame"] div[role="columnheader"],
+    div[data-testid="stDataEditor"] div[role="columnheader"] {
         text-align: center !important;
         justify-content: center !important;
     }
-    div[data-testid="stDataFrame"] div[role="gridcell"] {
+    div[data-testid="stDataFrame"] div[role="gridcell"],
+    div[data-testid="stDataEditor"] div[role="gridcell"] {
         text-align: center !important;
         justify-content: center !important;
     }
@@ -138,7 +141,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
+# --- TOP LIVE MARKET INDEX TICKER RIBBON (Nifty 50, Bank Nifty, Midcap, Smallcap, India VIX, Crude Oil) ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
     index_items = [
@@ -1450,8 +1453,12 @@ if not df_raw.empty:
                         - System Signal: {curr_signal}
 
                         Provide a structured swing trade plan:
-                        1. **Breakout Setup Assessment**: Is momentum active or exhausted?
-                        2. **Exact Actionable Verdict**: Choose one strictly: [STRONG BUY | BUY ON PULLBACK | WAIT | AVOID].
+                        1. **Breakout Setup Assessment**: Is momentum active, in a healthy base pullback, or exhausted?
+                        2. **Exact Actionable Verdict**: Choose one strictly:
+                           - [STRONG BUY] for active high-volume multi-timeframe breakouts
+                           - [BUY (ON PULLBACK)] for base pullbacks / dip entries near EMA support
+                           - [WAIT] for consolidation
+                           - [AVOID] for weak structures
                         3. **Trade Blueprint**:
                            - Ideal Entry Range (₹)
                            - Strict Stop-Loss (₹) (below recent 20 EMA/swing low)

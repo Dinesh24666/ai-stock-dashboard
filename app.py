@@ -859,7 +859,6 @@ else:
 
 price_change_pct = round(((curr_price - prev_close) / prev_close) * 100.0, 2) if prev_close > 0 else 0.0
                 )
-
                 ema_9_series = hist["Close"].ewm(span=9, adjust=False).mean()
                 ema_20_series = hist["Close"].ewm(span=20, adjust=False).mean()
                 ema_44_series = hist["Close"].ewm(span=44, adjust=False).mean()

@@ -1026,15 +1026,15 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(candle_score + ma_score + momentum_score + volume_proximity_score)
 
-                # Signal Classification
-                if (swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20) or passes_mtf_breakout or is_relative_strength_match or is_triple_ema_match:
-                    action_signal = "🟢 STRONG BUY (Breakout)"
-                elif swing_composite >= 60 and curr_price >= ema_20:
-                    action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 40:
-                    action_signal = "🟠 CONSOLIDATING"
-                else:
-                    action_signal = "🔴 AVOID / WEAK"
+                # Signal Classification (Strict Score Hierarchy)
+if swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20:
+    action_signal = "🟢 STRONG BUY (Breakout)"
+elif (swing_composite >= 60 or passes_mtf_breakout or is_relative_strength_match or is_triple_ema_match) and curr_price >= ema_20:
+    action_signal = "🟡 BUY / PULLBACK"
+elif swing_composite >= 40:
+    action_signal = "🟠 CONSOLIDATING"
+else:
+    action_signal = "🔴 AVOID / WEAK"
 
                 change_display = f"{'+' if price_change_pct >= 0 else ''}{price_change_pct:.2f}%"
 

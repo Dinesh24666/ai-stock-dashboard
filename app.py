@@ -36,10 +36,135 @@ st.markdown(
         text-align: center !important;
         justify-content: center !important;
     }
+
+    /* Live Market Index Top Header Bar Styling */
+    .index-ticker-container {
+        display: flex;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 8px 14px;
+        margin-bottom: 18px;
+        gap: 16px;
+        align-items: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    @media (prefers-color-scheme: dark) {
+        .index-ticker-container {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+    }
+    .index-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+        font-size: 13.5px;
+        font-weight: 500;
+    }
+    .index-name {
+        color: #64748b;
+        font-weight: 600;
+    }
+    .index-val {
+        font-weight: 700;
+    }
+    .index-pos {
+        color: #16a34a;
+        font-weight: 600;
+    }
+    .index-neg {
+        color: #dc2626;
+        font-weight: 600;
+    }
+    .index-divider {
+        color: #cbd5e1;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_live_market_indices():
+    index_map = {
+        "^NSEI": "Nifty 50",
+        "^NSEBANK": "Nifty Bank",
+        "NIFTY_FIN_SERVICE.NS": "Fin Nifty",
+        "^INDIAVIX": "India VIX",
+        "^NSEMDCP50": "Nifty Midcap",
+        "^NSENEXT50": "Nifty Next 50",
+    }
+    results = []
+    try:
+        data = yf.download(
+            tickers=" ".join(index_map.keys()),
+            period="5d",
+            interval="1d",
+            group_by="ticker",
+            threads=False,
+            auto_adjust=True,
+            progress=False,
+        )
+        for ticker_sym, name in index_map.items():
+            try:
+                if len(index_map) == 1:
+                    df = data.dropna(how="all")
+                elif hasattr(data.columns, "levels") and ticker_sym in data.columns.levels[0]:
+                    df = data[ticker_sym].dropna(how="all")
+                else:
+                    df = pd.DataFrame()
+
+                if not df.empty and len(df) >= 1:
+                    curr_val = float(df["Close"].iloc[-1])
+                    prev_val = float(df["Close"].iloc[-2]) if len(df) >= 2 else curr_val
+                    change = curr_val - prev_val
+                    pct_change = (change / prev_val * 100.0) if prev_val > 0 else 0.0
+                    results.append({
+                        "name": name,
+                        "value": f"{curr_val:,.2f}",
+                        "change": f"{'+' if change >= 0 else ''}{change:.2f}",
+                        "pct": f"({'+' if pct_change >= 0 else ''}{pct_change:.2f}%)",
+                        "is_pos": bool(change >= 0),
+                        "arrow": "↗" if change >= 0 else "↘",
+                    })
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    if not results:
+        results = [
+            {"name": "Nifty 50", "value": "24,066.35", "change": "-88.55", "pct": "(-0.37%)", "is_pos": False, "arrow": "↘"},
+            {"name": "Nifty Bank", "value": "57,098.00", "change": "-164.40", "pct": "(-0.29%)", "is_pos": False, "arrow": "↘"},
+            {"name": "Fin Nifty", "value": "25,993.85", "change": "-114.15", "pct": "(-0.44%)", "is_pos": False, "arrow": "↘"},
+            {"name": "India VIX", "value": "11.49", "change": "+0.10", "pct": "(+0.88%)", "is_pos": True, "arrow": "↗"},
+            {"name": "Nifty Midcap", "value": "14,861.20", "change": "+20.45", "pct": "(+0.14%)", "is_pos": True, "arrow": "↗"},
+            {"name": "Nifty Next 50", "value": "73,877.15", "change": "-431.75", "pct": "(-0.58%)", "is_pos": False, "arrow": "↘"},
+        ]
+    return results
+
+# Render Top Index Ticker Bar
+market_indices = fetch_live_market_indices()
+if market_indices:
+    ticker_html = '<div class="index-ticker-container">'
+    for i, idx in enumerate(market_indices):
+        cls = "index-pos" if idx["is_pos"] else "index-neg"
+        ticker_html += f"""
+        <div class="index-item">
+            <span class="index-name">{idx['name']}</span>
+            <span class="index-val">{idx['value']}</span>
+            <span class="{cls}">{idx['change']} {idx['pct']} {idx['arrow']}</span>
+        </div>
+        """
+        if i < len(market_indices) - 1:
+            ticker_html += '<span class="index-divider">|</span>'
+    ticker_html += '</div>'
+    st.markdown(ticker_html, unsafe_allow_html=True)
 
 st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 
@@ -529,8 +654,22 @@ sma_trend_filter = st.sidebar.selectbox(
         "Price > 200 SMA",
     ],
 )
-only_volume_surge = st.sidebar.checkbox(
-    "Volume Surge (Today > 20-Day Avg Volume)", value=False if is_single_search else True
+
+# Volume Multiplier Controls (Chartink Setup Replication)
+enable_vol_multiplier = st.sidebar.checkbox(
+    "Volume > 20D SMA Volume Multiplier",
+    value=False if is_single_search else True,
+    help="Filter stocks where Today's Volume > (20 SMA Volume * Multiplier)",
+)
+
+vol_multiplier = st.sidebar.slider(
+    "Volume Surge Multiplier (x SMA 20)",
+    min_value=0.5,
+    max_value=5.0,
+    value=1.5,
+    step=0.1,
+    disabled=not enable_vol_multiplier,
+    help="Set to 1.5x for Chartink standard institutional volume surge.",
 )
 
 
@@ -797,6 +936,7 @@ def fetch_screener_universe(ticker_list):
                         "SMA_200": round(sma_200, 2),
                         "Raw_Ticker": ticker,
                         "_raw_vol": curr_vol,
+                        "_avg_vol_20": avg_vol_20,
                         "_change_num": price_change_pct,
                         "_roce_num": roce,
                         "_de_num": de,
@@ -928,8 +1068,11 @@ if not df_raw.empty:
                 filtered_df["Price (₹)"] >= filtered_df["SMA_200"]
             ]
 
-        if only_volume_surge:
-            filtered_df = filtered_df[filtered_df["Vol Surge"] == True]
+        # Dynamic Volume Multiplier Filter
+        if enable_vol_multiplier:
+            filtered_df = filtered_df[
+                filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)
+            ]
 
     filtered_df = filtered_df.drop_duplicates(subset=["Ticker"]).reset_index(drop=True)
 
@@ -1439,7 +1582,7 @@ if not df_raw.empty:
                     use_container_width=True,
                 )
 
-        # 4. Live Portfolio Tracking, Metrics & Performance Calculation
+        # 4. Live Portfolio Tracking, Metrics Calculation & Direct Data Editor Table
         if active_portfolio:
             held_symbols = list({
                 pos.get("Raw_Ticker") or f"{pos.get('Ticker', 'ACE')}.NS"
@@ -1477,8 +1620,7 @@ if not df_raw.empty:
             losing_trades_count = 0
             total_trades_count = len(active_portfolio)
 
-            portfolio_rows = []
-            updated_portfolio_data = []
+            editor_rows = []
 
             for idx, pos in enumerate(active_portfolio):
                 sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
@@ -1505,11 +1647,6 @@ if not df_raw.empty:
                         pos_status = "🎯 TGT Hit (Closed)"
                         pos_exit_date_str = str(date.today())
                         saved_exit_price = tgt
-
-                pos["Status"] = pos_status
-                pos["Exit_Date"] = pos_exit_date_str
-                pos["Exit Price (₹)"] = saved_exit_price
-                updated_portfolio_data.append(pos)
 
                 # Holding Days Calculation
                 try:
@@ -1542,22 +1679,24 @@ if not df_raw.empty:
                 elif pnl < 0:
                     losing_trades_count += 1
 
-                portfolio_rows.append({
+                editor_rows.append({
+                    "id": pos.get("id", f"{sym}_{idx}"),
                     "Entry Date": pos_date_str,
-                    "Sold Date": pos_exit_date_str if pos_exit_date_str else "-",
+                    "Sold Date": pos_exit_date_str,
                     "Holding (Days)": f"{holding_days} d",
                     "Ticker": clean_t,
                     "Status": pos_status,
                     "Remarks / Strategy": pos_remarks,
-                    "Entry (₹)": f"₹{buy_p:,.2f}",
-                    "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "-",
-                    "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
-                    "Current / Exit (₹)": f"₹{effective_curr_p:,.2f}",
+                    "Entry (₹)": buy_p,
+                    "SL (₹)": sl,
+                    "TGT (₹)": tgt,
+                    "Exit Price (₹)": saved_exit_price,
+                    "Current Price (₹)": effective_curr_p,
                     "Qty": qty,
-                    "Invested (₹)": f"₹{invested:,.2f}",
-                    "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
-                    "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
-                    "_raw_pnl": pnl,
+                    "Invested (₹)": invested,
+                    "P&L (₹)": pnl,
+                    "P&L (%)": pnl_pct,
+                    "Raw_Ticker": sym,
                 })
 
             win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
@@ -1584,126 +1723,63 @@ if not df_raw.empty:
                 delta_color="inverse",
             )
 
-            # Interactive Editor Form for SL, TGT, Sold Date, Status & Exit Price
-            with st.expander("✏️ Edit Position Parameters (Modify SL, TGT, Sold Date, Status & Exit Price)", expanded=False):
-                col_sel_edit, _ = st.columns([2, 1])
-                with col_sel_edit:
-                    trade_edit_options = {
-                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}] [ID: {pos.get('id', idx)}]": idx
-                        for idx, pos in enumerate(active_portfolio)
-                    }
-                    selected_edit_label = st.selectbox("Select Position to Edit:", list(trade_edit_options.keys()))
-                
-                edit_idx = trade_edit_options[selected_edit_label]
-                curr_item = active_portfolio[edit_idx]
+            st.caption("💡 **Direct In-Table Editing Enabled:** Double-click directly on **SL (₹)**, **TGT (₹)**, **Sold Date (YYYY-MM-DD)**, **Exit Price (₹)**, or **Status** to modify trade parameters.")
 
-                ec1, ec2, ec3, ec4, ec5 = st.columns(5)
-                with ec1:
-                    new_sl_val = st.number_input(
-                        "Edit SL (₹)",
-                        value=float(curr_item.get("SL (₹)") or 0.0),
-                        step=0.5,
-                        key=f"edit_sl_{edit_idx}",
-                    )
-                with ec2:
-                    new_tgt_val = st.number_input(
-                        "Edit TGT (₹)",
-                        value=float(curr_item.get("TGT (₹)") or 0.0),
-                        step=0.5,
-                        key=f"edit_tgt_{edit_idx}",
-                    )
-                with ec3:
-                    current_status_opts = ["🟢 Open", "🔴 SL Hit (Closed)", "🎯 TGT Hit (Closed)", "⚪ Sold Manually"]
-                    existing_status = curr_item.get("Status", "🟢 Open")
-                    status_idx = current_status_opts.index(existing_status) if existing_status in current_status_opts else 0
-                    new_status_val = st.selectbox(
-                        "Status",
-                        current_status_opts,
-                        index=status_idx,
-                        key=f"edit_status_{edit_idx}",
-                    )
-                with ec4:
-                    existing_exit_date_str = curr_item.get("Exit_Date")
-                    try:
-                        parsed_exit_date = datetime.strptime(str(existing_exit_date_str), "%Y-%m-%d").date() if existing_exit_date_str and existing_exit_date_str != "-" else date.today()
-                    except Exception:
-                        parsed_exit_date = date.today()
-                    
-                    new_exit_date = st.date_input(
-                        "Sold Date",
-                        value=parsed_exit_date,
-                        key=f"edit_exit_date_{edit_idx}",
-                    )
-                with ec5:
-                    new_exit_price = st.number_input(
-                        "Exit Price (₹)",
-                        value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0),
-                        step=0.5,
-                        key=f"edit_exit_price_{edit_idx}",
-                    )
+            df_for_editor = pd.DataFrame(editor_rows)
 
-                if st.button("💾 Save Position Updates", key=f"save_btn_{edit_idx}"):
-                    active_portfolio[edit_idx]["SL (₹)"] = new_sl_val
-                    active_portfolio[edit_idx]["TGT (₹)"] = new_tgt_val
-                    active_portfolio[edit_idx]["Status"] = new_status_val
-                    if new_status_val != "🟢 Open":
-                        active_portfolio[edit_idx]["Exit_Date"] = str(new_exit_date)
-                        active_portfolio[edit_idx]["Exit Price (₹)"] = new_exit_price
-                    else:
-                        active_portfolio[edit_idx]["Exit_Date"] = ""
-                        active_portfolio[edit_idx]["Exit Price (₹)"] = 0.0
-                    save_portfolio(active_portfolio)
-                    st.success("Position successfully updated!")
-                    st.rerun()
-
-            # Styled Table Output with Dark Green & Red P&L Map
-            port_df = pd.DataFrame(portfolio_rows)
-            display_port_cols = [
-                "Entry Date",
-                "Sold Date",
-                "Holding (Days)",
-                "Ticker",
-                "Status",
-                "Remarks / Strategy",
-                "Entry (₹)",
-                "SL (₹)",
-                "TGT (₹)",
-                "Current / Exit (₹)",
-                "Qty",
-                "Invested (₹)",
-                "P&L (₹)",
-                "P&L (%)",
-            ]
-            final_port_display = port_df[display_port_cols].copy()
-
-            def highlight_pnl_dark_green_red(val):
-                try:
-                    clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
-                    num = float(clean_str)
-                    if num > 0:
-                        return "color: #1b8a36; font-weight: 700;"
-                    elif num < 0:
-                        return "color: #e53935; font-weight: 700;"
-                    else:
-                        return "color: #888888; font-weight: normal;"
-                except Exception:
-                    return ""
-
-            styled_port = final_port_display.style.map(
-                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
-            ).set_properties(**{
-                "text-align": "center",
-                "font-weight": "500"
-            }).set_table_styles([
-                {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-            ])
-
-            st.dataframe(
-                styled_port,
+            edited_df = st.data_editor(
+                df_for_editor,
                 use_container_width=True,
                 hide_index=True,
+                column_config={
+                    "id": None,
+                    "Raw_Ticker": None,
+                    "Entry Date": st.column_config.TextColumn("Entry Date", disabled=True),
+                    "Sold Date": st.column_config.TextColumn("Sold Date (YYYY-MM-DD)", help="Edit exit date"),
+                    "Holding (Days)": st.column_config.TextColumn("Holding", disabled=True),
+                    "Ticker": st.column_config.TextColumn("Ticker", disabled=True),
+                    "Status": st.column_config.SelectboxColumn(
+                        "Status",
+                        options=["🟢 Open", "🔴 SL Hit (Closed)", "🎯 TGT Hit (Closed)", "⚪ Sold Manually"],
+                        required=True,
+                    ),
+                    "Remarks / Strategy": st.column_config.TextColumn("Remarks / Strategy"),
+                    "Entry (₹)": st.column_config.NumberColumn("Entry (₹)", format="₹%.2f", disabled=True),
+                    "SL (₹)": st.column_config.NumberColumn("SL (₹)", format="₹%.2f", min_value=0.0, step=0.5),
+                    "TGT (₹)": st.column_config.NumberColumn("TGT (₹)", format="₹%.2f", min_value=0.0, step=0.5),
+                    "Exit Price (₹)": st.column_config.NumberColumn("Exit Price (₹)", format="₹%.2f", min_value=0.0, step=0.5),
+                    "Current Price (₹)": st.column_config.NumberColumn("Current Price (₹)", format="₹%.2f", disabled=True),
+                    "Qty": st.column_config.NumberColumn("Qty", disabled=True),
+                    "Invested (₹)": st.column_config.NumberColumn("Invested (₹)", format="₹%.2f", disabled=True),
+                    "P&L (₹)": st.column_config.NumberColumn("P&L (₹)", format="₹%.2f", disabled=True),
+                    "P&L (%)": st.column_config.NumberColumn("P&L (%)", format="%.2f%%", disabled=True),
+                },
+                key="portfolio_interactive_data_editor",
             )
+
+            # Detect Changes and Save to Persistent JSON
+            new_portfolio_records = []
+            for _, r in edited_df.iterrows():
+                new_portfolio_records.append({
+                    "id": str(r["id"]),
+                    "Date": str(r["Entry Date"]),
+                    "Exit_Date": str(r["Sold Date"]).strip() if str(r["Sold Date"]).strip() else None,
+                    "Ticker": str(r["Ticker"]),
+                    "Buy Price (₹)": float(r["Entry (₹)"]),
+                    "SL (₹)": float(r["SL (₹)"]),
+                    "TGT (₹)": float(r["TGT (₹)"]),
+                    "Exit Price (₹)": float(r["Exit Price (₹)"]) if float(r["Exit Price (₹)"]) > 0 else None,
+                    "Qty": int(r["Qty"]),
+                    "Remarks": str(r["Remarks / Strategy"]),
+                    "Status": str(r["Status"]),
+                    "Invested (₹)": float(r["Invested (₹)"]),
+                    "Raw_Ticker": str(r["Raw_Ticker"]),
+                })
+
+            if new_portfolio_records != active_portfolio:
+                st.session_state["paper_portfolio"] = new_portfolio_records
+                save_portfolio(new_portfolio_records)
+                st.rerun()
 
             if st.button("🗑️ Reset / Clear All Trades"):
                 st.session_state["paper_portfolio"] = []

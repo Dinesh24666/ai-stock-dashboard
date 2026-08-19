@@ -83,6 +83,59 @@ st.markdown(
     .index-divider {
         color: #cbd5e1;
     }
+
+    /* Trade Performance Summary Grid Styling */
+    .trade-summary-card {
+        display: flex;
+        justify-content: space-around;
+        align-items: center;
+        background: #ffffff;
+        border: 2px solid #0284c7;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 12px 0 18px 0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    @media (prefers-color-scheme: dark) {
+        .trade-summary-card {
+            background: #0f172a;
+            border-color: #38bdf8;
+        }
+    }
+    .trade-stat-box {
+        text-align: center;
+        flex: 1;
+        border-right: 1px solid #e2e8f0;
+    }
+    @media (prefers-color-scheme: dark) {
+        .trade-stat-box {
+            border-right-color: #334155;
+        }
+    }
+    .trade-stat-box:last-child {
+        border-right: none;
+    }
+    .trade-stat-label {
+        font-size: 15px;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 4px;
+    }
+    @media (prefers-color-scheme: dark) {
+        .trade-stat-label {
+            color: #f8fafc;
+        }
+    }
+    .trade-stat-val {
+        font-size: 20px;
+        font-weight: 800;
+        color: #0369a1;
+    }
+    @media (prefers-color-scheme: dark) {
+        .trade-stat-val {
+            color: #38bdf8;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -392,7 +445,7 @@ NSE_FULL_EQUITIES = [
     "LOYAL", "LT", "LTF", "LTIM", "LTTS", "LUMAXIND", "LUMAXTECH", "LUPIN",
     "LUXIND", "LXCHEM", "LYKALABS", "LYPSAGEMS", "M&M", "M&MFIN", "MAANALU",
     "MACPOWER", "MADHAV", "MADHUCON", "MADRASFERT", "MAGADSUGAR", "MAGNUM",
-    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHINDCIE",
+    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHinDCIE",
     "MAHLIFE", "MAHLOG", "MAHSCOOTER", "MAHSEAMLES", "MAITHANALL", "MALLCOM",
     "MALUPAPER", "MANAKALUCO", "MANAKCOAT", "MANAKSIA", "MANAKSTEEL", "MANALIPETC",
     "MANAPPURAM", "MANBA", "MANCREDIT", "MANGALAM", "MANGCHEFER", "MANGLMCEM",
@@ -859,10 +912,6 @@ def fetch_screener_universe(ticker_list):
 
                 # -------------------------------------------------------------
                 # SETUP 1: 9/20/44 TRIPLE EMA BULLISH CROSS
-                # Daily EMA(9) crossed above Daily EMA(20)
-                # Daily EMA(20) crossed above Daily EMA(44)
-                # Daily Close > 30 and Daily Close < 1500
-                # Market Cap > 1000
                 # -------------------------------------------------------------
                 cross_9_above_20 = (ema_9 > ema_20) and ((ema_9_prev <= ema_20_prev) or (ema_9 > ema_20 > ema_44))
                 cross_20_above_44 = (ema_20 > ema_44) and ((ema_20_prev <= ema_44_prev) or (ema_9 > ema_20 > ema_44))
@@ -1697,6 +1746,7 @@ if not df_raw.empty:
             realised_pnl_total = 0.0
             winning_trades_count = 0
             losing_trades_count = 0
+            open_trades_count = 0
             total_trades_count = len(active_portfolio)
 
             portfolio_rows = []
@@ -1744,7 +1794,7 @@ if not df_raw.empty:
                 except Exception:
                     holding_days = 0
 
-                # P&L Calculation
+                # P&L Calculation & Trade Counter
                 if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
                     exit_val = saved_exit_price if saved_exit_price > 0 else curr_p
                     pnl = round((exit_val - buy_p) * qty, 2)
@@ -1752,6 +1802,7 @@ if not df_raw.empty:
                     realised_pnl_total += pnl
                     effective_curr_p = exit_val
                 else:
+                    open_trades_count += 1
                     pnl = round((curr_p - buy_p) * qty, 2)
                     pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                     open_invested += invested
@@ -1784,6 +1835,29 @@ if not df_raw.empty:
 
             win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
             loss_rate_pct = (losing_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
+
+            # 4-Box Performance Summary Grid (Total Trades, Winning Trades, Losing Trades, Open Trades)
+            trade_summary_html = f"""
+            <div class="trade-summary-card">
+                <div class="trade-stat-box">
+                    <div class="trade-stat-label">Total Trades</div>
+                    <div class="trade-stat-val">{total_trades_count}</div>
+                </div>
+                <div class="trade-stat-box">
+                    <div class="trade-stat-label">Winning Trades</div>
+                    <div class="trade-stat-val" style="color: #16a34a;">{winning_trades_count}</div>
+                </div>
+                <div class="trade-stat-box">
+                    <div class="trade-stat-label">Losing Trades</div>
+                    <div class="trade-stat-val" style="color: #dc2626;">{losing_trades_count}</div>
+                </div>
+                <div class="trade-stat-box">
+                    <div class="trade-stat-label">Open Trade</div>
+                    <div class="trade-stat-val" style="color: #0284c7;">{open_trades_count}</div>
+                </div>
+            </div>
+            """
+            st.markdown(trade_summary_html, unsafe_allow_html=True)
 
             # 5-Column Summary Metric Ribbon
             p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
@@ -1903,9 +1977,9 @@ if not df_raw.empty:
                     clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
                     num = float(clean_str)
                     if num > 0:
-                        return "color: #15803d; font-weight: 700;"
+                        return "color: #15803d; font-weight: 700;"  # Dark Forest Green
                     elif num < 0:
-                        return "color: #dc2626; font-weight: 700;"
+                        return "color: #dc2626; font-weight: 700;"  # Vibrant Red
                     else:
                         return "color: #64748b; font-weight: normal;"
                 except Exception:

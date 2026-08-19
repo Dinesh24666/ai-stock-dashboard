@@ -88,10 +88,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- TOP LIVE MARKET INDEX TICKER RIBBON (Nifty, Bank Nifty, Midcap, Smallcap, India VIX, Crude Oil) ---
+# --- TOP LIVE MARKET INDEX TICKER RIBBON (Nifty 50, Bank Nifty, Midcap, Smallcap, India VIX, Crude Oil) ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
-    # Strict sequence: Nifty 50, Bank Nifty, Nifty Midcap, Nifty Smallcap, India VIX, Crude Oil
     index_items = [
         ("^NSEI", "Nifty 50", ""),
         ("^NSEBANK", "Bank Nifty", ""),
@@ -655,8 +654,8 @@ sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
         "Any Trend",
+        "Multi-Timeframe 20D Breakout",
         "Relative strength",
-        "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)",
         "Price > Both 50 & 200 SMA",
         "Golden Cross (50 SMA > 200 SMA)",
         "Price > 50 SMA",
@@ -821,8 +820,9 @@ def fetch_screener_universe(ticker_list):
                     0.0, ((high_52w - curr_price) / high_52w) * 100.0
                 )
 
+                # Previous 20-Day High Breakout
                 prev_20d_high = float(hist["High"].iloc[:-1].tail(20).max()) if len(hist) > 20 else float(hist["High"].max())
-                is_20d_high_breakout = bool(curr_price >= prev_20d_high)
+                is_20d_high_breakout = bool(curr_price > prev_20d_high)
 
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
@@ -838,14 +838,37 @@ def fetch_screener_universe(ticker_list):
 
                 is_relative_strength_match = bool(cond1_ema200_dist and cond2_ret_125d and cond3_ema50_dist and cond4_ret_20d)
 
-                # Weekly Multi-Timeframe Trend Extraction
-                try:
-                    weekly_series = hist["Close"].resample("W").last().dropna()
-                    weekly_ema_20 = float(weekly_series.ewm(span=20, adjust=False).mean().iloc[-1]) if len(weekly_series) >= 5 else curr_price * 0.95
-                    weekly_rsi = compute_rsi(weekly_series, 14) if len(weekly_series) >= 14 else rsi_val
-                    weekly_bullish = bool(curr_price >= weekly_ema_20 and weekly_rsi >= 55.0)
-                except Exception:
-                    weekly_bullish = bool(curr_price >= ema_20 and rsi_val >= 55.0)
+                # -------------------------------------------------------------
+                # EXACT MULTI-TIMEFRAME 20D BREAKOUT SETUP (IMAGE CRITERIA):
+                # 1. Weekly Close > Weekly EMA(20)
+                # 2. Weekly RSI(14) >= 55
+                # 3. Daily Close > Daily EMA(20)
+                # 4. Daily Close > 1 day ago Max(20, Daily High)
+                # 5. Daily Volume > Daily SMA(Volume, 20) * 1.5
+                # 6. Intraday / Fast Momentum: Daily Close > Daily EMA(9)
+                # 7. Daily Close >= Weekly Max(52, Weekly High) * 0.75
+                # 8. Daily Close >= Weekly Max(52, Weekly Low) * 1
+                # -------------------------------------------------------------
+                weekly_df = hist.resample("W").agg({
+                    "Open": "first",
+                    "High": "max",
+                    "Low": "min",
+                    "Close": "last",
+                    "Volume": "sum",
+                }).dropna()
+
+                if not weekly_df.empty and len(weekly_df) >= 5:
+                    weekly_close = float(weekly_df["Close"].iloc[-1])
+                    weekly_ema_20 = float(weekly_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                    weekly_rsi = compute_rsi(weekly_df["Close"], 14)
+                    weekly_52w_high = float(weekly_df["High"].tail(52).max())
+                    weekly_52w_low_max = float(weekly_df["Low"].tail(52).max())
+                else:
+                    weekly_close = curr_price
+                    weekly_ema_20 = ema_20
+                    weekly_rsi = rsi_val
+                    weekly_52w_high = high_52w
+                    weekly_52w_low_max = float(hist["Low"].min())
 
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
@@ -855,14 +878,26 @@ def fetch_screener_universe(ticker_list):
                     else float(curr_vol)
                 )
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
-                vol_surge_1_5x = bool(curr_vol >= (avg_vol_20 * 1.5))
+                vol_surge_1_5x = bool(curr_vol > (avg_vol_20 * 1.5))
+
+                cond_mtf_weekly_ema = weekly_close > weekly_ema_20
+                cond_mtf_weekly_rsi = weekly_rsi >= 55.0
+                cond_mtf_daily_ema20 = curr_price > ema_20
+                cond_mtf_20d_high_breakout = is_20d_high_breakout
+                cond_mtf_vol_1_5x = vol_surge_1_5x
+                cond_mtf_ema9 = curr_price > ema_9
+                cond_mtf_52w_high_75 = curr_price >= (weekly_52w_high * 0.75)
+                cond_mtf_52w_low_max = curr_price >= (weekly_52w_low_max * 1.0)
 
                 passes_mtf_breakout = bool(
-                    weekly_bullish
-                    and (curr_price >= ema_20)
-                    and (curr_price >= ema_9)
-                    and is_20d_high_breakout
-                    and vol_surge_1_5x
+                    cond_mtf_weekly_ema
+                    and cond_mtf_weekly_rsi
+                    and cond_mtf_daily_ema20
+                    and cond_mtf_20d_high_breakout
+                    and cond_mtf_vol_1_5x
+                    and cond_mtf_ema9
+                    and cond_mtf_52w_high_75
+                    and cond_mtf_52w_low_max
                 )
 
                 company_name = clean_sym
@@ -1055,10 +1090,10 @@ if not df_raw.empty:
             & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
         ]
 
-        if sma_trend_filter == "Relative strength":
-            filtered_df = filtered_df[filtered_df["_rs_match"] == True]
-        elif sma_trend_filter == "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)":
+        if sma_trend_filter == "Multi-Timeframe 20D Breakout":
             filtered_df = filtered_df[filtered_df["_mtf_match"] == True]
+        elif sma_trend_filter == "Relative strength":
+            filtered_df = filtered_df[filtered_df["_rs_match"] == True]
         elif sma_trend_filter == "Price > Both 50 & 200 SMA":
             filtered_df = filtered_df[
                 (filtered_df["Price (₹)"] >= filtered_df["SMA_50"])
@@ -1396,9 +1431,9 @@ if not df_raw.empty:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
         selected_strategy_label = (
-            "Relative strength"
-            if sma_trend_filter == "Relative strength"
-            else ("Multi-Timeframe 20D Breakout" if sma_trend_filter == "🔥 Multi-Timeframe 20D Breakout (Weekly Trend + 1.5x Vol)" else "9/20 EMA Breakout Swing Setup")
+            "Multi-Timeframe 20D Breakout"
+            if sma_trend_filter == "Multi-Timeframe 20D Breakout"
+            else ("Relative strength" if sma_trend_filter == "Relative strength" else "9/20 EMA Breakout Swing Setup")
         )
 
         # 1. Order Placement Form

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 import gc
 import json
 import os
@@ -92,37 +92,45 @@ if GEMINI_API_KEY:
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
 
-# Disclosed / Reported Order Backlog Database (in ₹ Crores) for Capital Goods, Infra, Defence, Rail, Power
+# Disclosed Order Backlog Database (in ₹ Crores) for Capital Goods, Infra, Defence, Rail, Power
 ORDER_BOOK_CR_MAP = {
+    # Defence & Shipyards
     "HAL": 94000,
     "BEL": 76000,
-    "BHEL": 135000,
+    "BDL": 20000,
     "MAZDOCK": 40000,
     "COCHINSHIP": 22000,
+    "GRSE": 25000,
+    # Capital Goods, Machinery & Engineering
+    "BHEL": 135000,
+    "ACE": 3200,
+    "JYOTICNC": 4850,
+    "BEML": 12500,
+    "ISGEC": 8500,
+    "TECHNOE": 9000,
+    "ELECON": 3500,
+    "KIRLOSENG": 3200,
+    # Infrastructure, Rail & Construction
+    "LT": 475000,
     "RVNL": 85000,
     "IRCON": 32000,
     "NCC": 57000,
-    "LT": 475000,
-    "BEML": 12500,
-    "BDL": 20000,
-    "TITAGARH": 28000,
+    "JINDRILL": 1310,
     "PNCINFRA": 18000,
     "KEC": 34000,
     "KPIL": 58000,
-    "ENGINERSIN": 10500,
-    "GRSE": 25000,
-    "RAILTEL": 5000,
     "NBCC": 81000,
-    "AHLUCONT": 14000,
-    "PSPPROJECT": 6000,
-    "ACE": 3200,
     "HGINFRA": 12000,
-    "TECHNOE": 9000,
-    "JWL": 20000,
+    "AHLUCONT": 14000,
     "POWERMECH": 55000,
-    "ISGEC": 8500,
+    "TITAGARH": 28000,
+    "JWL": 20000,
+    "RAILTEL": 5000,
+    "ENGINERSIN": 10500,
+    "PSPPROJECT": 6000,
     "GPTINFRA": 3500,
     "MANINFRA": 4200,
+    "MMFL": 1800,
 }
 
 # Complete Embedded 2,000+ NSE Listed Equities Universe
@@ -742,14 +750,19 @@ def fetch_screener_universe(ticker_list):
                 de = 0.5
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
-                # Order Book & Revenue Valuation Check
+                # Order Book & Revenue Valuation Calculation
                 ob_val = ORDER_BOOK_CR_MAP.get(company_name, 0.0)
                 if ob_val > 0:
-                    ob_mcap_ratio = round(ob_val / mcap_cr, 2)
+                    ob_display = f"₹{ob_val:,.0f}"
+                    ob_mcap_ratio = round(ob_val / max(1.0, mcap_cr), 2)
                     is_order_book_gt_mcap = bool(ob_val >= mcap_cr)
+                    ratio_display = f"{ob_mcap_ratio:.2f}x"
                 else:
-                    is_order_book_gt_mcap = bool(pe <= 12.0 and roce >= 12.0 and mcap_cr > 0)
-                    ob_mcap_ratio = 1.2 if is_order_book_gt_mcap else 0.0
+                    est_revenue = round(mcap_cr / max(1.0, pe) * 3.5, 1)
+                    ob_display = f"₹{est_revenue:,.0f} (Est. Sales)"
+                    ob_mcap_ratio = round(est_revenue / max(1.0, mcap_cr), 2)
+                    is_order_book_gt_mcap = bool(ob_mcap_ratio >= 1.0)
+                    ratio_display = f"{ob_mcap_ratio:.2f}x"
 
                 # 100-Point Breakout Scoring Formula
                 candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
@@ -796,8 +809,8 @@ def fetch_screener_universe(ticker_list):
                         "From 52W High (%)": round(dist_52w_high, 1),
                         "Vol Surge": vol_surge,
                         "Market Cap (₹ Cr)": mcap_cr,
-                        "Order Book (₹ Cr)": f"₹{ob_val:,.0f}" if ob_val > 0 else "Revenue Backed",
-                        "OB / MCap": f"{ob_mcap_ratio:.1f}x" if ob_mcap_ratio > 0 else "-",
+                        "Order Book (₹ Cr)": ob_display,
+                        "OB / MCap": ratio_display,
                         "9 EMA": round(ema_9, 2),
                         "20 EMA": round(ema_20, 2),
                         "P/E": pe,
@@ -1252,7 +1265,6 @@ if not df_raw.empty:
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
-        # Dynamic strategy remark based on active sidebar filter
         selected_strategy_label = (
             "Relative strength"
             if sma_trend_filter == "Relative strength"
@@ -1261,10 +1273,10 @@ if not df_raw.empty:
 
         # 1. Order Placement Form
         with st.expander(
-            "➕ Execute New Paper Trade (Manual SL & Trade Remarks)",
+            "➕ Execute New Paper Trade (Custom SL, Target & Remarks)",
             expanded=False,
         ):
-            col_add1, col_add2, col_add3, col_add4 = st.columns([1.2, 1, 1, 1])
+            col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
 
             with col_add1:
                 available_tickers = (
@@ -1308,6 +1320,15 @@ if not df_raw.empty:
                     help="Enter custom Stop Loss level.",
                 )
 
+            with col_add5:
+                tgt_price = st.number_input(
+                    "Target (TGT ₹)",
+                    value=round(buy_price * 1.08, 1),
+                    min_value=0.0,
+                    step=0.5,
+                    help="Enter profit target level.",
+                )
+
             col_sub1, col_sub2, col_btn = st.columns([1, 2.5, 1])
             with col_sub1:
                 quantity = st.number_input(
@@ -1327,13 +1348,19 @@ if not df_raw.empty:
                         if (trade_stock.endswith(".NS") or trade_stock.endswith(".BO"))
                         else f"{trade_stock}.NS"
                     )
+                    trade_id = f"{raw_sym}_{int(time.time())}"
                     new_trade = {
+                        "id": trade_id,
                         "Date": str(trade_date),
+                        "Exit_Date": None,
                         "Ticker": raw_sym.replace(".NS", "").replace(".BO", ""),
                         "Buy Price (₹)": buy_price,
                         "SL (₹)": sl_price,
+                        "TGT (₹)": tgt_price,
+                        "Exit Price (₹)": None,
                         "Qty": int(quantity),
                         "Remarks": remarks.strip(),
+                        "Status": "🟢 Open",
                         "Invested (₹)": round(buy_price * quantity, 2),
                         "Raw_Ticker": raw_sym,
                     }
@@ -1344,7 +1371,38 @@ if not df_raw.empty:
                     st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']} ({remarks.strip()})!")
                     st.rerun()
 
-        # 2. Backup & Restore
+        # 2. Manual Exit / Sell Position Manager
+        active_portfolio = st.session_state.get("paper_portfolio", [])
+        open_positions = [pos for pos in active_portfolio if pos.get("Status", "🟢 Open") == "🟢 Open"]
+
+        if open_positions:
+            with st.expander("🔴 Manually Sell / Close an Open Position", expanded=False):
+                col_sel1, col_sel2, col_sel3, col_sel_btn = st.columns([1.5, 1, 1, 1])
+                with col_sel1:
+                    trade_choices = {
+                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) [ID: {pos.get('id', idx)}]": idx
+                        for idx, pos in enumerate(active_portfolio)
+                        if pos.get("Status", "🟢 Open") == "🟢 Open"
+                    }
+                    selected_trade_label = st.selectbox("Select Open Trade to Close:", list(trade_choices.keys()))
+                with col_sel2:
+                    sell_date = st.date_input("Sold Date", value=date.today(), key="manual_sell_date")
+                with col_sel3:
+                    selected_idx = trade_choices[selected_trade_label]
+                    default_exit_p = float(active_portfolio[selected_idx].get("Buy Price (₹)", 100.0))
+                    sell_price = st.number_input("Exit Price (₹)", value=default_exit_p, min_value=0.1, step=0.5, key="manual_sell_price")
+                with col_sel_btn:
+                    st.write("")
+                    st.write("")
+                    if st.button("📤 Sell / Close Trade", use_container_width=True):
+                        active_portfolio[selected_idx]["Status"] = "⚪ Sold Manually"
+                        active_portfolio[selected_idx]["Exit_Date"] = str(sell_date)
+                        active_portfolio[selected_idx]["Exit Price (₹)"] = sell_price
+                        save_portfolio(active_portfolio)
+                        st.success(f"Position for {active_portfolio[selected_idx]['Ticker']} closed successfully!")
+                        st.rerun()
+
+        # 3. Backup & Restore
         col_dl, col_up = st.columns([1, 1])
         with col_up:
             uploaded_portfolio = st.file_uploader(
@@ -1357,7 +1415,7 @@ if not df_raw.empty:
                     restored_data = json.load(uploaded_portfolio)
                     if isinstance(restored_data, list) and len(restored_data) > 0:
                         clean_restored = []
-                        for pos in restored_data:
+                        for idx, pos in enumerate(restored_data):
                             sym = (
                                 pos.get("Raw_Ticker")
                                 or pos.get("Ticker")
@@ -1368,15 +1426,22 @@ if not df_raw.empty:
                             raw_sym = f"{clean_sym}.NS"
                             entry_p = float(pos.get("Buy Price (₹)") or pos.get("Entry (₹)") or pos.get("Price") or 0.0)
                             sl_p = float(pos.get("SL (₹)") or pos.get("SL") or 0.0)
+                            tgt_p = float(pos.get("TGT (₹)") or pos.get("TGT") or 0.0)
+                            exit_p = float(pos.get("Exit Price (₹)") or 0.0) if pos.get("Exit Price (₹)") else None
                             qty_val = int(pos.get("Qty") or pos.get("Quantity") or 1)
 
                             clean_restored.append({
+                                "id": pos.get("id", f"{raw_sym}_{int(time.time())}_{idx}"),
                                 "Date": str(pos.get("Date", date.today())),
+                                "Exit_Date": pos.get("Exit_Date", None),
                                 "Ticker": clean_sym,
                                 "Buy Price (₹)": entry_p,
                                 "SL (₹)": sl_p,
+                                "TGT (₹)": tgt_p,
+                                "Exit Price (₹)": exit_p,
                                 "Qty": qty_val,
                                 "Remarks": str(pos.get("Remarks") or pos.get("Remarks / Strategy") or "Imported Trade"),
+                                "Status": str(pos.get("Status", "🟢 Open")),
                                 "Invested (₹)": round(entry_p * qty_val, 2),
                                 "Raw_Ticker": raw_sym,
                             })
@@ -1399,7 +1464,7 @@ if not df_raw.empty:
                     use_container_width=True,
                 )
 
-        # 3. Portfolio Tracking & Metrics Table
+        # 4. Live Portfolio Tracking, Calculations & Metrics
         if active_portfolio:
             portfolio_rows = []
             open_invested = 0.0
@@ -1435,6 +1500,8 @@ if not df_raw.empty:
             except Exception:
                 pass
 
+            updated_portfolio_data = []
+
             for pos in active_portfolio:
                 sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
                 buy_p = float(pos.get("Buy Price (₹)", 0.0))
@@ -1442,37 +1509,77 @@ if not df_raw.empty:
                 qty = int(pos.get("Qty", 1))
                 invested = float(pos.get("Invested (₹)", buy_p * qty))
                 sl = float(pos.get("SL (₹)", 0.0))
-                pos_date = str(pos.get("Date", date.today()))
-                pos_remarks = str(pos.get("Remarks", "Relative strength"))
+                tgt = float(pos.get("TGT (₹)", 0.0))
+                pos_date_str = str(pos.get("Date", date.today()))
+                pos_exit_date_str = pos.get("Exit_Date")
+                pos_remarks = str(pos.get("Remarks", "Swing Trade"))
+                pos_status = str(pos.get("Status", "🟢 Open"))
+                saved_exit_price = pos.get("Exit Price (₹)")
 
-                if sl > 0 and curr_p <= sl:
-                    status = "🔴 SL Hit (Closed)"
-                    exit_price = sl
-                    pnl = round((exit_price - buy_p) * qty, 2)
+                # Automatic SL / Target Hit Detection for Open Trades
+                if pos_status == "🟢 Open":
+                    if sl > 0 and curr_p <= sl:
+                        pos_status = "🔴 SL Hit (Closed)"
+                        pos_exit_date_str = str(date.today())
+                        saved_exit_price = sl
+                    elif tgt > 0 and curr_p >= tgt:
+                        pos_status = "🎯 TGT Hit (Closed)"
+                        pos_exit_date_str = str(date.today())
+                        saved_exit_price = tgt
+
+                pos["Status"] = pos_status
+                pos["Exit_Date"] = pos_exit_date_str
+                pos["Exit Price (₹)"] = saved_exit_price
+                updated_portfolio_data.append(pos)
+
+                # Calculate Holding Days
+                try:
+                    d_entry = datetime.strptime(pos_date_str, "%Y-%m-%d").date()
+                    if pos_exit_date_str:
+                        d_exit = datetime.strptime(str(pos_exit_date_str), "%Y-%m-%d").date()
+                    else:
+                        d_exit = date.today()
+                    holding_days = max(0, (d_exit - d_entry).days)
+                except Exception:
+                    holding_days = 0
+
+                # Calculate P&L
+                if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
+                    exit_val = float(saved_exit_price) if saved_exit_price is not None else curr_p
+                    pnl = round((exit_val - buy_p) * qty, 2)
                     pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                     realised_pnl_total += pnl
+                    effective_curr_p = exit_val
                 else:
-                    status = "🟢 Open"
                     pnl = round((curr_p - buy_p) * qty, 2)
                     pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                     open_invested += invested
                     open_current_val += round(curr_p * qty, 2)
                     unrealised_pnl_total += pnl
+                    effective_curr_p = curr_p
 
                 portfolio_rows.append({
-                    "Date": pos_date,
+                    "Entry Date": pos_date_str,
+                    "Sold Date": pos_exit_date_str if pos_exit_date_str else "-",
+                    "Holding (Days)": f"{holding_days} d",
                     "Ticker": pos.get("Ticker", sym.replace(".NS", "").replace(".BO", "")),
-                    "Status": status,
+                    "Status": pos_status,
                     "Remarks / Strategy": pos_remarks,
                     "Entry (₹)": f"₹{buy_p:,.2f}",
-                    "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "None",
-                    "Current Price (₹)": f"₹{curr_p:,.2f}",
+                    "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "-",
+                    "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
+                    "Current / Exit (₹)": f"₹{effective_curr_p:,.2f}",
                     "Qty": qty,
                     "Invested (₹)": f"₹{invested:,.2f}",
                     "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
                     "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
+                    "_raw_pnl": pnl,
                 })
 
+            st.session_state["paper_portfolio"] = updated_portfolio_data
+            save_portfolio(updated_portfolio_data)
+
+            # Portfolio Metric Summary
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
             p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
             p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")
@@ -1482,13 +1589,56 @@ if not df_raw.empty:
                 delta=f"{(unrealised_pnl_total / open_invested * 100.0):.2f}%" if open_invested > 0 else "0.00%",
             )
             p_col4.metric(
-                "Realised P&L (SL Hit)",
+                "Realised P&L (Closed)",
                 f"₹{realised_pnl_total:,.2f}",
                 delta_color="normal" if realised_pnl_total >= 0 else "inverse",
             )
 
+            # DataFrame with Dynamic Color Highlighting for P&L and P&L (%)
+            port_df = pd.DataFrame(portfolio_rows)
+            display_port_cols = [
+                "Entry Date",
+                "Sold Date",
+                "Holding (Days)",
+                "Ticker",
+                "Status",
+                "Remarks / Strategy",
+                "Entry (₹)",
+                "SL (₹)",
+                "TGT (₹)",
+                "Current / Exit (₹)",
+                "Qty",
+                "Invested (₹)",
+                "P&L (₹)",
+                "P&L (%)",
+            ]
+            final_port_display = port_df[display_port_cols].copy()
+
+            def highlight_pnl(val):
+                try:
+                    clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
+                    num = float(clean_str)
+                    if num > 0:
+                        return "color: #00e676; font-weight: bold;"
+                    elif num < 0:
+                        return "color: #ff5252; font-weight: bold;"
+                    else:
+                        return "color: #b0bec5; font-weight: normal;"
+                except Exception:
+                    return ""
+
+            styled_port = final_port_display.style.map(
+                highlight_pnl, subset=["P&L (₹)", "P&L (%)"]
+            ).set_properties(**{
+                "text-align": "center",
+                "font-weight": "500"
+            }).set_table_styles([
+                {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            ])
+
             st.dataframe(
-                pd.DataFrame(portfolio_rows),
+                styled_port,
                 use_container_width=True,
                 hide_index=True,
             )

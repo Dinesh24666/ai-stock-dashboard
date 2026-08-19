@@ -95,42 +95,17 @@ if GEMINI_API_KEY:
 # Disclosed Order Backlog Database (in ₹ Crores) for Capital Goods, Infra, Defence, Rail, Power
 ORDER_BOOK_CR_MAP = {
     # Defence & Shipyards
-    "HAL": 94000,
-    "BEL": 76000,
-    "BDL": 20000,
-    "MAZDOCK": 40000,
-    "COCHINSHIP": 22000,
-    "GRSE": 25000,
+    "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
+    "COCHINSHIP": 22000, "GRSE": 25000,
     # Capital Goods, Machinery & Engineering
-    "BHEL": 135000,
-    "ACE": 3200,
-    "JYOTICNC": 4850,
-    "BEML": 12500,
-    "ISGEC": 8500,
-    "TECHNOE": 9000,
-    "ELECON": 3500,
-    "KIRLOSENG": 3200,
+    "BHEL": 135000, "ACE": 3200, "JYOTICNC": 4850, "BEML": 12500, 
+    "ISGEC": 8500, "TECHNOE": 9000, "ELECON": 3500, "KIRLOSENG": 3200,
     # Infrastructure, Rail & Construction
-    "LT": 475000,
-    "RVNL": 85000,
-    "IRCON": 32000,
-    "NCC": 57000,
-    "JINDRILL": 1310,
-    "PNCINFRA": 18000,
-    "KEC": 34000,
-    "KPIL": 58000,
-    "NBCC": 81000,
-    "HGINFRA": 12000,
-    "AHLUCONT": 14000,
-    "POWERMECH": 55000,
-    "TITAGARH": 28000,
-    "JWL": 20000,
-    "RAILTEL": 5000,
-    "ENGINERSIN": 10500,
-    "PSPPROJECT": 6000,
-    "GPTINFRA": 3500,
-    "MANINFRA": 4200,
-    "MMFL": 1800,
+    "LT": 475000, "RVNL": 85000, "IRCON": 32000, "NCC": 57000, 
+    "JINDRILL": 1310, "PNCINFRA": 18000, "KEC": 34000, "KPIL": 58000, 
+    "NBCC": 81000, "HGINFRA": 12000, "AHLUCONT": 14000, "POWERMECH": 55000,
+    "TITAGARH": 28000, "JWL": 20000, "RAILTEL": 5000, "ENGINERSIN": 10500,
+    "PSPPROJECT": 6000, "GPTINFRA": 3500, "MANINFRA": 4200, "MMFL": 1800,
 }
 
 # Complete Embedded 2,000+ NSE Listed Equities Universe
@@ -1371,36 +1346,80 @@ if not df_raw.empty:
                     st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']} ({remarks.strip()})!")
                     st.rerun()
 
-        # 2. Manual Exit / Sell Position Manager
+        # 2. Interactive In-Place Editor for SL, TGT, Sold Date & Status
         active_portfolio = st.session_state.get("paper_portfolio", [])
-        open_positions = [pos for pos in active_portfolio if pos.get("Status", "🟢 Open") == "🟢 Open"]
 
-        if open_positions:
-            with st.expander("🔴 Manually Sell / Close an Open Position", expanded=False):
-                col_sel1, col_sel2, col_sel3, col_sel_btn = st.columns([1.5, 1, 1, 1])
-                with col_sel1:
-                    trade_choices = {
-                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) [ID: {pos.get('id', idx)}]": idx
+        if active_portfolio:
+            with st.expander("✏️ Edit Open/Closed Trades (Update SL, TGT, Sold Date, Exit Price & Status)", expanded=False):
+                col_sel_edit, _ = st.columns([2, 1])
+                with col_sel_edit:
+                    trade_edit_options = {
+                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}]": idx
                         for idx, pos in enumerate(active_portfolio)
-                        if pos.get("Status", "🟢 Open") == "🟢 Open"
                     }
-                    selected_trade_label = st.selectbox("Select Open Trade to Close:", list(trade_choices.keys()))
-                with col_sel2:
-                    sell_date = st.date_input("Sold Date", value=date.today(), key="manual_sell_date")
-                with col_sel3:
-                    selected_idx = trade_choices[selected_trade_label]
-                    default_exit_p = float(active_portfolio[selected_idx].get("Buy Price (₹)", 100.0))
-                    sell_price = st.number_input("Exit Price (₹)", value=default_exit_p, min_value=0.1, step=0.5, key="manual_sell_price")
-                with col_sel_btn:
-                    st.write("")
-                    st.write("")
-                    if st.button("📤 Sell / Close Trade", use_container_width=True):
-                        active_portfolio[selected_idx]["Status"] = "⚪ Sold Manually"
-                        active_portfolio[selected_idx]["Exit_Date"] = str(sell_date)
-                        active_portfolio[selected_idx]["Exit Price (₹)"] = sell_price
-                        save_portfolio(active_portfolio)
-                        st.success(f"Position for {active_portfolio[selected_idx]['Ticker']} closed successfully!")
-                        st.rerun()
+                    selected_edit_label = st.selectbox("Select Trade to Edit:", list(trade_edit_options.keys()))
+                
+                edit_idx = trade_edit_options[selected_edit_label]
+                curr_item = active_portfolio[edit_idx]
+
+                ec1, ec2, ec3, ec4, ec5 = st.columns(5)
+                with ec1:
+                    new_sl_val = st.number_input(
+                        "Edit SL (₹)",
+                        value=float(curr_item.get("SL (₹)") or 0.0),
+                        step=0.5,
+                        key=f"edit_sl_{edit_idx}",
+                    )
+                with ec2:
+                    new_tgt_val = st.number_input(
+                        "Edit TGT (₹)",
+                        value=float(curr_item.get("TGT (₹)") or 0.0),
+                        step=0.5,
+                        key=f"edit_tgt_{edit_idx}",
+                    )
+                with ec3:
+                    current_status_opts = ["🟢 Open", "🔴 SL Hit (Closed)", "🎯 TGT Hit (Closed)", "⚪ Sold Manually"]
+                    existing_status = curr_item.get("Status", "🟢 Open")
+                    status_idx = current_status_opts.index(existing_status) if existing_status in current_status_opts else 0
+                    new_status_val = st.selectbox(
+                        "Status",
+                        current_status_opts,
+                        index=status_idx,
+                        key=f"edit_status_{edit_idx}",
+                    )
+                with ec4:
+                    existing_exit_date_str = curr_item.get("Exit_Date")
+                    try:
+                        parsed_exit_date = datetime.strptime(str(existing_exit_date_str), "%Y-%m-%d").date() if existing_exit_date_str and existing_exit_date_str != "-" else date.today()
+                    except Exception:
+                        parsed_exit_date = date.today()
+                    
+                    new_exit_date = st.date_input(
+                        "Sold Date",
+                        value=parsed_exit_date,
+                        key=f"edit_exit_date_{edit_idx}",
+                    )
+                with ec5:
+                    new_exit_price = st.number_input(
+                        "Exit Price (₹)",
+                        value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0),
+                        step=0.5,
+                        key=f"edit_exit_price_{edit_idx}",
+                    )
+
+                if st.button("💾 Save Trade Changes", key=f"save_btn_{edit_idx}"):
+                    active_portfolio[edit_idx]["SL (₹)"] = new_sl_val
+                    active_portfolio[edit_idx]["TGT (₹)"] = new_tgt_val
+                    active_portfolio[edit_idx]["Status"] = new_status_val
+                    if new_status_val != "🟢 Open":
+                        active_portfolio[edit_idx]["Exit_Date"] = str(new_exit_date)
+                        active_portfolio[edit_idx]["Exit Price (₹)"] = new_exit_price
+                    else:
+                        active_portfolio[edit_idx]["Exit_Date"] = None
+                        active_portfolio[edit_idx]["Exit Price (₹)"] = None
+                    save_portfolio(active_portfolio)
+                    st.success("Trade updated successfully!")
+                    st.rerun()
 
         # 3. Backup & Restore
         col_dl, col_up = st.columns([1, 1])
@@ -1464,7 +1483,7 @@ if not df_raw.empty:
                     use_container_width=True,
                 )
 
-        # 4. Live Portfolio Tracking, Calculations & Metrics
+        # 4. Live Portfolio Tracking, Metrics & Performance Calculation
         if active_portfolio:
             portfolio_rows = []
             open_invested = 0.0
@@ -1501,6 +1520,9 @@ if not df_raw.empty:
                 pass
 
             updated_portfolio_data = []
+            winning_trades_count = 0
+            losing_trades_count = 0
+            total_trades_count = len(active_portfolio)
 
             for pos in active_portfolio:
                 sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
@@ -1516,7 +1538,7 @@ if not df_raw.empty:
                 pos_status = str(pos.get("Status", "🟢 Open"))
                 saved_exit_price = pos.get("Exit Price (₹)")
 
-                # Automatic SL / Target Hit Detection for Open Trades
+                # Auto Trigger SL / TGT when position is open
                 if pos_status == "🟢 Open":
                     if sl > 0 and curr_p <= sl:
                         pos_status = "🔴 SL Hit (Closed)"
@@ -1532,10 +1554,10 @@ if not df_raw.empty:
                 pos["Exit Price (₹)"] = saved_exit_price
                 updated_portfolio_data.append(pos)
 
-                # Calculate Holding Days
+                # Holding Days Calculation
                 try:
                     d_entry = datetime.strptime(pos_date_str, "%Y-%m-%d").date()
-                    if pos_exit_date_str:
+                    if pos_exit_date_str and pos_exit_date_str != "-":
                         d_exit = datetime.strptime(str(pos_exit_date_str), "%Y-%m-%d").date()
                     else:
                         d_exit = date.today()
@@ -1543,7 +1565,7 @@ if not df_raw.empty:
                 except Exception:
                     holding_days = 0
 
-                # Calculate P&L
+                # P&L Calculation
                 if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
                     exit_val = float(saved_exit_price) if saved_exit_price is not None else curr_p
                     pnl = round((exit_val - buy_p) * qty, 2)
@@ -1557,6 +1579,12 @@ if not df_raw.empty:
                     open_current_val += round(curr_p * qty, 2)
                     unrealised_pnl_total += pnl
                     effective_curr_p = curr_p
+
+                # Win / Loss Counter
+                if pnl > 0:
+                    winning_trades_count += 1
+                elif pnl < 0:
+                    losing_trades_count += 1
 
                 portfolio_rows.append({
                     "Entry Date": pos_date_str,
@@ -1579,8 +1607,12 @@ if not df_raw.empty:
             st.session_state["paper_portfolio"] = updated_portfolio_data
             save_portfolio(updated_portfolio_data)
 
-            # Portfolio Metric Summary
-            p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+            # Win Rate / Loss Rate Calculations
+            win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
+            loss_rate_pct = (losing_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
+
+            # 5-Column Metric Summary Ribbon
+            p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
             p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
             p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")
             p_col3.metric(
@@ -1593,8 +1625,14 @@ if not df_raw.empty:
                 f"₹{realised_pnl_total:,.2f}",
                 delta_color="normal" if realised_pnl_total >= 0 else "inverse",
             )
+            p_col5.metric(
+                "Win / Loss Rate (%)",
+                f"{win_rate_pct:.1f}% Win",
+                delta=f"{loss_rate_pct:.1f}% Loss",
+                delta_color="inverse",
+            )
 
-            # DataFrame with Dynamic Color Highlighting for P&L and P&L (%)
+            # DataFrame with Dark Green & Red Highlighting
             port_df = pd.DataFrame(portfolio_rows)
             display_port_cols = [
                 "Entry Date",
@@ -1614,21 +1652,23 @@ if not df_raw.empty:
             ]
             final_port_display = port_df[display_port_cols].copy()
 
-            def highlight_pnl(val):
+            def highlight_pnl_dark_green_red(val):
                 try:
                     clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
                     num = float(clean_str)
                     if num > 0:
-                        return "color: #00e676; font-weight: bold;"
+                        # Rich Dark Green (Forest Green matching active status)
+                        return "color: #1b8a36; font-weight: 700;"
                     elif num < 0:
-                        return "color: #ff5252; font-weight: bold;"
+                        # Vibrant Red
+                        return "color: #e53935; font-weight: 700;"
                     else:
-                        return "color: #b0bec5; font-weight: normal;"
+                        return "color: #888888; font-weight: normal;"
                 except Exception:
                     return ""
 
             styled_port = final_port_display.style.map(
-                highlight_pnl, subset=["P&L (₹)", "P&L (%)"]
+                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
             ).set_properties(**{
                 "text-align": "center",
                 "font-weight": "500"

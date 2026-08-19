@@ -230,18 +230,15 @@ if GEMINI_API_KEY:
 
 # Disclosed Order Backlog Database (in ₹ Crores) for Capital Goods, Infra, Defence, Rail, Power
 ORDER_BOOK_CR_MAP = {
-    # Defence & Shipyards
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
-    "COCHINSHIP": 22000, "GRSE": 25000,
-    # Capital Goods, Machinery & Engineering
-    "BHEL": 135000, "ACE": 3200, "JYOTICNC": 4850, "BEML": 12500, 
-    "ISGEC": 8500, "TECHNOE": 9000, "ELECON": 3500, "KIRLOSENG": 3200,
-    # Infrastructure, Rail & Construction
-    "LT": 475000, "RVNL": 85000, "IRCON": 32000, "NCC": 57000, 
-    "JINDRILL": 1310, "PNCINFRA": 18000, "KEC": 34000, "KPIL": 58000, 
-    "NBCC": 81000, "HGINFRA": 12000, "AHLUCONT": 14000, "POWERMECH": 55000,
-    "TITAGARH": 28000, "JWL": 20000, "RAILTEL": 5000, "ENGINERSIN": 10500,
-    "PSPPROJECT": 6000, "GPTINFRA": 3500, "MANINFRA": 4200, "MMFL": 1800,
+    "COCHINSHIP": 22000, "GRSE": 25000, "BHEL": 135000, "ACE": 3200, 
+    "JYOTICNC": 4850, "BEML": 12500, "ISGEC": 8500, "TECHNOE": 9000, 
+    "ELECON": 3500, "KIRLOSENG": 3200, "LT": 475000, "RVNL": 85000, 
+    "IRCON": 32000, "NCC": 57000, "JINDRILL": 1310, "PNCINFRA": 18000, 
+    "KEC": 34000, "KPIL": 58000, "NBCC": 81000, "HGINFRA": 12000, 
+    "AHLUCONT": 14000, "POWERMECH": 55000, "TITAGARH": 28000, "JWL": 20000, 
+    "RAILTEL": 5000, "ENGINERSIN": 10500, "PSPPROJECT": 6000, "GPTINFRA": 3500, 
+    "MANINFRA": 4200, "MMFL": 1800,
 }
 
 # Complete Embedded 2,000+ NSE Listed Equities Universe
@@ -623,7 +620,7 @@ mcap_range_cr = st.sidebar.slider(
     "Market Cap Range (₹ Cr)",
     0,
     2000000,
-    (1500, 2000000),
+    (1000, 2000000),
     step=500,
     help="Filter by minimum and maximum market capitalization in ₹ Crores",
 )
@@ -634,7 +631,7 @@ price_range = st.sidebar.slider(
     "Stock Price (₹) Range",
     0,
     5000,
-    (30, 5000),
+    (30, 1500),
     step=10,
     help="Filter stocks within a specific current share price band",
 )
@@ -654,6 +651,7 @@ sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
         "Any Trend",
+        "⚡ 9/20/44 Triple EMA Bullish Cross",
         "Multi-Timeframe 20D Breakout",
         "Relative strength",
         "Price > Both 50 & 200 SMA",
@@ -800,10 +798,21 @@ def fetch_screener_universe(ticker_list):
                     else 0.0
                 )
 
-                ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
-                ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
-                ema_50 = float(hist["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
-                ema_200 = float(hist["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
+                ema_9_series = hist["Close"].ewm(span=9, adjust=False).mean()
+                ema_20_series = hist["Close"].ewm(span=20, adjust=False).mean()
+                ema_44_series = hist["Close"].ewm(span=44, adjust=False).mean()
+                ema_50_series = hist["Close"].ewm(span=50, adjust=False).mean()
+                ema_200_series = hist["Close"].ewm(span=200, adjust=False).mean()
+
+                ema_9 = float(ema_9_series.iloc[-1])
+                ema_20 = float(ema_20_series.iloc[-1])
+                ema_44 = float(ema_44_series.iloc[-1])
+                ema_50 = float(ema_50_series.iloc[-1])
+                ema_200 = float(ema_200_series.iloc[-1])
+
+                ema_9_prev = float(ema_9_series.iloc[-2]) if len(ema_9_series) >= 2 else ema_9
+                ema_20_prev = float(ema_20_series.iloc[-2]) if len(ema_20_series) >= 2 else ema_20
+                ema_44_prev = float(ema_44_series.iloc[-2]) if len(ema_44_series) >= 2 else ema_44
 
                 sma_50 = (
                     float(hist["Close"].rolling(50).mean().iloc[-1])
@@ -827,7 +836,49 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # EXACT RELATIVE STRENGTH CONDITIONS
+                vol_series = hist["Volume"].dropna()
+                curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
+                avg_vol_20 = (
+                    float(vol_series.rolling(20).mean().iloc[-1])
+                    if len(vol_series) >= 20
+                    else float(curr_vol)
+                )
+                vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
+                vol_surge_1_5x = bool(curr_vol > (avg_vol_20 * 1.5))
+
+                company_name = clean_sym
+                mcap_cr = round(
+                    max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1
+                )
+                pe = round(
+                    float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)),
+                    1,
+                )
+                de = 0.5
+                roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
+
+                # -------------------------------------------------------------
+                # SETUP 1: 9/20/44 TRIPLE EMA BULLISH CROSS
+                # Daily EMA(9) crossed above Daily EMA(20)
+                # Daily EMA(20) crossed above Daily EMA(44)
+                # Daily Close > 30 and Daily Close < 1500
+                # Market Cap > 1000
+                # -------------------------------------------------------------
+                cross_9_above_20 = (ema_9 > ema_20) and ((ema_9_prev <= ema_20_prev) or (ema_9 > ema_20 > ema_44))
+                cross_20_above_44 = (ema_20 > ema_44) and ((ema_20_prev <= ema_44_prev) or (ema_9 > ema_20 > ema_44))
+                price_within_30_1500 = 30.0 <= curr_price <= 1500.0
+                mcap_above_1000 = mcap_cr >= 1000.0
+
+                is_triple_ema_match = bool(
+                    cross_9_above_20
+                    and cross_20_above_44
+                    and price_within_30_1500
+                    and mcap_above_1000
+                )
+
+                # -------------------------------------------------------------
+                # SETUP 2: EXACT RELATIVE STRENGTH CONDITIONS
+                # -------------------------------------------------------------
                 close_20d_ago = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
                 close_125d_ago = float(hist["Close"].iloc[-126]) if len(hist) >= 126 else float(hist["Close"].iloc[0])
 
@@ -839,15 +890,7 @@ def fetch_screener_universe(ticker_list):
                 is_relative_strength_match = bool(cond1_ema200_dist and cond2_ret_125d and cond3_ema50_dist and cond4_ret_20d)
 
                 # -------------------------------------------------------------
-                # EXACT MULTI-TIMEFRAME 20D BREAKOUT SETUP (IMAGE CRITERIA):
-                # 1. Weekly Close > Weekly EMA(20)
-                # 2. Weekly RSI(14) >= 55
-                # 3. Daily Close > Daily EMA(20)
-                # 4. Daily Close > 1 day ago Max(20, Daily High)
-                # 5. Daily Volume > Daily SMA(Volume, 20) * 1.5
-                # 6. Intraday / Fast Momentum: Daily Close > Daily EMA(9)
-                # 7. Daily Close >= Weekly Max(52, Weekly High) * 0.75
-                # 8. Daily Close >= Weekly Max(52, Weekly Low) * 1
+                # SETUP 3: MULTI-TIMEFRAME 20D BREAKOUT SETUP
                 # -------------------------------------------------------------
                 weekly_df = hist.resample("W").agg({
                     "Open": "first",
@@ -870,16 +913,6 @@ def fetch_screener_universe(ticker_list):
                     weekly_52w_high = high_52w
                     weekly_52w_low_max = float(hist["Low"].min())
 
-                vol_series = hist["Volume"].dropna()
-                curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
-                avg_vol_20 = (
-                    float(vol_series.rolling(20).mean().iloc[-1])
-                    if len(vol_series) >= 20
-                    else float(curr_vol)
-                )
-                vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
-                vol_surge_1_5x = bool(curr_vol > (avg_vol_20 * 1.5))
-
                 cond_mtf_weekly_ema = weekly_close > weekly_ema_20
                 cond_mtf_weekly_rsi = weekly_rsi >= 55.0
                 cond_mtf_daily_ema20 = curr_price > ema_20
@@ -899,17 +932,6 @@ def fetch_screener_universe(ticker_list):
                     and cond_mtf_52w_high_75
                     and cond_mtf_52w_low_max
                 )
-
-                company_name = clean_sym
-                mcap_cr = round(
-                    max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1
-                )
-                pe = round(
-                    float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)),
-                    1,
-                )
-                de = 0.5
-                roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
                 # Order Book & Revenue Valuation Calculation
                 ob_val = ORDER_BOOK_CR_MAP.get(company_name, 0.0)
@@ -944,7 +966,7 @@ def fetch_screener_universe(ticker_list):
                 swing_composite = float(candle_score + ma_score + momentum_score + volume_proximity_score)
 
                 # Signal Classification
-                if (swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20) or passes_mtf_breakout or is_relative_strength_match:
+                if (swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20) or passes_mtf_breakout or is_relative_strength_match or is_triple_ema_match:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif swing_composite >= 60 and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -974,6 +996,7 @@ def fetch_screener_universe(ticker_list):
                         "OB / MCap": ratio_display,
                         "9 EMA": round(ema_9, 2),
                         "20 EMA": round(ema_20, 2),
+                        "44 EMA": round(ema_44, 2),
                         "P/E": pe,
                         "D/E": de,
                         "SMA_50": round(sma_50, 2),
@@ -988,6 +1011,7 @@ def fetch_screener_universe(ticker_list):
                         "_adx_num": adx_val,
                         "_mtf_match": passes_mtf_breakout,
                         "_rs_match": is_relative_strength_match,
+                        "_triple_ema_match": is_triple_ema_match,
                         "_ob_gt_mcap": is_order_book_gt_mcap,
                     }
                 )
@@ -1090,7 +1114,9 @@ if not df_raw.empty:
             & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
         ]
 
-        if sma_trend_filter == "Multi-Timeframe 20D Breakout":
+        if sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
+            filtered_df = filtered_df[filtered_df["_triple_ema_match"] == True]
+        elif sma_trend_filter == "Multi-Timeframe 20D Breakout":
             filtered_df = filtered_df[filtered_df["_mtf_match"] == True]
         elif sma_trend_filter == "Relative strength":
             filtered_df = filtered_df[filtered_df["_rs_match"] == True]
@@ -1131,7 +1157,7 @@ if not df_raw.empty:
     # --- TAB 1: SCREENER & SIGNAL TABLE ---
     with tab_screener:
         st.info(
-            "💡 **Momentum Engine:** Evaluates 9/20 EMA Breakouts, % Price Change, Volume, RSI (50–75), ADX trend strength, and Volume surges for swing trades."
+            "💡 **Momentum Engine:** Evaluates 9/20/44 EMA Crossovers, % Price Change, Volume, RSI (50–75), ADX trend strength, and Multi-Timeframe breakout signals."
         )
 
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
@@ -1259,15 +1285,15 @@ if not df_raw.empty:
 
             if hist is not None and not hist.empty:
                 hist["EMA_9"] = hist["Close"].ewm(span=9, adjust=False).mean()
-                hist["EMA_20"] = (
-                    hist["Close"].ewm(span=20, adjust=False).mean()
-                )
+                hist["EMA_20"] = hist["Close"].ewm(span=20, adjust=False).mean()
+                hist["EMA_44"] = hist["Close"].ewm(span=44, adjust=False).mean()
                 hist["SMA_50"] = hist["Close"].rolling(50).mean()
                 hist["SMA_200"] = hist["Close"].rolling(200).mean()
 
                 curr_p = float(hist["Close"].iloc[-1])
                 ema9_val = float(hist["EMA_9"].iloc[-1])
                 ema20_val = float(hist["EMA_20"].iloc[-1])
+                ema44_val = float(hist["EMA_44"].iloc[-1])
                 curr_signal = stock_row["Signal"] if stock_row is not None else "N/A"
                 curr_score = stock_row["Composite Score"] if stock_row is not None else 0
                 curr_adx = stock_row["ADX (14)"] if stock_row is not None else 25.0
@@ -1276,7 +1302,7 @@ if not df_raw.empty:
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Current Price", f"₹{curr_p:,.2f}", delta=curr_change)
-                c2.metric("9 / 20 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f}")
+                c2.metric("9 / 20 / 44 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f} / ₹{ema44_val:.1f}")
                 c3.metric("Volume / ADX", f"{curr_volume} | ADX: {curr_adx}")
                 c4.metric("Action Signal", curr_signal)
 
@@ -1301,6 +1327,12 @@ if not df_raw.empty:
                             y=hist["EMA_20"],
                             line=dict(color="#ffd700", width=1.5),
                             name="20 EMA (Momentum)",
+                        ),
+                        go.Scatter(
+                            x=hist.index,
+                            y=hist["EMA_44"],
+                            line=dict(color="#a855f7", width=1.5),
+                            name="44 EMA (Baseline)",
                         ),
                         go.Scatter(
                             x=hist.index,
@@ -1352,7 +1384,7 @@ if not df_raw.empty:
                         - Stock: {selected_stock}
                         - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
                         - Traded Volume: {curr_volume}
-                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} (Status: {'Bullish Cross' if ema9_val >= ema20_val else 'Bearish Cross'})
+                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} | 44 EMA: ₹{ema44_val:.2f}
                         - ADX (14) Trend Strength: {curr_adx}
                         - Technicals: RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}, Dist from 52W High: {stock_row['From 52W High (%)'] if stock_row is not None else 'N/A'}%
                         - Volume Surge: {stock_row['Vol Surge'] if stock_row is not None else 'False'}
@@ -1365,7 +1397,7 @@ if not df_raw.empty:
                         3. **Trade Blueprint**:
                            - Ideal Entry Range (₹)
                            - Strict Stop-Loss (₹) (below recent 20 EMA/swing low)
-                           - Realistic Targets (Target 1 & Target 2 with Risk:Reward $\\ge$ 1:2)
+                           - Realistic Targets (Target 1 & Target 2 with Risk:Reward >= 1:2)
                         4. **Exit Trigger**: Invalidation condition for swing trades.
                         """
                         with st.spinner("Analyzing momentum setup with Gemini..."):
@@ -1430,11 +1462,14 @@ if not df_raw.empty:
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
-        selected_strategy_label = (
-            "Multi-Timeframe 20D Breakout"
-            if sma_trend_filter == "Multi-Timeframe 20D Breakout"
-            else ("Relative strength" if sma_trend_filter == "Relative strength" else "9/20 EMA Breakout Swing Setup")
-        )
+        if sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
+            selected_strategy_label = "9/20/44 Triple EMA Bullish Cross"
+        elif sma_trend_filter == "Multi-Timeframe 20D Breakout":
+            selected_strategy_label = "Multi-Timeframe 20D Breakout"
+        elif sma_trend_filter == "Relative strength":
+            selected_strategy_label = "Relative strength"
+        else:
+            selected_strategy_label = "9/20 EMA Breakout Swing Setup"
 
         # 1. Order Placement Form
         with st.expander(
@@ -1868,9 +1903,9 @@ if not df_raw.empty:
                     clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
                     num = float(clean_str)
                     if num > 0:
-                        return "color: #15803d; font-weight: 700;"  # Dark Forest Green
+                        return "color: #15803d; font-weight: 700;"
                     elif num < 0:
-                        return "color: #dc2626; font-weight: 700;"  # Vibrant Red
+                        return "color: #dc2626; font-weight: 700;"
                     else:
                         return "color: #64748b; font-weight: normal;"
                 except Exception:

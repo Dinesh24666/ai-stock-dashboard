@@ -21,7 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe and data_editor columns */
+    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Top Header Bar Styling */
+    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* Trade Performance Summary Grid Styling */
+    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -155,7 +155,7 @@ def render_alert_permission_banner():
             </div>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
-            <button id="alert-btn" onclick="activateSystemAlerts()" style="background: #059669; hover: background: #047857; color: #ffffff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 13.5px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">
+            <button id="alert-btn" onclick="activateSystemAlerts()" style="background: #059669; color: #ffffff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 13.5px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">
                 🔊 Enable Sound & Desktop Notifications
             </button>
             <span id="alert-status-msg" style="font-size: 13px; font-weight: 700; color: #065f46;"></span>
@@ -164,7 +164,6 @@ def render_alert_permission_banner():
     <script>
     function activateSystemAlerts() {
         var statusEl = document.getElementById("alert-status-msg");
-        // 1. Request OS Push Notification
         if ("Notification" in window) {
             Notification.requestPermission().then(function(permission) {
                 if (permission === "granted") {
@@ -178,7 +177,6 @@ def render_alert_permission_banner():
                 }
             });
         }
-        // 2. Play Test Beep & Unlock Web Audio
         try {
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) {
@@ -207,7 +205,6 @@ def play_trigger_alert(ticker, buy_price):
     alert_html = f"""
     <script>
     (function() {
-        // 1. Desktop Notification (Handles iframe bubbling)
         try {{
             var notif = window.top.Notification || window.Notification;
             if (notif && notif.permission === "granted") {{
@@ -218,7 +215,6 @@ def play_trigger_alert(ticker, buy_price):
             }}
         }} catch(e) {{}}
 
-        // 2. Web Audio Triple-Tone Alarm
         try {{
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) {{
@@ -231,7 +227,6 @@ def play_trigger_alert(ticker, buy_price):
                             var gain = ctx.createGain();
                             osc.connect(gain);
                             gain.connect(ctx.destination);
-                            osc.type = "sine";
                             osc.frequency.value = freq;
                             gain.gain.setValueAtTime(0.4, ctx.currentTime);
                             gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);

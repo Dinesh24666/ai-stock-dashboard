@@ -327,7 +327,6 @@ if market_indices:
 
 st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 
-# --- PERSISTENT STORAGE HELPERS ---
 PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
 
@@ -350,7 +349,6 @@ def save_json_file(filename, data):
         st.error(f"Error saving to {filename}: {e}")
 
 
-# Initialize session states
 if "paper_portfolio" not in st.session_state:
     st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
 
@@ -363,7 +361,6 @@ if "ai_analysis_cache" not in st.session_state:
 if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
-# 2. Sidebar - API Setup
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -383,7 +380,6 @@ if GEMINI_API_KEY:
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
 
-# Disclosed Order Backlog Database (in ₹ Crores)
 ORDER_BOOK_CR_MAP = {
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
     "COCHINSHIP": 22000, "GRSE": 25000, "BHEL": 135000, "ACE": 3200, 
@@ -396,7 +392,6 @@ ORDER_BOOK_CR_MAP = {
     "MANINFRA": 4200, "MMFL": 1800, "GENUSPOWER": 21500, "KRONOX": 185,
 }
 
-# Complete Embedded 2,000+ NSE Listed Equities Universe
 NSE_FULL_EQUITIES = [
     "20MICRONS", "21STCENMGM", "360ONE", "3IINFOLTD", "3MINDIA", "3PLAND", "5PAISA", "63MOONS",
     "A2ZINFRA", "AAATECH", "AADHARHFC", "AAKASH", "AAL", "AARTIDRUGS", "AARTIIND",
@@ -1281,7 +1276,6 @@ if not df_raw.empty:
         
         st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 
-        # --- WATCHLIST BACKUP & RESTORE TOOLS ---
         col_w_dl, col_w_up = st.columns([1, 1])
         with col_w_up:
             uploaded_watchlist = st.file_uploader("📥 Restore Watchlist from Backup (.json)", type=["json"], key="watchlist_uploader")
@@ -1289,10 +1283,14 @@ if not df_raw.empty:
                 try:
                     restored_wb_data = json.load(uploaded_watchlist)
                     if isinstance(restored_wb_data, list):
-                        st.session_state["pullback_watchlist"] = restored_wb_data
-                        save_json_file(WATCHLIST_FILE, restored_wb_data)
-                        st.success("Pullback watchlist successfully restored!")
-                        st.rerun()
+                        valid_items = [item for item in restored_wb_data if isinstance(item, dict) and "Target Buy (₹)" in item]
+                        if valid_items:
+                            st.session_state["pullback_watchlist"] = valid_items
+                            save_json_file(WATCHLIST_FILE, valid_items)
+                            st.success("Pullback watchlist successfully restored!")
+                            st.rerun()
+                        else:
+                            st.error("Uploaded file does not contain valid pullback watchlist entries. (Make sure to upload a watchlist backup file, not a portfolio file).")
                 except Exception as e:
                     st.error(f"Failed to restore watchlist backup: {e}")
 
@@ -1363,6 +1361,9 @@ if not df_raw.empty:
             display_rows = []
 
             for item in active_watchlist:
+                if not isinstance(item, dict) or "Target Buy (₹)" not in item:
+                    continue
+
                 sym = item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS"
                 clean_sym = item.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
                 target_buy = float(item.get("Target Buy (₹)", 0.0))
@@ -1408,7 +1409,7 @@ if not df_raw.empty:
                 item["Status"] = status_str
                 updated_watchlist.append(item)
 
-                dist_str = f"{((curr_ltp - target_buy) / target_buy * 100.0):+.2f}% away" if (curr_ltp and "Waiting" in status_str) else ("Executed ✅" if "Triggered" in status_str else "Fetching...")
+                dist_str = f"{((curr_ltp - target_buy) / target_buy * 100.0):+.2f}% away" if (curr_ltp and target_buy > 0 and "Waiting" in status_str) else ("Executed ✅" if "Triggered" in status_str else "Fetching...")
 
                 display_rows.append({
                     "Date Added": item.get("Date Added", str(date.today())),
@@ -1425,16 +1426,18 @@ if not df_raw.empty:
 
             st.session_state["pullback_watchlist"] = updated_watchlist
             save_json_file(WATCHLIST_FILE, updated_watchlist)
-            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+            if display_rows:
+                st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
 
             m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
             with m_col1:
                 del_choices = {f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
-                sel_del = st.selectbox("Select Watchlist Item:", list(del_choices.keys()), key="del_wb_select")
+                if del_choices:
+                    sel_del = st.selectbox("Select Watchlist Item:", list(del_choices.keys()), key="del_wb_select")
             with m_col2:
                 st.write("")
                 st.write("")
-                if st.button("🔄 Re-Arm / Reset to Waiting", use_container_width=True):
+                if del_choices and st.button("🔄 Re-Arm / Reset to Waiting", use_container_width=True):
                     d_idx = del_choices[sel_del]
                     rearm_sym = updated_watchlist[d_idx].get("Ticker")
                     updated_watchlist[d_idx]["Status"] = "⏳ Waiting for Pullback"
@@ -1451,7 +1454,7 @@ if not df_raw.empty:
             with m_col3:
                 st.write("")
                 st.write("")
-                if st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
+                if del_choices and st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
                     d_idx = del_choices[sel_del]
                     removed_sym = updated_watchlist[d_idx].get("Ticker")
                     updated_watchlist.pop(d_idx)

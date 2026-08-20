@@ -21,7 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for all tables and headers */
+    /* Full center alignment for all dataframe and data_editor columns */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Ribbon */
+    /* Live Market Index Top Header Bar Styling */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* KPI Summary Cards */
+    /* Trade Performance Summary Grid Styling */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -142,39 +142,62 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- BROWSER AUDIO ALARM GENERATOR ---
-def play_trigger_sound():
-    sound_html = """
+# --- BROWSER AUDIO & OS DESKTOP PUSH ALERT ENGINE ---
+def play_trigger_alert(ticker, buy_price):
+    alert_html = f"""
     <script>
     (function() {
-        try {
+        // 1. Request Desktop Push Notification
+        if ("Notification" in window) {{
+            if (Notification.permission === "granted") {{
+                new Notification("🎯 PULLBACK LIMIT HIT!", {{
+                    body: "{ticker} reached buy limit price ₹{buy_price:,.2f}. Trade Executed!",
+                    icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
+                }});
+            }} else if (Notification.permission !== "denied") {{
+                Notification.requestPermission().then(function (permission) {{
+                    if (permission === "granted") {{
+                        new Notification("🎯 PULLBACK LIMIT HIT!", {{
+                            body: "{ticker} reached buy limit price ₹{buy_price:,.2f}. Trade Executed!"
+                        }});
+                    }}
+                }});
+            }}
+        }}
+
+        // 2. Play Web Audio API Triple-Beep Chime
+        try {{
             var AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (!AudioContext) return;
-            var ctx = new AudioContext();
-            function beep(freq, delay, duration) {
-                setTimeout(function() {
-                    try {
-                        var osc = ctx.createOscillator();
-                        var gain = ctx.createGain();
-                        osc.connect(gain);
-                        gain.connect(ctx.destination);
-                        osc.frequency.value = freq;
-                        osc.type = "sine";
-                        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-                        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
-                        osc.start();
-                        osc.stop(ctx.currentTime + duration);
-                    } catch(e){}
-                }, delay);
-            }
-            beep(587.33, 0, 0.15);   // D5
-            beep(880.00, 150, 0.15); // A5
-            beep(1174.66, 300, 0.35);// D6
-        } catch(e) {}
+            if (AudioContext) {{
+                var ctx = new AudioContext();
+                if (ctx.state === 'suspended') {{
+                    ctx.resume();
+                }}
+                function beep(freq, delay, duration) {{
+                    setTimeout(function() {{
+                        try {{
+                            var osc = ctx.createOscillator();
+                            var gain = ctx.createGain();
+                            osc.connect(gain);
+                            gain.connect(ctx.destination);
+                            osc.frequency.value = freq;
+                            osc.type = "sine";
+                            gain.gain.setValueAtTime(0.4, ctx.currentTime);
+                            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+                            osc.start();
+                            osc.stop(ctx.currentTime + duration);
+                        }} catch(e){{}}
+                    }}, delay);
+                }}
+                beep(659.25, 0, 0.2);   // E5
+                beep(880.00, 180, 0.2); // A5
+                beep(1318.51, 360, 0.4);// E6
+            }}
+        }} catch(e) {{}}
     })();
     </script>
     """
-    components.html(sound_html, height=0)
+    components.html(alert_html, height=0)
 
 
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
@@ -479,7 +502,7 @@ NSE_FULL_EQUITIES = [
     "LOYAL", "LT", "LTF", "LTIM", "LTTS", "LUMAXIND", "LUMAXTECH", "LUPIN",
     "LUXIND", "LXCHEM", "LYKALABS", "LYPSAGEMS", "M&M", "M&MFIN", "MAANALU",
     "MACPOWER", "MADHAV", "MADHUCON", "MADRASFERT", "MAGADSUGAR", "MAGNUM",
-    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHinDCIE",
+    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHINDCIE",
     "MAHLIFE", "MAHLOG", "MAHSCOOTER", "MAHSEAMLES", "MAITHANALL", "MALLCOM",
     "MALUPAPER", "MANAKALUCO", "MANAKCOAT", "MANAKSIA", "MANAKSTEEL", "MANALIPETC",
     "MANAPPURAM", "MANBA", "MANCREDIT", "MANGALAM", "MANGCHEFER", "MANGLMCEM",
@@ -1304,7 +1327,7 @@ if not df_raw.empty:
                     status_str = "⚡ Triggered / Bought"
                     item["Status"] = status_str
                     
-                    play_trigger_sound()
+                    play_trigger_alert(clean_sym, target_buy)
                     st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="⚡")
                     st.success(f"🔔 **Pullback Triggered:** {clean_sym} reached buy level ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
 

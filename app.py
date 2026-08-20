@@ -21,7 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe and data_editor columns */
+    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Top Header Bar Styling */
+    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* Trade Performance Summary Grid Styling */
+    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -1358,20 +1358,36 @@ if not df_raw.empty:
                 st.write("")
                 if st.button("🔄 Re-Arm / Reset to Waiting", use_container_width=True):
                     d_idx = del_choices[sel_del]
+                    rearm_sym = updated_watchlist[d_idx].get("Ticker")
                     updated_watchlist[d_idx]["Status"] = "⏳ Waiting for Pullback"
                     st.session_state["pullback_watchlist"] = updated_watchlist
                     save_json_file(WATCHLIST_FILE, updated_watchlist)
-                    st.success("Re-armed position back to Waiting!")
+
+                    # Remove any prematurely triggered paper trades for this symbol
+                    st.session_state["paper_portfolio"] = [
+                        p for p in st.session_state["paper_portfolio"]
+                        if not (p.get("Ticker") == rearm_sym and "Pullback" in p.get("Remarks", ""))
+                    ]
+                    save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+                    st.success(f"Re-armed {rearm_sym} and synchronized trades!")
                     st.rerun()
             with m_col3:
                 st.write("")
                 st.write("")
                 if st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
                     d_idx = del_choices[sel_del]
+                    removed_sym = updated_watchlist[d_idx].get("Ticker")
                     updated_watchlist.pop(d_idx)
                     st.session_state["pullback_watchlist"] = updated_watchlist
                     save_json_file(WATCHLIST_FILE, updated_watchlist)
-                    st.success("Deleted from watchlist!")
+
+                    # Remove any linked pullback trades
+                    st.session_state["paper_portfolio"] = [
+                        p for p in st.session_state["paper_portfolio"]
+                        if not (p.get("Ticker") == removed_sym and "Pullback" in p.get("Remarks", ""))
+                    ]
+                    save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+                    st.success(f"Deleted {removed_sym} from watchlist!")
                     st.rerun()
         else:
             st.info("Watchlist is empty. Add a pullback setup above.")

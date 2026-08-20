@@ -1626,49 +1626,68 @@ if not df_raw.empty:
         if active_watchlist:
             wb_held_symbols = list({item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS" for item in active_watchlist})
             wb_live_prices = {}
-            try:
-                wb_data = yf.download(
-                    tickers=" ".join(wb_held_symbols),
-                    period="5d",
-                    interval="1d",
-                    group_by="ticker",
-                    threads=False,
-                    auto_adjust=True,
-                    progress=False,
-                )
+            
+            # 1. First sync from existing screener data
+            if not df_raw.empty:
                 for sym in wb_held_symbols:
-                    if len(wb_held_symbols) == 1:
-                        wb_live_prices[sym] = round(float(wb_data["Close"].dropna().iloc[-1]), 2)
-                    elif hasattr(wb_data.columns, "levels") and sym in wb_data.columns.levels[0]:
-                        c_series = wb_data[sym]["Close"].dropna()
-                        if not c_series.empty:
-                            wb_live_prices[sym] = round(float(c_series.iloc[-1]), 2)
-            except Exception:
-                pass
+                    matched = df_raw[df_raw["Raw_Ticker"] == sym]
+                    if not matched.empty and pd.notna(matched["Price (₹)"].iloc[0]):
+                        wb_live_prices[sym] = float(matched["Price (₹)"].iloc[0])
+            
+            # 2. Live bulk download for any missing symbols
+            missing_syms = [s for s in wb_held_symbols if s not in wb_live_prices]
+            if missing_syms:
+                try:
+                    wb_data = yf.download(
+                        tickers=" ".join(missing_syms),
+                        period="5d",
+                        interval="1d",
+                        group_by="ticker",
+                        threads=False,
+                        auto_adjust=True,
+                        progress=False,
+                    )
+                    for sym in missing_syms:
+                        if len(missing_syms) == 1:
+                            c_series = wb_data["Close"].dropna()
+                            if not c_series.empty:
+                                wb_live_prices[sym] = round(float(c_series.iloc[-1]), 2)
+                        elif hasattr(wb_data.columns, "levels") and sym in wb_data.columns.levels[0]:
+                            c_series = wb_data[sym]["Close"].dropna()
+                            if not c_series.empty:
+                                wb_live_prices[sym] = round(float(c_series.iloc[-1]), 2)
+                except Exception:
+                    pass
 
             updated_watchlist = []
-            executed_any_order = False
             watchlist_display_rows = []
 
             for w_idx, item in enumerate(active_watchlist):
                 sym = item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS"
-                clean_sym = item.get("Ticker", sym.replace(".NS", ""))
+                clean_sym = item.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
                 target_buy = float(item.get("Target Buy (₹)", 0.0))
                 sl_val = float(item.get("SL (₹)", 0.0))
                 tgt_val = float(item.get("TGT (₹)", 0.0))
                 qty_val = int(item.get("Qty", 1))
-                curr_market_p = wb_live_prices.get(sym, target_buy)
+                
+                # Fetch actual live price without defaulting to target_buy
+                curr_market_p = wb_live_prices.get(sym, None)
+                if curr_market_p is None:
+                    # Final safety fallback to screener price or default
+                    matched_fallback = df_raw[df_raw["Ticker"] == clean_sym]
+                    curr_market_p = float(matched_fallback["Price (₹)"].iloc[0]) if not matched_fallback.empty else target_buy
+                
                 status_str = item.get("Status", "⏳ Waiting for Pullback")
 
-                # Auto-Execute Trigger when LTP reaches or dips below target buy price
-                if "Waiting" in status_str and curr_market_p <= target_buy:
+                # Strict Auto-Execute Trigger: Only trigger if valid market price <= target_buy
+                if "Waiting" in status_str and curr_market_p > 0 and curr_market_p <= target_buy:
                     status_str = "⚡ Triggered / Bought"
                     item["Status"] = status_str
                     item["Execution_Date"] = str(date.today())
-                    st.toast(f"🎯 PULLBACK HIT! Limit order for {clean_sym} executed at ₹{curr_market_p:.2f}!", icon="⚡")
+                    st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_market_p:.2f}!", icon="⚡")
                     st.success(f"🔔 **Pullback Triggered:** {clean_sym} hit limit buy level ₹{target_buy:,.2f} (LTP: ₹{curr_market_p:,.2f}). Auto-executed into Paper Trading Portfolio!")
 
-                    # Auto add to Paper Trading Portfolio
+                    # Add to Paper Trading Portfolio
                     trade_record = {
                         "id": f"{sym}_{int(time.time())}",
                         "Date": str(date.today()),
@@ -1687,7 +1706,6 @@ if not df_raw.empty:
                     if not any(p.get("id") == trade_record["id"] for p in st.session_state["paper_portfolio"]):
                         st.session_state["paper_portfolio"].append(trade_record)
                         save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-                    executed_any_order = True
 
                 item["Status"] = status_str
                 updated_watchlist.append(item)
@@ -1708,157 +1726,6 @@ if not df_raw.empty:
                     "Strategy": item.get("Strategy", "Pullback Buy"),
                     "_dist_num": dist_to_entry_pct,
                 })
-
-            st.session_state["pullback_watchlist"] = updated_watchlist
-            save_json_file(WATCHLIST_FILE, updated_watchlist)
-
-            df_watchlist = pd.DataFrame(watchlist_display_rows)
-            st.dataframe(
-                df_watchlist[[
-                    "Date Added", "Ticker", "Current LTP (₹)", "Target Buy (₹)",
-                    "Distance to Entry", "SL (₹)", "TGT (₹)", "Qty", "Status", "Strategy"
-                ]],
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            # Watchlist Management Row
-            col_wb_del, col_wb_clr = st.columns([3, 1])
-            with col_wb_del:
-                del_choices = {f"{it.get('Ticker')} (Target Entry: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
-                sel_to_del = st.selectbox("Select Watchlist Item to Delete:", list(del_choices.keys()), key="del_wb_item_select")
-                if st.button("🗑️ Remove Selected Item"):
-                    del_i = del_choices[sel_to_del]
-                    removed_sym = updated_watchlist[del_i].get("Ticker")
-                    updated_watchlist.pop(del_i)
-                    st.session_state["pullback_watchlist"] = updated_watchlist
-                    save_json_file(WATCHLIST_FILE, updated_watchlist)
-                    st.success(f"Removed {removed_sym} from Watchlist!")
-                    st.rerun()
-            with col_wb_clr:
-                st.write("")
-                st.write("")
-                if st.button("🗑️ Clear Entire Watchlist"):
-                    st.session_state["pullback_watchlist"] = []
-                    save_json_file(WATCHLIST_FILE, [])
-                    st.rerun()
-        else:
-            st.info("Your Pullback Watchlist is empty. Select a pullback candidate above and set your desired entry price.")
-
-    # --- TAB 4: WATCHLIST & PAPER TRADING ---
-    with tab_watchlist:
-        st.subheader("💼 Paper Trading Portfolio & Risk Manager")
-
-        if sma_trend_filter == "🌀 EMA Cluster Squeeze & Breakout":
-            selected_strategy_label = "EMA Cluster Squeeze & Breakout"
-        elif sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
-            selected_strategy_label = "9/20/44 Triple EMA Bullish Cross"
-        elif sma_trend_filter == "Multi-Timeframe 20D Breakout":
-            selected_strategy_label = "Multi-Timeframe 20D Breakout"
-        elif sma_trend_filter == "Relative strength":
-            selected_strategy_label = "Relative strength"
-        else:
-            selected_strategy_label = "9/20 EMA Breakout Swing Setup"
-
-        # 1. Order Placement Form
-        with st.expander(
-            "➕ Execute New Paper Trade (Custom SL, Target & Remarks)",
-            expanded=False,
-        ):
-            col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
-
-            with col_add1:
-                available_tickers = (
-                    df_raw["Raw_Ticker"].tolist()
-                    if not df_raw.empty
-                    else ["ACE.NS"]
-                )
-                curr_sel = st.session_state.get("selected_ticker", "ACE.NS")
-                default_trade_idx = (
-                    available_tickers.index(curr_sel)
-                    if curr_sel in available_tickers
-                    else 0
-                )
-                trade_stock = st.selectbox(
-                    "Stock:", available_tickers, index=default_trade_idx
-                )
-            with col_add2:
-                trade_date = st.date_input("Entry Date", value=date.today())
-
-            with col_add3:
-                matched_stock = (
-                    df_raw[df_raw["Raw_Ticker"] == trade_stock]
-                    if not df_raw.empty
-                    else pd.DataFrame()
-                )
-                live_price = (
-                    float(matched_stock["Price (₹)"].iloc[0])
-                    if not matched_stock.empty
-                    else 100.0
-                )
-                buy_price = st.number_input(
-                    "Entry Price (₹)", value=live_price, min_value=0.1, step=0.5
-                )
-
-            with col_add4:
-                sl_price = st.number_input(
-                    "Stop Loss (SL ₹)",
-                    value=round(buy_price * 0.96, 1),
-                    min_value=0.0,
-                    step=0.5,
-                    help="Enter custom Stop Loss level.",
-                )
-
-            with col_add5:
-                tgt_price = st.number_input(
-                    "Target (TGT ₹)",
-                    value=round(buy_price * 1.08, 1),
-                    min_value=0.0,
-                    step=0.5,
-                    help="Enter profit target level.",
-                )
-
-            col_sub1, col_sub2, col_btn = st.columns([1, 2.5, 1])
-            with col_sub1:
-                quantity = st.number_input(
-                    "Quantity", value=50, min_value=1, step=1
-                )
-            with col_sub2:
-                remarks = st.text_input(
-                    "Trade Remarks / Strategy",
-                    value=selected_strategy_label,
-                )
-            with col_btn:
-                st.write("")
-                st.write("")
-                if st.button("📥 Execute Trade", use_container_width=True):
-                    raw_sym = (
-                        trade_stock
-                        if (trade_stock.endswith(".NS") or trade_stock.endswith(".BO"))
-                        else f"{trade_stock}.NS"
-                    )
-                    trade_id = f"{raw_sym}_{int(time.time())}"
-                    new_trade = {
-                        "id": trade_id,
-                        "Date": str(trade_date),
-                        "Exit_Date": "",
-                        "Ticker": raw_sym.replace(".NS", "").replace(".BO", ""),
-                        "Buy Price (₹)": buy_price,
-                        "SL (₹)": sl_price,
-                        "TGT (₹)": tgt_price,
-                        "Exit Price (₹)": 0.0,
-                        "Qty": int(quantity),
-                        "Remarks": remarks.strip(),
-                        "Status": "🟢 Open",
-                        "Invested (₹)": round(buy_price * quantity, 2),
-                        "Raw_Ticker": raw_sym,
-                    }
-                    if "paper_portfolio" not in st.session_state:
-                        st.session_state["paper_portfolio"] = []
-                    st.session_state["paper_portfolio"].append(new_trade)
-                    save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-                    st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']} ({remarks.strip()})!")
-                    st.rerun()
 
         # 2. Row Deletion Manager
         active_portfolio = st.session_state.get("paper_portfolio", [])

@@ -21,7 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for all tables and headers */
+    /* Full center alignment for all dataframe and data_editor columns */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Ribbon */
+    /* Live Market Index Top Header Bar Styling */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* KPI Summary Cards */
+    /* Trade Performance Summary Grid Styling */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -142,81 +142,87 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- BROWSER PERMISSIONS & ALERT ENGINE ---
-def render_alert_permission_button():
-    """Renders a button to prompt for system permissions and unlock audio context."""
-    perm_html = """
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; padding:10px 14px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;">
-        <span style="font-size:14px; font-weight:600; color:#166534;">🔔 Step 1: Enable Alerts</span>
-        <button id="perm-btn" onclick="enableAlerts()" style="background:#16a34a; color:#ffffff; border:none; border-radius:6px; padding:6px 14px; font-size:13px; font-weight:700; cursor:pointer;">
-            Enable Sound & Desktop Notifications
-        </button>
-        <span id="perm-status" style="font-size:12.5px; color:#15803d; font-weight:500;"></span>
+# --- BROWSER PERMISSIONS & SOUND ALERT SYSTEM ---
+def render_alert_permission_banner():
+    """Explicitly rendered visual button in the Pullback Tab with fallback audio."""
+    banner_html = """
+    <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 22px;">🔔</span>
+            <div>
+                <div style="font-size: 14.5px; font-weight: 700; color: #065f46;">Live Trigger Audio & Push Notifications</div>
+                <div style="font-size: 12px; color: #047857;">Click below to grant browser sound & desktop popup permissions.</div>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <button id="alert-btn" onclick="activateSystemAlerts()" style="background: #059669; hover: background: #047857; color: #ffffff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 13.5px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">
+                🔊 Enable Sound & Desktop Notifications
+            </button>
+            <span id="alert-status-msg" style="font-size: 13px; font-weight: 700; color: #065f46;"></span>
+        </div>
     </div>
     <script>
-    function enableAlerts() {
-        // 1. Request Notification Permission
+    function activateSystemAlerts() {
+        var statusEl = document.getElementById("alert-status-msg");
+        // 1. Request OS Push Notification
         if ("Notification" in window) {
             Notification.requestPermission().then(function(permission) {
-                var statusEl = document.getElementById("perm-status");
                 if (permission === "granted") {
-                    statusEl.innerText = "✅ Notifications & Sound Enabled!";
-                    new Notification("⚡ Stock Dashboard Alerts Active", {
-                        body: "You will receive desktop & audio alerts when limit prices are hit."
+                    statusEl.innerText = "✅ Sound & Push Active!";
+                    new Notification("⚡ Order Alerts Enabled", {
+                        body: "Audio chimes & popups will now sound when limit orders trigger.",
+                        icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
                     });
                 } else {
-                    statusEl.innerText = "⚠️ Permission: " + permission;
+                    statusEl.innerText = "⚠️ Notifications: " + permission;
                 }
             });
         }
-        // 2. Unlock Browser Audio Context
+        // 2. Play Test Beep & Unlock Web Audio
         try {
-            var AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext) {
-                var ctx = new AudioContext();
-                if (ctx.state === "suspended") {
-                    ctx.resume();
-                }
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+                var ctx = new AudioCtx();
+                if (ctx.state === "suspended") ctx.resume();
                 var osc = ctx.createOscillator();
                 var gain = ctx.createGain();
                 osc.connect(gain);
                 gain.connect(ctx.destination);
-                gain.gain.setValueAtTime(0.01, ctx.currentTime);
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
                 osc.start();
-                osc.stop(ctx.currentTime + 0.05);
+                osc.stop(ctx.currentTime + 0.25);
             }
         } catch(e) {}
     }
     </script>
     """
-    components.html(perm_html, height=55)
+    components.html(banner_html, height=85)
 
 
 def play_trigger_alert(ticker, buy_price):
-    """Fires Web Audio chime + Desktop Notification."""
+    """Triggers Web Audio tone + OS notification alert."""
     alert_html = f"""
     <script>
     (function() {
-        // 1. Desktop Notification
+        // 1. Desktop Notification (Handles iframe bubbling)
         try {{
-            if (window.top && window.top.Notification && window.top.Notification.permission === "granted") {{
-                new window.top.Notification("🎯 PULLBACK LIMIT HIT!", {{
-                    body: "{ticker} reached buy level ₹{buy_price:,.2f}. Trade Executed!",
-                    icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
-                }});
-            }} else if ("Notification" in window && Notification.permission === "granted") {{
-                new Notification("🎯 PULLBACK LIMIT HIT!", {{
+            var notif = window.top.Notification || window.Notification;
+            if (notif && notif.permission === "granted") {{
+                new notif("🎯 PULLBACK LIMIT HIT!", {{
                     body: "{ticker} reached buy level ₹{buy_price:,.2f}. Trade Executed!",
                     icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
                 }});
             }}
         }} catch(e) {{}}
 
-        // 2. Audio Chime
+        // 2. Web Audio Triple-Tone Alarm
         try {{
-            var AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext) {{
-                var ctx = new AudioContext();
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {{
+                var ctx = new AudioCtx();
                 if (ctx.state === 'suspended') ctx.resume();
                 function beep(freq, delay, duration) {{
                     setTimeout(function() {{
@@ -225,18 +231,18 @@ def play_trigger_alert(ticker, buy_price):
                             var gain = ctx.createGain();
                             osc.connect(gain);
                             gain.connect(ctx.destination);
-                            osc.frequency.value = freq;
                             osc.type = "sine";
+                            osc.frequency.value = freq;
                             gain.gain.setValueAtTime(0.4, ctx.currentTime);
                             gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
                             osc.start();
                             osc.stop(ctx.currentTime + duration);
-                        }} catch(e){{}}
+                        }} catch(err){{}}
                     }}, delay);
                 }}
                 beep(659.25, 0, 0.2);   // E5
                 beep(880.00, 180, 0.2); // A5
-                beep(1318.51, 360, 0.4);// E6
+                beep(1318.51, 360, 0.45);// E6
             }}
         }} catch(e) {{}}
     })();
@@ -1294,8 +1300,8 @@ if not df_raw.empty:
     with tab_pullback_watchlist:
         st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
         
-        # Step 1: Render permission and audio unlock button
-        render_alert_permission_button()
+        # Explicit Banner for one-click notification & sound unlock
+        render_alert_permission_banner()
         
         st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 

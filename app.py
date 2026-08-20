@@ -1769,29 +1769,30 @@ if not df_raw.empty:
             ]
             final_port_display = port_df[display_port_cols].copy()
 
-            def highlight_pnl_dark_green_red(val):try:
-        clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
-        num = float(clean_str)
-        if num > 0:
-            return "color: #15803d; font-weight: 700;"
-        elif num < 0:
-            return "color: #dc2626; font-weight: 700;"
-        else:
-            return "color: #64748b; font-weight: normal;"
-    except Exception:
-        return ""
+            def highlight_pnl_dark_green_red(val):
+                try:
+                    clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
+                    num = float(clean_str)
+                    if num > 0:
+                        return "color: #15803d; font-weight: 700;"
+                    elif num < 0:
+                        return "color: #dc2626; font-weight: 700;"
+                    else:
+                        return "color: #64748b; font-weight: normal;"
+                except Exception:
+                    return ""
 
-styled_port = final_port_display.style.map(
-    highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
-).set_properties(**{
-    "text-align": "center",
-    "font-weight": "500"
-}).set_table_styles([
-    {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-    {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-])
+            styled_port = final_port_display.style.map(
+                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
+            ).set_properties(**{
+                "text-align": "center",
+                "font-weight": "500"
+            }).set_table_styles([
+                {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            ])
 
-st.dataframe(styled_port, use_container_width=True, hide_index=True)
+            st.dataframe(styled_port, use_container_width=True, hide_index=True)
 
             if st.button("🗑️ Reset / Clear All Trades"):
                 st.session_state["paper_portfolio"] = []

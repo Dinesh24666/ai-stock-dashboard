@@ -932,14 +932,22 @@ def fetch_screener_universe(ticker_list):
                 )
 
                 candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
-                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
-                score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
-                swing_composite = float(np.clip(score, 10, 100))
+close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
+score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
 
-                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20:
-                    action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 60 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
-                    action_signal = "🟡 BUY / PULLBACK"
+# --- EXTENSION PENALTY TO MATCH AI THESIS ---
+# If a stock spikes excessively in a single day (e.g. > 8% like upper-circuit stocks), 
+# it's overextended. We penalize its score and require price to be closer to the 9/20 EMA for a true breakout.
+is_overextended = price_change_pct > 8.0 or dist_52w_high == 0.0 and price_change_pct > 5.0
+if is_overextended:
+    score -= 35
+
+swing_composite = float(np.clip(score, 10, 100))
+
+if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
+    action_signal = "🟢 STRONG BUY (Breakout)"
+elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
+    action_signal = "🟡 BUY / PULLBACK"
                 elif swing_composite >= 40:
                     action_signal = "🟠 CONSOLIDATING"
                 else:

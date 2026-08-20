@@ -634,9 +634,11 @@ NSE_FULL_EQUITIES = [
     "SPECIALITY", "SPENCERS", "SPENTEX", "SPIC", "SPLIL", "SPLPETRO", "SPMLINFRA",
     "SPORTKING", "SRD", "SREEL", "SRF", "SRGHFL", "SRHHYPOLTD", "SRM", "SRPL",
     "SSDL", "SSFL", "SSWL", "STANLEY", "STAR", "STARCEMENT", "STARHEALTH",
-    "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND", "STEL", "STERTOOLS", "STLTECH", "STOVEKRAFT", "STYLAMIND", "STYLEBAAZA",
+    "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND",
+    "STEL", "STERTOOLS", "STLTECH", "STOVEKRAFT", "STYLAMIND", "STYLEBAAZA",
     "SUBCITY", "SUBEXLTD", "SUBROS", "SUDARSCHEM", "SUKHJITS", "SULA", "SUMICHEM",
-    "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD", "SUNDRMBRAK", "SUNDRMFAST", "SUNFLAG", "SUNPHARMA", "SUNTECK", "SUNTV",
+    "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD",
+    "SUNDRMBRAK", "SUNDRMFAST", "SUNFLAG", "SUNPHARMA", "SUNTECK", "SUNTV",
     "SUPERHOUSE", "SUPERSPIN", "SUPRAJIT", "SUPREMEENG", "SUPREMEIND", "SUPRIYA",
     "SURAJEST", "SURAJLTD", "SURANASOL", "SURANAT&P", "SURYALAXMI", "SURYAROSNI",
     "SURYODAY", "SUTLEJTEX", "SUULD", "SUVEN", "SUVENPHAR", "SUVIDHAA", "SUZLON",
@@ -667,7 +669,7 @@ NSE_FULL_EQUITIES = [
     "VENKEYS", "VENUSPIPES", "VENUSREM", "VERANDA", "VERTOZ", "VESUVIUS",
     "VETO", "VGUARD", "VHL", "VIDHIING", "VIJAYA", "VIKASLIFE", "VIKASPPROP",
     "VIKASECO", "VIKRAM", "VIMTALABS", "VINATIORGA", "VINDHYATEL", "VINEETLAB",
-    "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
+    "VINNY", "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
     "VISAKAIND", "VISASTEEL", "VISHAL", "VISHNU", "VISHWARAJ", "VIVIDHA",
     "VIVIANA", "VLEGOV", "VLSFINANCE", "VMART", "VOLTAMP", "VOLTAS", "VR",
     "VRL", "VRLLOG", "VSSL", "VSTIND", "VSTTILLERS", "VTL", "WABAG", "WALCHANNAG",
@@ -716,6 +718,7 @@ def get_all_nse_symbols():
 
 
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
+
 is_single_search = selected_universe == "🔍 Single Stock Search"
 
 if is_single_search:
@@ -732,9 +735,9 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=min(100, total_found),
+        value=total_found,
         step=25,
-        help="Scanning fewer stocks at once prevents Yahoo Finance connection timeouts.",
+        help="Full 1,960+ NSE Listed Equities Universe.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -818,22 +821,17 @@ def fetch_screener_universe(ticker_list):
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
     progress_bar = st.progress(0, text="Fetching market data...")
-    chunk_size = 25
+    chunk_size = 50
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
     rows = []
     seen = set()
 
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
-        
-        batch_data = None
-        for attempt in range(3):
-            try:
-                batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False, timeout=10)
-                if batch_data is not None and not batch_data.empty:
-                    break
-            except Exception:
-                time.sleep(1)
+        try:
+            batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False)
+        except Exception:
+            continue
 
         if batch_data is None or batch_data.empty:
             continue
@@ -868,6 +866,9 @@ def fetch_screener_universe(ticker_list):
                 ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
                 ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
                 ema_44 = float(hist["Close"].ewm(span=44, adjust=False).mean().iloc[-1])
+                ema_50 = float(hist["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
+                ema_200 = float(hist["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
+                
                 sma_50 = float(hist["Close"].rolling(50).mean().iloc[-1]) if len(hist) >= 50 else curr_price
                 sma_200 = float(hist["Close"].rolling(200).mean().iloc[-1]) if len(hist) >= 200 else curr_price
                 
@@ -884,7 +885,7 @@ def fetch_screener_universe(ticker_list):
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
                 avg_vol_20 = float(vol_series.rolling(20).mean().iloc[-1]) if len(vol_series) >= 20 else float(curr_vol)
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
-                vol_surge_2x = bool(curr_vol > (avg_vol_20 * 2.0))
+                vol_surge_1_5x = bool(curr_vol > (avg_vol_20 * 1.5))
 
                 mcap_cr = round(max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1)
                 pe = round(float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)), 1)
@@ -918,7 +919,7 @@ def fetch_screener_universe(ticker_list):
                     w_close, w_ema20, w_rsi, w_52h = curr_price, ema_20, rsi_val, high_52w
 
                 passes_mtf_breakout = bool(
-                    w_close > w_ema20 and w_rsi >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_2x and curr_price >= (w_52h * 0.80)
+                    w_close > w_ema20 and w_rsi >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_1_5x and curr_price >= (w_52h * 0.75)
                 )
 
                 c_20d = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
@@ -930,16 +931,12 @@ def fetch_screener_universe(ticker_list):
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
-                score = 0
-                if is_20d_high_breakout: score += 25
-                if vol_surge_2x: score += 25
-                if curr_price > ema_9 > ema_20: score += 25
-                if adx_val >= 25: score += 25
-                
-                # Unaltered original breakout scoring criteria
+                candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
+                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
+                score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25:
+                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif (swing_composite >= 60 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -1009,7 +1006,6 @@ def get_single_stock_history(ticker):
             auto_adjust=True,
             progress=False,
             threads=False,
-            timeout=10,
         )
 
         if df is not None and not df.empty:
@@ -1023,12 +1019,7 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-# AUTO-RUN SCAN ON STARTUP IF EMPTY SO IT NEVER SHOWS "Click Run Screener Scan" BLANK STATE
-if st.session_state["screener_data"].empty:
-    with st.spinner("Initializing market scan..."):
-        st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
-
-if scan_button or is_single_search:
+if scan_button or is_single_search or st.session_state["screener_data"].empty:
     with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
         st.session_state["screener_data"] = df_raw
@@ -1136,10 +1127,19 @@ if not df_raw.empty:
         table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["RSI (14)"] = table_data["RSI (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["From 52W High (%)"] = table_data["From 52W High (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["Market Cap (₹ Cr)"] = table_data["Market Cap (₹ Cr)"].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
         table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
 
+        styled_table = table_data.style.set_properties(**{
+            "text-align": "center",
+            "font-weight": "500"
+        }).set_table_styles([
+            {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+        ])
+
         selection_event = st.dataframe(
-            table_data,
+            styled_table,
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
@@ -1290,7 +1290,7 @@ if not df_raw.empty:
                             st.success("Pullback watchlist successfully restored!")
                             st.rerun()
                         else:
-                            st.error("Uploaded file does not contain valid pullback watchlist entries.")
+                            st.error("Uploaded file does not contain valid pullback watchlist entries. (Make sure to upload a watchlist backup file, not a portfolio file).")
                 except Exception as e:
                     st.error(f"Failed to restore watchlist backup: {e}")
 
@@ -1763,7 +1763,30 @@ if not df_raw.empty:
             ]
             final_port_display = port_df[display_port_cols].copy()
 
-            st.dataframe(final_port_display, use_container_width=True, hide_index=True)
+            def highlight_pnl_dark_green_red(val):
+                try:
+                    clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
+                    num = float(clean_str)
+                    if num > 0:
+                        return "color: #15803d; font-weight: 700;"
+                    elif num < 0:
+                        return "color: #dc2626; font-weight: 700;"
+                    else:
+                        return "color: #64748b; font-weight: normal;"
+                except Exception:
+                    return ""
+
+            styled_port = final_port_display.style.map(
+                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
+            ).set_properties(**{
+                "text-align": "center",
+                "font-weight": "500"
+            }).set_table_styles([
+                {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            ])
+
+            st.dataframe(styled_port, use_container_width=True, hide_index=True)
 
             if st.button("🗑️ Reset / Clear All Trades"):
                 st.session_state["paper_portfolio"] = []
@@ -1771,3 +1794,5 @@ if not df_raw.empty:
                 st.rerun()
         else:
             st.info("No active paper trades. Execute a trade above.")
+else:
+    st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to begin.")

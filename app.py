@@ -634,11 +634,9 @@ NSE_FULL_EQUITIES = [
     "SPECIALITY", "SPENCERS", "SPENTEX", "SPIC", "SPLIL", "SPLPETRO", "SPMLINFRA",
     "SPORTKING", "SRD", "SREEL", "SRF", "SRGHFL", "SRHHYPOLTD", "SRM", "SRPL",
     "SSDL", "SSFL", "SSWL", "STANLEY", "STAR", "STARCEMENT", "STARHEALTH",
-    "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND",
-    "STEL", "STERTOOLS", "STLTECH", "STOVEKRAFT", "STYLAMIND", "STYLEBAAZA",
+    "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND", "STEL", "STERTOOLS", "STLTECH", "STOVEKRAFT", "STYLAMIND", "STYLEBAAZA",
     "SUBCITY", "SUBEXLTD", "SUBROS", "SUDARSCHEM", "SUKHJITS", "SULA", "SUMICHEM",
-    "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD",
-    "SUNDRMBRAK", "SUNDRMFAST", "SUNFLAG", "SUNPHARMA", "SUNTECK", "SUNTV",
+    "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD", "SUNDRMBRAK", "SUNDRMFAST", "SUNFLAG", "SUNPHARMA", "SUNTECK", "SUNTV",
     "SUPERHOUSE", "SUPERSPIN", "SUPRAJIT", "SUPREMEENG", "SUPREMEIND", "SUPRIYA",
     "SURAJEST", "SURAJLTD", "SURANASOL", "SURANAT&P", "SURYALAXMI", "SURYAROSNI",
     "SURYODAY", "SUTLEJTEX", "SUULD", "SUVEN", "SUVENPHAR", "SUVIDHAA", "SUZLON",
@@ -669,7 +667,7 @@ NSE_FULL_EQUITIES = [
     "VENKEYS", "VENUSPIPES", "VENUSREM", "VERANDA", "VERTOZ", "VESUVIUS",
     "VETO", "VGUARD", "VHL", "VIDHIING", "VIJAYA", "VIKASLIFE", "VIKASPPROP",
     "VIKASECO", "VIKRAM", "VIMTALABS", "VINATIORGA", "VINDHYATEL", "VINEETLAB",
-    "VINNY", "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
+    "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
     "VISAKAIND", "VISASTEEL", "VISHAL", "VISHNU", "VISHWARAJ", "VIVIDHA",
     "VIVIANA", "VLEGOV", "VLSFINANCE", "VMART", "VOLTAMP", "VOLTAS", "VR",
     "VRL", "VRLLOG", "VSSL", "VSTIND", "VSTTILLERS", "VTL", "WABAG", "WALCHANNAG",
@@ -686,7 +684,7 @@ NSE_FULL_EQUITIES = [
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
-    "Nifty 50 Core": "NIFTY_50",
+    "Nifty 50 Core": "NIFTSY_50" if False else "NIFTY_50",
     "Banking & Financial Services": [
         "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
         "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
@@ -885,7 +883,7 @@ def fetch_screener_universe(ticker_list):
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
                 avg_vol_20 = float(vol_series.rolling(20).mean().iloc[-1]) if len(vol_series) >= 20 else float(curr_vol)
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
-                vol_surge_1_5x = bool(curr_vol > (avg_vol_20 * 1.5))
+                vol_surge_2x = bool(curr_vol > (avg_vol_20 * 2.0))
 
                 mcap_cr = round(max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1)
                 pe = round(float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)), 1)
@@ -919,7 +917,7 @@ def fetch_screener_universe(ticker_list):
                     w_close, w_ema20, w_rsi, w_52h = curr_price, ema_20, rsi_val, high_52w
 
                 passes_mtf_breakout = bool(
-                    w_close > w_ema20 and w_rsi >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_1_5x and curr_price >= (w_52h * 0.75)
+                    w_close > w_ema20 and w_rsi >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_2x and curr_price >= (w_52h * 0.80)
                 )
 
                 c_20d = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
@@ -931,12 +929,18 @@ def fetch_screener_universe(ticker_list):
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
+                # REFINED SCORING LOGIC FOR TRUE BREAKOUTS
                 candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
                 close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
-                score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
+                
+                score = 0
+                if is_20d_high_breakout: score += 25
+                if vol_surge_2x: score += 25
+                if curr_price > ema_9 > ema_20: score += 25
+                if adx_val >= 25: score += 25
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20:
+                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif (swing_composite >= 60 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -1127,7 +1131,6 @@ if not df_raw.empty:
         table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["RSI (14)"] = table_data["RSI (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["From 52W High (%)"] = table_data["From 52W High (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
-        table_data["Market Cap (₹ Cr)"] = table_data["Market Cap (₹ Cr)"].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
         table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
 
         styled_table = table_data.style.set_properties(**{
@@ -1290,7 +1293,7 @@ if not df_raw.empty:
                             st.success("Pullback watchlist successfully restored!")
                             st.rerun()
                         else:
-                            st.error("Uploaded file does not contain valid pullback watchlist entries. (Make sure to upload a watchlist backup file, not a portfolio file).")
+                            st.error("Uploaded file does not contain valid pullback watchlist entries.")
                 except Exception as e:
                     st.error(f"Failed to restore watchlist backup: {e}")
 
@@ -1739,7 +1742,7 @@ if not df_raw.empty:
                         parsed_exit_date = date.today()
                     new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
                 with ec5:
-                    new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
+                    new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy / Entry Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
 
                 if st.button("💾 Save Position Updates", key=f"save_btn_{edit_idx}"):
                     active_portfolio[edit_idx]["SL (₹)"] = new_sl_val

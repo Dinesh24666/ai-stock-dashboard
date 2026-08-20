@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 # 1. Page Configuration & Center-Aligned Table Styling
@@ -20,7 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for table contents and headers */
+    /* Full center alignment for all dataframe and data_editor columns */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -37,7 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Top Live Market Index Ribbon */
+    /* Live Market Index Top Header Bar Styling */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -84,7 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* KPI Summary Cards */
+    /* Trade Performance Summary Grid Styling */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -140,6 +141,41 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# --- BROWSER AUDIO ALARM GENERATOR ---
+def play_trigger_sound():
+    sound_html = """
+    <script>
+    (function() {
+        try {
+            var AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            var ctx = new AudioContext();
+            function beep(freq, delay, duration) {
+                setTimeout(function() {
+                    try {
+                        var osc = ctx.createOscillator();
+                        var gain = ctx.createGain();
+                        osc.connect(gain);
+                        gain.connect(ctx.destination);
+                        osc.frequency.value = freq;
+                        osc.type = "sine";
+                        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+                        osc.start();
+                        osc.stop(ctx.currentTime + duration);
+                    } catch(e){}
+                }, delay);
+            }
+            beep(587.33, 0, 0.15);   // D5
+            beep(880.00, 150, 0.15); // A5
+            beep(1174.66, 300, 0.35);// D6
+        } catch(e) {}
+    })();
+    </script>
+    """
+    components.html(sound_html, height=0)
+
 
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
@@ -289,7 +325,7 @@ ORDER_BOOK_CR_MAP = {
     "KEC": 34000, "KPIL": 58000, "NBCC": 81000, "HGINFRA": 12000, 
     "AHLUCONT": 14000, "POWERMECH": 55000, "TITAGARH": 28000, "JWL": 20000, 
     "RAILTEL": 5000, "ENGINERSIN": 10500, "PSPPROJECT": 6000, "GPTINFRA": 3500, 
-    "MANINFRA": 4200, "MMFL": 1800, "GENUSPOWER": 21500,
+    "MANINFRA": 4200, "MMFL": 1800, "GENUSPOWER": 21500, "KRONOX": 185,
 }
 
 # Complete Embedded 2,000+ NSE Listed Equities Universe
@@ -1070,7 +1106,7 @@ if not df_raw.empty:
     # TAB 2: DEEP DIVE & CHART
     with tab_deepdive:
         stock_options = sorted_results_df["Raw_Ticker"].tolist() if not sorted_results_df.empty else df_raw["Raw_Ticker"].tolist()
-        current_choice = st.session_state.get("selected_ticker", "ACE.NS")
+        current_choice = st.session_state.get("selected_ticker", stock_options[0] if stock_options else "ACE.NS")
         default_index = stock_options.index(current_choice) if current_choice in stock_options else 0
         selected_stock = st.selectbox("Selected Stock:", stock_options, index=default_index)
         st.session_state["selected_ticker"] = selected_stock
@@ -1189,7 +1225,7 @@ if not df_raw.empty:
     # TAB 3: PULLBACK WATCHLIST & AUTO LIMIT TRIGGER
     with tab_pullback_watchlist:
         st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
-        st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers and automatically executes the trade.")
+        st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 
         # Candidate dropdown synced with selected screener stock
         pullback_candidates = df_raw["Raw_Ticker"].tolist()
@@ -1263,19 +1299,15 @@ if not df_raw.empty:
                     except Exception:
                         curr_ltp = None
 
+                # Strict Trigger Evaluation + Sound Alarm
                 if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
                     status_str = "⚡ Triggered / Bought"
                     item["Status"] = status_str
-
-                    # 1. Play Audio Alarm & Confetti
+                    
                     play_trigger_sound()
-                    st.balloons()
+                    st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="⚡")
+                    st.success(f"🔔 **Pullback Triggered:** {clean_sym} reached buy level ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
 
-                    # 2. Display Toast & Success Alerts
-                    st.toast(f"🚨 ORDER EXECUTED: {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="🎯")
-                    st.success(f"🔔 **PULLBACK HIT:** {clean_sym} reached limit price ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
-
-                    # 3. Add to Paper Trading
                     trade_record = {
                         "id": f"{sym}_{int(time.time())}",
                         "Date": str(date.today()),
@@ -1294,6 +1326,55 @@ if not df_raw.empty:
                     if not any(p.get("id") == trade_record["id"] for p in st.session_state["paper_portfolio"]):
                         st.session_state["paper_portfolio"].append(trade_record)
                         save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+
+                item["Status"] = status_str
+                updated_watchlist.append(item)
+
+                dist_str = f"{((curr_ltp - target_buy) / target_buy * 100.0):+.2f}% away" if (curr_ltp and "Waiting" in status_str) else ("Executed ✅" if "Triggered" in status_str else "Fetching...")
+
+                display_rows.append({
+                    "Date Added": item.get("Date Added", str(date.today())),
+                    "Ticker": clean_sym,
+                    "Current LTP (₹)": f"₹{curr_ltp:,.2f}" if curr_ltp else "-",
+                    "Target Buy (₹)": f"₹{target_buy:,.2f}",
+                    "Distance to Entry": dist_str,
+                    "SL (₹)": f"₹{sl_price:,.2f}",
+                    "TGT (₹)": f"₹{tgt_price:,.2f}",
+                    "Qty": qty,
+                    "Status": status_str,
+                    "Strategy": item.get("Strategy", "Pullback Buy"),
+                })
+
+            st.session_state["pullback_watchlist"] = updated_watchlist
+            save_json_file(WATCHLIST_FILE, updated_watchlist)
+            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+
+            m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
+            with m_col1:
+                del_choices = {f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
+                sel_del = st.selectbox("Select Watchlist Item:", list(del_choices.keys()), key="del_wb_select")
+            with m_col2:
+                st.write("")
+                st.write("")
+                if st.button("🔄 Re-Arm / Reset to Waiting", use_container_width=True):
+                    d_idx = del_choices[sel_del]
+                    updated_watchlist[d_idx]["Status"] = "⏳ Waiting for Pullback"
+                    st.session_state["pullback_watchlist"] = updated_watchlist
+                    save_json_file(WATCHLIST_FILE, updated_watchlist)
+                    st.success("Re-armed position back to Waiting!")
+                    st.rerun()
+            with m_col3:
+                st.write("")
+                st.write("")
+                if st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
+                    d_idx = del_choices[sel_del]
+                    updated_watchlist.pop(d_idx)
+                    st.session_state["pullback_watchlist"] = updated_watchlist
+                    save_json_file(WATCHLIST_FILE, updated_watchlist)
+                    st.success("Deleted from watchlist!")
+                    st.rerun()
+        else:
+            st.info("Watchlist is empty. Add a pullback setup above.")
 
     # TAB 4: COMPLETE RESTORED PAPER TRADING
     with tab_watchlist:

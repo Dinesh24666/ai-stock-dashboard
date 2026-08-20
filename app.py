@@ -449,7 +449,7 @@ NSE_FULL_EQUITIES = [
     "LOYAL", "LT", "LTF", "LTIM", "LTTS", "LUMAXIND", "LUMAXTECH", "LUPIN",
     "LUXIND", "LXCHEM", "LYKALABS", "LYPSAGEMS", "M&M", "M&MFIN", "MAANALU",
     "MACPOWER", "MADHAV", "MADHUCON", "MADRASFERT", "MAGADSUGAR", "MAGNUM",
-    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHinDCIE",
+    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHINDCIE",
     "MAHLIFE", "MAHLOG", "MAHSCOOTER", "MAHSEAMLES", "MAITHANALL", "MALLCOM",
     "MALUPAPER", "MANAKALUCO", "MANAKCOAT", "MANAKSIA", "MANAKSTEEL", "MANALIPETC",
     "MANAPPURAM", "MANBA", "MANCREDIT", "MANGALAM", "MANGCHEFER", "MANGLMCEM",
@@ -590,6 +590,34 @@ NSE_FULL_EQUITIES = [
     "ZYDUSLIFE", "ZYDUSWELL"
 ]
 
+# Sector & Basket Presets
+UNIVERSE_PRESETS = {
+    "All NSE Stocks (Full Listed)": "ALL_NSE",
+    "🔍 Single Stock Search": "SINGLE_SEARCH",
+    "Nifty 50 Core": "NIFTY_50",
+    "Banking & Financial Services": [
+        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
+        "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
+        "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANKBARODA.NS", "AUBANK.NS"
+    ],
+    "IT & Technology": [
+        "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS",
+        "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "KPITTECH.NS", "TATAELXSI.NS"
+    ],
+    "Automobile & EV": [
+        "TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS",
+        "TVSMOTOR.NS", "EICHERMOT.NS", "BHARATFORG.NS", "SONACOMS.NS", "MOTHERSON.NS"
+    ],
+    "Pharma & Healthcare": [
+        "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS",
+        "MANKIND.NS", "LUPIN.NS", "ZYDUSLIFE.NS", "TORNTPHARM.NS", "MAXHEALTH.NS"
+    ],
+    "Defence, Rail & PSUs": [
+        "HAL.NS", "BEL.NS", "BHEL.NS", "MAZDOCK.NS", "RVNL.NS",
+        "IRFC.NS", "COCHINSHIP.NS", "BDL.NS", "CONCOR.NS", "BEML.NS"
+    ],
+}
+
 
 @st.cache_data(ttl=86400)
 def get_all_nse_symbols():
@@ -598,33 +626,31 @@ def get_all_nse_symbols():
 
 
 # Sidebar Universe Selection
-st.sidebar.header("🎯 Universe Selection")
-universe_presets = {
-    "All NSE Stocks (Full Listed)": "ALL_NSE",
-    "🔍 Single Stock Search": "SINGLE_SEARCH",
-    "Nifty 50 Core": "NIFTY_50",
-}
-selected_universe = st.sidebar.selectbox("Select Stock Basket", list(universe_presets.keys()), index=0)
+selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
 
 is_single_search = selected_universe == "🔍 Single Stock Search"
 
 if is_single_search:
-    raw_sym_input = st.sidebar.text_input("Enter NSE Symbol", value="GENUSPOWER")
+    raw_sym_input = st.sidebar.text_input("Enter NSE Symbol", value="ACE")
     clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
-    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["GENUSPOWER.NS"]
+    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
 elif selected_universe == "Nifty 50 Core":
-    tickers_to_scan = get_all_nse_symbols()[:50]
-else:
-    all_syms = get_all_nse_symbols()
+    all_symbols = get_all_nse_symbols()
+    tickers_to_scan = all_symbols[:50]
+elif selected_universe == "All NSE Stocks (Full Listed)":
+    all_symbols = get_all_nse_symbols()
+    total_found = len(all_symbols)
     scan_limit = st.sidebar.slider(
-        "Scan Limit",
+        "Number of Stocks to Scan",
         min_value=25,
-        max_value=len(all_syms),
-        value=len(all_syms),
+        max_value=total_found,
+        value=total_found,
         step=25,
         help="Full 1,960+ NSE Listed Equities Universe.",
     )
-    tickers_to_scan = all_syms[:scan_limit]
+    tickers_to_scan = all_symbols[:scan_limit]
+else:
+    tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
 # Sidebar Filters
 st.sidebar.header("📊 Fundamental Filters")

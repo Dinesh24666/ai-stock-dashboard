@@ -152,8 +152,10 @@ def fetch_live_market_indices():
         ("^INDIAVIX", "India VIX", ""),
         ("CL=F", "Crude Oil", "$"),
     ]
+    
     tickers_str = " ".join([t[0] for t in index_items])
     results = []
+    
     try:
         data = yf.download(
             tickers=tickers_str,
@@ -164,6 +166,7 @@ def fetch_live_market_indices():
             auto_adjust=True,
             progress=False,
         )
+        
         for ticker_sym, name, prefix in index_items:
             try:
                 df = pd.DataFrame()
@@ -177,9 +180,11 @@ def fetch_live_market_indices():
                     prev_val = float(df["Close"].iloc[-2]) if len(df) >= 2 else curr_val
                     change = curr_val - prev_val
                     pct_change = (change / prev_val * 100.0) if prev_val > 0 else 0.0
+                    
                     val_str = f"{prefix}{curr_val:,.2f}" if prefix else f"{curr_val:,.2f}"
                     change_str = f"{'+' if change >= 0 else ''}{change:.2f}"
                     pct_str = f"({'+' if pct_change >= 0 else ''}{pct_change:.2f}%)"
+                    
                     results.append({
                         "name": name,
                         "value": val_str,
@@ -653,6 +658,15 @@ sma_trend_filter = st.sidebar.selectbox(
 enable_vol_multiplier = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
 vol_multiplier = st.sidebar.slider("Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier)
 
+# Scan Execution and Cache Controls
+scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
+if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
+    st.cache_data.clear()
+    st.session_state["ai_analysis_cache"] = {}
+    st.session_state["screener_data"] = pd.DataFrame()
+    gc.collect()
+    st.rerun()
+
 
 # Technical Helpers
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
@@ -863,14 +877,46 @@ def fetch_screener_universe(ticker_list):
     return pd.DataFrame(rows)
 
 
-# Fetch data
-scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
+# Single Stock Detail History
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_single_stock_history(ticker):
+    try:
+        clean_ticker = ticker.strip()
+        if not (clean_ticker.endswith(".NS") or clean_ticker.endswith(".BO")):
+            clean_ticker = f"{clean_ticker}.NS"
+
+        df = yf.download(
+            tickers=clean_ticker,
+            period="1y",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+
+        if df is not None and not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df = df.droplevel(1, axis=1) if df.columns.nlevels > 1 else df
+            return df.dropna(how="all")
+
+        t = yf.Ticker(clean_ticker)
+        return t.history(period="1y")
+    except Exception:
+        return pd.DataFrame()
+
+
+# Scan Data Handler
 if scan_button or is_single_search or st.session_state["screener_data"].empty:
     with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
         st.session_state["screener_data"] = df_raw
 else:
     df_raw = st.session_state["screener_data"]
+
+if "selected_ticker" not in st.session_state:
+    st.session_state["selected_ticker"] = (
+        df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "ACE.NS"
+    )
 
 if not df_raw.empty:
     filtered_df = df_raw.copy()
@@ -927,36 +973,172 @@ if not df_raw.empty:
 
     # TAB 1: SCREENER
     with tab_screener:
-        st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)})")
+        col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
+        with col_title:
+            st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)})")
+        with col_sort_by:
+            sort_metric = st.selectbox(
+                "Sort Results By:",
+                ["Volume", "Composite Score", "Change (%)", "Price (₹)", "ADX (14)", "ROCE (%)", "RSI (14)", "From 52W High (%)", "Market Cap (₹ Cr)"],
+                index=0,
+            )
+        with col_sort_dir:
+            sort_order = st.radio("Order:", ["High to Low (Desc)", "Low to High (Asc)"], horizontal=True)
+
+        sort_col_map = {
+            "Volume": "_raw_vol",
+            "Composite Score": "Composite Score",
+            "Change (%)": "_change_num",
+            "Price (₹)": "Price (₹)",
+            "ADX (14)": "_adx_num",
+            "ROCE (%)": "_roce_num",
+            "RSI (14)": "RSI (14)",
+            "From 52W High (%)": "From 52W High (%)",
+            "Market Cap (₹ Cr)": "_mcap_num",
+        }
+        sorted_results_df = filtered_df.sort_values(
+            by=sort_col_map.get(sort_metric, "_raw_vol"),
+            ascending=(sort_order == "Low to High (Asc)"),
+            na_position="last"
+        )
+
         display_cols = [
             "Ticker", "Signal", "Price (₹)", "Change (%)", "Volume",
             "Composite Score", "ROCE (%)", "ADX (14)", "RSI (14)",
             "From 52W High (%)", "Vol Surge", "Market Cap (₹ Cr)",
             "Order Book (₹ Cr)", "OB / MCap"
         ]
-        table_data = filtered_df[display_cols].copy()
-        table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}")
+        table_data = sorted_results_df[display_cols].copy()
+        table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
+        table_data["Composite Score"] = table_data["Composite Score"].apply(lambda x: f"{int(x)}" if pd.notna(x) else "-")
+        table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["RSI (14)"] = table_data["RSI (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["From 52W High (%)"] = table_data["From 52W High (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["Market Cap (₹ Cr)"] = table_data["Market Cap (₹ Cr)"].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
         table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
-        st.dataframe(table_data, use_container_width=True, hide_index=True)
 
-    # TAB 2: DEEP DIVE
+        styled_table = table_data.style.set_properties(**{
+            "text-align": "center",
+            "font-weight": "500"
+        }).set_table_styles([
+            {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+        ])
+
+        selection_event = st.dataframe(
+            styled_table,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+        )
+
+        if selection_event and selection_event.selection and selection_event.selection.rows:
+            selected_row_idx = selection_event.selection.rows[0]
+            clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
+            st.session_state["selected_ticker"] = f"{clicked_ticker_sym}.NS"
+
+    # TAB 2: DEEP DIVE & CHART
     with tab_deepdive:
-        stock_list = df_raw["Raw_Ticker"].tolist()
-        selected_stock = st.selectbox("Select Stock:", stock_list, index=0)
+        stock_options = sorted_results_df["Raw_Ticker"].tolist() if not sorted_results_df.empty else df_raw["Raw_Ticker"].tolist()
+        current_choice = st.session_state.get("selected_ticker", "ACE.NS")
+        default_index = stock_options.index(current_choice) if current_choice in stock_options else 0
+        selected_stock = st.selectbox("Selected Stock:", stock_options, index=default_index)
+        st.session_state["selected_ticker"] = selected_stock
+
         if selected_stock:
-            st.info(f"Viewing Setup for {selected_stock}")
+            hist = get_single_stock_history(selected_stock)
+            stock_match = df_raw[df_raw["Raw_Ticker"] == selected_stock]
+            stock_row = stock_match.iloc[0] if not stock_match.empty else None
+
+            if hist is not None and not hist.empty:
+                hist["EMA_9"] = hist["Close"].ewm(span=9, adjust=False).mean()
+                hist["EMA_20"] = hist["Close"].ewm(span=20, adjust=False).mean()
+                hist["EMA_44"] = hist["Close"].ewm(span=44, adjust=False).mean()
+                hist["SMA_50"] = hist["Close"].rolling(50).mean()
+                hist["SMA_200"] = hist["Close"].rolling(200).mean()
+
+                curr_p = float(hist["Close"].iloc[-1])
+                ema9_val = float(hist["EMA_9"].iloc[-1])
+                ema20_val = float(hist["EMA_20"].iloc[-1])
+                ema44_val = float(hist["EMA_44"].iloc[-1])
+                curr_signal = stock_row["Signal"] if stock_row is not None else "N/A"
+                curr_score = stock_row["Composite Score"] if stock_row is not None else 0
+                curr_adx = stock_row["ADX (14)"] if stock_row is not None else 25.0
+                curr_change = stock_row["Change (%)"] if stock_row is not None else "0.00%"
+                curr_volume = stock_row["Volume"] if stock_row is not None else "N/A"
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Current Price", f"₹{curr_p:,.2f}", delta=curr_change)
+                c2.metric("9 / 20 / 44 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f} / ₹{ema44_val:.1f}")
+                c3.metric("Volume / ADX", f"{curr_volume} | ADX: {curr_adx}")
+                c4.metric("Action Signal", curr_signal)
+
+                fig = go.Figure(
+                    data=[
+                        go.Candlestick(x=hist.index, open=hist["Open"], high=hist["High"], low=hist["Low"], close=hist["Close"], name="Price"),
+                        go.Scatter(x=hist.index, y=hist["EMA_9"], line=dict(color="#00f2ff", width=1.5), name="9 EMA (Fast)"),
+                        go.Scatter(x=hist.index, y=hist["EMA_20"], line=dict(color="#ffd700", width=1.5), name="20 EMA (Momentum)"),
+                        go.Scatter(x=hist.index, y=hist["EMA_44"], line=dict(color="#a855f7", width=1.5), name="44 EMA (Baseline)"),
+                        go.Scatter(x=hist.index, y=hist["SMA_50"], line=dict(color="#ff9900", width=1.5), name="50 SMA"),
+                        go.Scatter(x=hist.index, y=hist["SMA_200"], line=dict(color="#4d79ff", width=1.5), name="200 SMA"),
+                    ]
+                )
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=480,
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    xaxis_rangeslider_visible=False,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.subheader("🤖 AI Short-Term Swing Thesis & Trade Setup")
+                cached_thesis = st.session_state.get("ai_analysis_cache", {}).get(selected_stock)
+                if cached_thesis:
+                    st.markdown(cached_thesis)
+
+                if st.button("Generate Short-Term Swing Setup for " + selected_stock):
+                    if not GEMINI_API_KEY:
+                        st.warning("Please provide your Gemini API Key in the left sidebar.")
+                    else:
+                        prompt = f"""
+                        You are a Professional Swing Trader & Technical Analyst specializing in Indian Equities (NSE).
+                        Evaluate this pure Short-Term Swing / Momentum Breakout trade setup:
+                        - Stock: {selected_stock}
+                        - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
+                        - Traded Volume: {curr_volume}
+                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} | 44 EMA: ₹{ema44_val:.2f}
+                        - ADX (14): {curr_adx}, RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}
+                        - Breakout Composite Score: {curr_score}/100 | System Signal: {curr_signal}
+
+                        Provide a structured swing trade plan:
+                        1. **Breakout Setup Assessment**: Is momentum active, in a healthy base pullback, or exhausted?
+                        2. **Exact Actionable Verdict**: Choose one strictly: [STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID].
+                        3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
+                        4. **Exit Trigger**: Invalidation condition for swing trades.
+                        """
+                        with st.spinner("Analyzing momentum setup with Gemini..."):
+                            try:
+                                model = genai.GenerativeModel("models/gemini-1.5-flash")
+                                res = model.generate_content(prompt)
+                                if res and res.text:
+                                    st.session_state["ai_analysis_cache"][selected_stock] = res.text
+                                    st.markdown(res.text)
+                            except Exception as e:
+                                st.error(f"Error: {e}")
 
     # TAB 3: PULLBACK WATCHLIST & AUTO LIMIT TRIGGER
     with tab_pullback_watchlist:
         st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
-        st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers and automatically buys the stock.")
+        st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers and automatically executes the trade.")
 
-        # Candidate dropdown
         pullback_candidates = df_raw["Raw_Ticker"].tolist()
         with st.expander("➕ Add Stock to Pullback Watchlist", expanded=False):
             cw1, cw2, cw3, cw4, cw5 = st.columns([1.2, 1, 1, 1, 1])
             with cw1:
-                sel_stock = st.selectbox("Stock:", pullback_candidates, key="wb_stock_select")
+                sel_stock = st.selectbox("Stock Candidate:", pullback_candidates, key="wb_stock_select")
                 matched_row = df_raw[df_raw["Raw_Ticker"] == sel_stock].iloc[0]
                 live_ltp = float(matched_row["Price (₹)"])
                 ema20_val = float(matched_row["20 EMA"])
@@ -997,12 +1179,9 @@ if not df_raw.empty:
                     st.success(f"Added {clean_sym} to Watchlist (Target Entry: ₹{target_entry_price:.2f})!")
                     st.rerun()
 
-        # Monitor Watchlist Items
         active_watchlist = st.session_state.get("pullback_watchlist", [])
         if active_watchlist:
-            # Build clean live price dictionary directly from screener data
             live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"]))
-
             updated_watchlist = []
             display_rows = []
 
@@ -1015,23 +1194,19 @@ if not df_raw.empty:
                 qty = int(item.get("Qty", 1))
                 status_str = item.get("Status", "⏳ Waiting for Pullback")
 
-                # Get TRUE Live Market Price
                 curr_ltp = live_price_dict.get(sym)
                 if curr_ltp is None:
                     try:
-                        t = yf.Ticker(sym)
-                        curr_ltp = float(t.fast_info.last_price)
+                        curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
                     except Exception:
                         curr_ltp = None
 
-                # Strict Trigger Evaluation
                 if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
                     status_str = "⚡ Triggered / Bought"
                     item["Status"] = status_str
-                    st.toast(f"🎯 PULLBACK HIT! Limit order for {clean_sym} executed at ₹{curr_ltp:.2f}!", icon="⚡")
+                    st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="⚡")
                     st.success(f"🔔 **Pullback Triggered:** {clean_sym} reached buy level ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
 
-                    # Add to Paper Trading
                     trade_record = {
                         "id": f"{sym}_{int(time.time())}",
                         "Date": str(date.today()),
@@ -1054,18 +1229,12 @@ if not df_raw.empty:
                 item["Status"] = status_str
                 updated_watchlist.append(item)
 
-                if curr_ltp is not None and target_buy > 0:
-                    dist_pct = ((curr_ltp - target_buy) / target_buy) * 100.0
-                    dist_str = f"{dist_pct:+.2f}% away" if "Waiting" in status_str else "Executed ✅"
-                    ltp_display = f"₹{curr_ltp:,.2f}"
-                else:
-                    dist_str = "Calculating..."
-                    ltp_display = "Fetching..."
+                dist_str = f"{((curr_ltp - target_buy) / target_buy * 100.0):+.2f}% away" if (curr_ltp and "Waiting" in status_str) else ("Executed ✅" if "Triggered" in status_str else "Fetching...")
 
                 display_rows.append({
                     "Date Added": item.get("Date Added", str(date.today())),
                     "Ticker": clean_sym,
-                    "Current LTP (₹)": ltp_display,
+                    "Current LTP (₹)": f"₹{curr_ltp:,.2f}" if curr_ltp else "-",
                     "Target Buy (₹)": f"₹{target_buy:,.2f}",
                     "Distance to Entry": dist_str,
                     "SL (₹)": f"₹{sl_price:,.2f}",
@@ -1077,14 +1246,12 @@ if not df_raw.empty:
 
             st.session_state["pullback_watchlist"] = updated_watchlist
             save_json_file(WATCHLIST_FILE, updated_watchlist)
-
             st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
 
-            # Management & Reset Row
             m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
             with m_col1:
                 del_choices = {f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
-                sel_del = st.selectbox("Select Item:", list(del_choices.keys()), key="del_wb_select")
+                sel_del = st.selectbox("Select Watchlist Item:", list(del_choices.keys()), key="del_wb_select")
             with m_col2:
                 st.write("")
                 st.write("")
@@ -1113,7 +1280,6 @@ if not df_raw.empty:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
         active_portfolio = st.session_state.get("paper_portfolio", [])
 
-        # 1. Order Placement Form
         with st.expander("➕ Execute New Paper Trade (Custom SL, Target & Remarks)", expanded=False):
             col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
             with col_add1:
@@ -1161,7 +1327,6 @@ if not df_raw.empty:
                     st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']}!")
                     st.rerun()
 
-        # 2. Row Deletion Manager
         if active_portfolio:
             with st.expander("🗑️ Delete a Trade / Row Added by Mistake", expanded=False):
                 col_del_sel, col_del_btn = st.columns([3, 1])
@@ -1183,7 +1348,6 @@ if not df_raw.empty:
                         st.success(f"Successfully deleted {deleted_ticker} position!")
                         st.rerun()
 
-        # 3. Backup & Restore
         col_dl, col_up = st.columns([1, 1])
         with col_up:
             uploaded_portfolio = st.file_uploader("📥 Restore Trades from Backup (.json)", type=["json"], key="portfolio_uploader")
@@ -1207,10 +1371,8 @@ if not df_raw.empty:
                     use_container_width=True,
                 )
 
-        # 4. Live Portfolio Tracking, Calculations & Metrics
         if active_portfolio:
             live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"]))
-
             open_invested = 0.0
             open_current_val = 0.0
             unrealised_pnl_total = 0.0
@@ -1228,7 +1390,6 @@ if not df_raw.empty:
                 clean_t = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
                 buy_p = float(pos.get("Buy Price (₹)", 0.0))
                 
-                # Fetch true live price
                 curr_p = live_price_dict.get(sym)
                 if curr_p is None:
                     try:
@@ -1246,7 +1407,6 @@ if not df_raw.empty:
                 pos_status = str(pos.get("Status", "🟢 Open"))
                 saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
 
-                # Automatic Status detection
                 if pos_status == "🟢 Open":
                     if sl > 0 and curr_p <= sl:
                         pos_status = "🔴 SL Hit (Closed)"
@@ -1262,18 +1422,13 @@ if not df_raw.empty:
                 pos["Exit Price (₹)"] = saved_exit_price
                 updated_portfolio_data.append(pos)
 
-                # Holding Days
                 try:
                     d_entry = datetime.strptime(pos_date_str, "%Y-%m-%d").date()
-                    if pos_exit_date_str and pos_exit_date_str.strip() and pos_exit_date_str != "-":
-                        d_exit = datetime.strptime(pos_exit_date_str.strip(), "%Y-%m-%d").date()
-                    else:
-                        d_exit = date.today()
+                    d_exit = datetime.strptime(pos_exit_date_str.strip(), "%Y-%m-%d").date() if (pos_exit_date_str and pos_exit_date_str.strip() and pos_exit_date_str != "-") else date.today()
                     holding_days = max(0, (d_exit - d_entry).days)
                 except Exception:
                     holding_days = 0
 
-                # P&L Calculation
                 if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
                     exit_val = saved_exit_price if saved_exit_price > 0 else curr_p
                     pnl = round((exit_val - buy_p) * qty, 2)
@@ -1312,13 +1467,9 @@ if not df_raw.empty:
                     "_raw_pnl": pnl,
                 })
 
-            st.session_state["paper_portfolio"] = updated_portfolio_data
-            save_json_file(PORTFOLIO_FILE, updated_portfolio_data)
-
             win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
             loss_rate_pct = (losing_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
 
-            # 4-Box Performance Summary Grid
             trade_summary_html = f"""
             <div class="trade-summary-card">
                 <div class="trade-stat-box">
@@ -1341,7 +1492,6 @@ if not df_raw.empty:
             """
             st.markdown(trade_summary_html, unsafe_allow_html=True)
 
-            # 5-Column Summary Metric Ribbon
             p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
             p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
             p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")
@@ -1362,7 +1512,6 @@ if not df_raw.empty:
                 delta_color="inverse",
             )
 
-            # Position Edit Form
             with st.expander("✏️ Edit Position Parameters (Modify SL, TGT, Sold Date, Status & Exit Price)", expanded=False):
                 col_sel_edit, _ = st.columns([2, 1])
                 with col_sel_edit:
@@ -1409,7 +1558,6 @@ if not df_raw.empty:
                     st.success("Position successfully updated!")
                     st.rerun()
 
-            # Styled Table Output with Dark Green & Red P&L Map
             port_df = pd.DataFrame(portfolio_rows)
             display_port_cols = [
                 "Entry Date", "Sold Date", "Holding", "Ticker", "Status",
@@ -1448,6 +1596,6 @@ if not df_raw.empty:
                 save_json_file(PORTFOLIO_FILE, [])
                 st.rerun()
         else:
-            st.info("No active paper trades. Place a trade above.")
+            st.info("No active paper trades. Execute a trade above.")
 else:
     st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to begin.")

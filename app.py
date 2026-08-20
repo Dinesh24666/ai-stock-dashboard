@@ -11,7 +11,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 
-# 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
@@ -21,7 +20,6 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +36,6 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +82,6 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -142,7 +138,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- BROWSER PERMISSIONS & SOUND ALERT SYSTEM ---
 def render_alert_permission_banner():
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
@@ -245,7 +240,6 @@ def play_trigger_alert(ticker, buy_price):
     components.html(alert_html, height=0)
 
 
-# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
     index_items = [
@@ -330,7 +324,6 @@ st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
 
-
 def load_json_file(filename):
     if os.path.exists(filename):
         try:
@@ -340,14 +333,12 @@ def load_json_file(filename):
             return []
     return []
 
-
 def save_json_file(filename, data):
     try:
         with open(filename, "w") as f:
             json.dump(data, f, indent=4)
     except Exception as e:
         st.error(f"Error saving to {filename}: {e}")
-
 
 if "paper_portfolio" not in st.session_state:
     st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
@@ -684,7 +675,7 @@ NSE_FULL_EQUITIES = [
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
-    "Nifty 50 Core": "NIFTSY_50" if False else "NIFTY_50",
+    "Nifty 50 Core": "NIFTY_50",
     "Banking & Financial Services": [
         "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
         "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
@@ -733,9 +724,9 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=total_found,
+        value=min(100, total_found),
         step=25,
-        help="Full 1,960+ NSE Listed Equities Universe.",
+        help="Scanning fewer stocks at once prevents Yahoo Finance connection timeouts.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -819,17 +810,22 @@ def fetch_screener_universe(ticker_list):
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
     progress_bar = st.progress(0, text="Fetching market data...")
-    chunk_size = 50
+    chunk_size = 25  # Reduced chunk size to prevent timeouts
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
     rows = []
     seen = set()
 
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
-        try:
-            batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False)
-        except Exception:
-            continue
+        
+        batch_data = None
+        for attempt in range(3):
+            try:
+                batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False, timeout=10)
+                if batch_data is not None and not batch_data.empty:
+                    break
+            except Exception:
+                time.sleep(1)
 
         if batch_data is None or batch_data.empty:
             continue
@@ -864,9 +860,6 @@ def fetch_screener_universe(ticker_list):
                 ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
                 ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
                 ema_44 = float(hist["Close"].ewm(span=44, adjust=False).mean().iloc[-1])
-                ema_50 = float(hist["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
-                ema_200 = float(hist["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
-                
                 sma_50 = float(hist["Close"].rolling(50).mean().iloc[-1]) if len(hist) >= 50 else curr_price
                 sma_200 = float(hist["Close"].rolling(200).mean().iloc[-1]) if len(hist) >= 200 else curr_price
                 
@@ -929,10 +922,6 @@ def fetch_screener_universe(ticker_list):
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
-                # REFINED SCORING LOGIC FOR TRUE BREAKOUTS
-                candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
-                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
-                
                 score = 0
                 if is_20d_high_breakout: score += 25
                 if vol_surge_2x: score += 25
@@ -1010,6 +999,7 @@ def get_single_stock_history(ticker):
             auto_adjust=True,
             progress=False,
             threads=False,
+            timeout=10,
         )
 
         if df is not None and not df.empty:
@@ -1022,6 +1012,68 @@ def get_single_stock_history(ticker):
     except Exception:
         return pd.DataFrame()
 
+
+selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
+is_single_search = selected_universe == "🔍 Single Stock Search"
+
+if is_single_search:
+    raw_sym_input = st.sidebar.text_input("Enter NSE Symbol", value="ACE")
+    clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
+    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
+elif selected_universe == "Nifty 50 Core":
+    all_symbols = get_all_nse_symbols()
+    tickers_to_scan = all_symbols[:50]
+elif selected_universe == "All NSE Stocks (Full Listed)":
+    all_symbols = get_all_nse_symbols()
+    total_found = len(all_symbols)
+    scan_limit = st.sidebar.slider(
+        "Number of Stocks to Scan",
+        min_value=25,
+        max_value=total_found,
+        value=min(100, total_found),
+        step=25,
+        help="Scanning fewer stocks at once prevents Yahoo Finance connection timeouts.",
+    )
+    tickers_to_scan = all_symbols[:scan_limit]
+else:
+    tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
+
+apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False if is_single_search else True)
+order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 100))
+mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (1000, 2000000), 500)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, 0.1)
+
+price_range = st.sidebar.slider("Stock Price (₹)", 0, 10000, (30, 3000), 10)
+rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
+min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
+max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
+
+sma_trend_filter = st.sidebar.selectbox(
+    "Moving Average Alignment",
+    [
+        "Any Trend",
+        "🌀 EMA Cluster Squeeze & Breakout",
+        "⚡ 9/20/44 Triple EMA Bullish Cross",
+        "🔥 Multi-Timeframe 20D Breakout",
+        "Relative strength",
+        "Price > Both 50 & 200 SMA",
+        "Golden Cross (50 SMA > 200 SMA)",
+        "Price > 50 SMA",
+        "Price > 200 SMA",
+    ],
+)
+
+enable_vol_multiplier = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
+vol_multiplier = st.sidebar.slider("Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier)
+
+scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
+if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
+    st.cache_data.clear()
+    st.session_state["ai_analysis_cache"] = {}
+    st.session_state["screener_data"] = pd.DataFrame()
+    gc.collect()
+    st.rerun()
 
 if scan_button or is_single_search or st.session_state["screener_data"].empty:
     with st.spinner("Analyzing market data..."):
@@ -1742,7 +1794,7 @@ if not df_raw.empty:
                         parsed_exit_date = date.today()
                     new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
                 with ec5:
-                    new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy / Entry Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
+                    new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
 
                 if st.button("💾 Save Position Updates", key=f"save_btn_{edit_idx}"):
                     active_portfolio[edit_idx]["SL (₹)"] = new_sl_val

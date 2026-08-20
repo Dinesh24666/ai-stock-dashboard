@@ -754,7 +754,7 @@ rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
 min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
 
-# UPDATED MOVING AVERAGE ALIGNMENT (Added the Custom Multi-EMA & MACD/ADX setup)
+# UPDATED MOVING AVERAGE ALIGNMENT (Golden Cross + Strict MACD Crossover Custom Setup)
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
@@ -764,7 +764,7 @@ sma_trend_filter = st.sidebar.selectbox(
         "🔥 Multi-Timeframe 20D Breakout",
         "Relative strength",
         "Golden Cross (50 SMA > 200 SMA)",
-        "⚡ Multi-EMA Crossover & MACD/ADX Momentum",
+        "⚡ Multi-EMA Crossover & MACD Crossover",
     ],
 )
 
@@ -881,18 +881,23 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # MACD Calculation (26, 12, 9)
+                # Strict MACD Line Crossover Check
                 exp1 = hist["Close"].ewm(span=12, adjust=False).mean()
                 exp2 = hist["Close"].ewm(span=26, adjust=False).mean()
                 macd_line = exp1 - exp2
                 macd_signal = macd_line.ewm(span=9, adjust=False).mean()
-                is_macd_bullish = bool(macd_line.iloc[-1] > macd_signal.iloc[-1])
+                
+                is_macd_crossover = bool(
+                    len(macd_line) >= 2 and 
+                    macd_line.iloc[-1] > macd_signal.iloc[-1] and 
+                    macd_line.iloc[-2] <= macd_signal.iloc[-2]
+                )
 
                 # ADX Rising Check (ADX today > ADX 3 days ago)
                 prev_adx_val = compute_adx(hist.iloc[:-3], 14) if len(hist) > 17 else adx_val
                 is_adx_rising = bool(adx_val > prev_adx_val)
 
-                # Multi-EMA Crossover Condition (passes any of the 4 pairs from user image)
+                # Multi-EMA Crossover Condition (passes any of the 4 pairs)
                 is_multi_ema_cross = bool(
                     (ema_9 > ema_50) or 
                     (ema_9 > ema_200) or 
@@ -900,7 +905,7 @@ def fetch_screener_universe(ticker_list):
                     (ema_5 > ema_20)
                 )
 
-                is_custom_setup_match = bool(is_multi_ema_cross and is_macd_bullish and is_adx_rising)
+                is_custom_setup_match = bool(is_multi_ema_cross and is_macd_crossover and is_adx_rising)
 
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
@@ -1092,7 +1097,7 @@ if not df_raw.empty:
             filtered_df = filtered_df[filtered_df["_rs_match"] == True]
         elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
             filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
-        elif sma_trend_filter == "⚡ Multi-EMA Crossover & MACD/ADX Momentum":
+        elif sma_trend_filter == "⚡ Multi-EMA Crossover & MACD Crossover":
             filtered_df = filtered_df[filtered_df["_custom_setup_match"] == True]
 
         if enable_vol_multiplier:

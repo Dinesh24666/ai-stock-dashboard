@@ -1154,14 +1154,47 @@ if not df_raw.empty:
                         4. **Exit Trigger**: Invalidation condition for swing trades.
                         """
                         with st.spinner("Analyzing momentum setup with Gemini..."):
+                            success = False
+                            error_logs = []
+
+                            # Dynamically retrieve verified models supported by your API key
+                            candidate_models = []
                             try:
-                                model = genai.GenerativeModel("models/gemini-1.5-flash")
-                                res = model.generate_content(prompt)
-                                if res and res.text:
-                                    st.session_state["ai_analysis_cache"][selected_stock] = res.text
-                                    st.markdown(res.text)
+                                for m in genai.list_models():
+                                    if "generateContent" in m.supported_generation_methods:
+                                        clean_name = m.name.replace("models/", "")
+                                        candidate_models.append(clean_name)
                             except Exception as e:
-                                st.error(f"Error: {e}")
+                                error_logs.append(f"Model listing failed: {e}")
+
+                            # Fallback sequence if listing fails
+                            if not candidate_models:
+                                candidate_models = [
+                                    "gemini-1.5-flash",
+                                    "gemini-2.0-flash",
+                                    "gemini-1.5-flash-8b",
+                                    "gemini-1.5-pro",
+                                    "gemini-pro",
+                                ]
+
+                            for model_name in candidate_models:
+                                try:
+                                    model = genai.GenerativeModel(model_name)
+                                    res = model.generate_content(prompt)
+                                    if res and res.text:
+                                        st.session_state["ai_analysis_cache"][selected_stock] = res.text
+                                        st.markdown(res.text)
+                                        success = True
+                                        break
+                                except Exception as err:
+                                    error_logs.append(f"{model_name}: {str(err)}")
+                                    continue
+
+                            if not success:
+                                st.error("Failed to generate AI thesis.")
+                                with st.expander("🔍 View Error Details"):
+                                    for err in error_logs:
+                                        st.code(err)
 
     # TAB 3: PULLBACK WATCHLIST & AUTO LIMIT TRIGGER
     with tab_pullback_watchlist:

@@ -11,6 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 
+# 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
@@ -20,6 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -36,6 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
+    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -82,6 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
+    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -138,7 +142,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
+# --- BROWSER PERMISSIONS & SOUND ALERT SYSTEM ---
 def render_alert_permission_banner():
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
@@ -241,6 +245,7 @@ def play_trigger_alert(ticker, buy_price):
     components.html(alert_html, height=0)
 
 
+# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
     index_items = [
@@ -302,7 +307,6 @@ def fetch_live_market_indices():
             {"name": "Crude Oil", "value": "$74.85", "change": "+0.45", "pct": "(+0.60%)", "is_pos": True, "arrow": "↗"},
         ]
     return results
-
 
 market_indices = fetch_live_market_indices()
 if market_indices:
@@ -926,24 +930,20 @@ def fetch_screener_universe(ticker_list):
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
-                # ADJUSTED SCORING WITH EXTENSION PENALTY TO MATCH AI THESIS
                 score = 0
                 if is_20d_high_breakout: score += 25
                 if vol_surge_2x: score += 25
                 if curr_price > ema_9 > ema_20: score += 25
                 if adx_val >= 25: score += 25
                 
-                # If a stock is up more than 8% today, penalize score so it falls into Pullback category
-                if price_change_pct > 8.0:
-                    score -= 30
-
+                # Unaltered original breakout scoring criteria
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25 and price_change_pct <= 8.0:
+                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25:
                     action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
+                elif (swing_composite >= 60 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 30:
+                elif swing_composite >= 40:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
                     action_signal = "🔴 AVOID / WEAK"
@@ -1023,7 +1023,12 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-if scan_button or is_single_search or st.session_state["screener_data"].empty:
+# AUTO-RUN SCAN ON STARTUP IF EMPTY SO IT NEVER SHOWS "Click Run Screener Scan" BLANK STATE
+if st.session_state["screener_data"].empty:
+    with st.spinner("Initializing market scan..."):
+        st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
+
+if scan_button or is_single_search:
     with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
         st.session_state["screener_data"] = df_raw
@@ -1766,5 +1771,3 @@ if not df_raw.empty:
                 st.rerun()
         else:
             st.info("No active paper trades. Execute a trade above.")
-else:
-    st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to begin.")

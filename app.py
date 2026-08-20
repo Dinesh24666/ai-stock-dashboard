@@ -20,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe and data_editor columns */
+    /* Center alignment for table contents and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -37,7 +37,7 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Top Header Bar Styling */
+    /* Top Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -84,7 +84,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* Trade Performance Summary Grid Styling */
+    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -152,10 +152,8 @@ def fetch_live_market_indices():
         ("^INDIAVIX", "India VIX", ""),
         ("CL=F", "Crude Oil", "$"),
     ]
-    
     tickers_str = " ".join([t[0] for t in index_items])
     results = []
-    
     try:
         data = yf.download(
             tickers=tickers_str,
@@ -166,7 +164,6 @@ def fetch_live_market_indices():
             auto_adjust=True,
             progress=False,
         )
-        
         for ticker_sym, name, prefix in index_items:
             try:
                 df = pd.DataFrame()
@@ -180,11 +177,9 @@ def fetch_live_market_indices():
                     prev_val = float(df["Close"].iloc[-2]) if len(df) >= 2 else curr_val
                     change = curr_val - prev_val
                     pct_change = (change / prev_val * 100.0) if prev_val > 0 else 0.0
-                    
                     val_str = f"{prefix}{curr_val:,.2f}" if prefix else f"{curr_val:,.2f}"
                     change_str = f"{'+' if change >= 0 else ''}{change:.2f}"
                     pct_str = f"({'+' if pct_change >= 0 else ''}{pct_change:.2f}%)"
-                    
                     results.append({
                         "name": name,
                         "value": val_str,
@@ -209,7 +204,6 @@ def fetch_live_market_indices():
         ]
     return results
 
-# Render Top Index Ribbon
 market_indices = fetch_live_market_indices()
 if market_indices:
     ticker_html = '<div class="index-ticker-container">'
@@ -532,7 +526,7 @@ NSE_FULL_EQUITIES = [
     "SHREECARE", "SHREECEM", "SHREEPUSHK", "SHREERAMA", "SHRENIK", "SHREYANIND",
     "SHRIKRISH", "SHRIRAMFIN", "SHRIRAMPPS", "SHYAMCENT", "SHYAMMETL", "SICALLTD",
     "SIEMENS", "SIGACHI", "SIGIND", "SIGMA", "SIGNPOST", "SIL", "SILGO",
-    "SILINV", "SILLYmonks", "SILVERTUC", "SIMBHALS", "SIMPLEXINF", "SINDHUTRAD",
+    "SILINV", "SILLYMONKS", "SILVERTUC", "SIMBHALS", "SIMPLEXINF", "SINDHUTRAD",
     "SINTERCOM", "SIRCA", "SIS", "SITASHREE", "SIYSIL", "SJVN", "SKFINDIA",
     "SKIPPER", "SKMEGGPROD", "SMARTLINK", "SMCGLOBAL", "SMLISUZU", "SMLT",
     "SMSLIFE", "SMSPHARMA", "SNOWMAN", "SOBHA", "SOFTTECH", "SOLARA", "SOLARINDS",
@@ -590,7 +584,6 @@ NSE_FULL_EQUITIES = [
     "ZYDUSLIFE", "ZYDUSWELL"
 ]
 
-
 # Sector & Basket Presets
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
@@ -627,6 +620,7 @@ def get_all_nse_symbols():
 
 
 # Sidebar Universe Selection
+st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
 
 is_single_search = selected_universe == "🔍 Single Stock Search"
@@ -728,7 +722,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
-# Screener Engine (Robust Single & Multi-Stock Parser)
+# Screener Engine
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -1156,18 +1150,14 @@ if not df_raw.empty:
                         with st.spinner("Analyzing momentum setup with Gemini..."):
                             success = False
                             error_logs = []
-
-                            # Dynamically retrieve verified models supported by your API key
                             candidate_models = []
                             try:
                                 for m in genai.list_models():
                                     if "generateContent" in m.supported_generation_methods:
-                                        clean_name = m.name.replace("models/", "")
-                                        candidate_models.append(clean_name)
+                                        candidate_models.append(m.name.replace("models/", ""))
                             except Exception as e:
-                                error_logs.append(f"Model listing failed: {e}")
+                                error_logs.append(f"Model listing error: {e}")
 
-                            # Fallback sequence if listing fails
                             if not candidate_models:
                                 candidate_models = [
                                     "gemini-1.5-flash",
@@ -1201,12 +1191,17 @@ if not df_raw.empty:
         st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
         st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers and automatically executes the trade.")
 
+        # Candidate dropdown synced with selected screener stock
         pullback_candidates = df_raw["Raw_Ticker"].tolist()
+        curr_selected = st.session_state.get("selected_ticker", pullback_candidates[0] if pullback_candidates else "ACE.NS")
+        default_wb_idx = pullback_candidates.index(curr_selected) if curr_selected in pullback_candidates else 0
+
         with st.expander("➕ Add Stock to Pullback Watchlist", expanded=False):
             cw1, cw2, cw3, cw4, cw5 = st.columns([1.2, 1, 1, 1, 1])
             with cw1:
-                sel_stock = st.selectbox("Stock Candidate:", pullback_candidates, key="wb_stock_select")
-                matched_row = df_raw[df_raw["Raw_Ticker"] == sel_stock].iloc[0]
+                sel_stock = st.selectbox("Stock Candidate:", pullback_candidates, index=default_wb_idx)
+                matched_match = df_raw[df_raw["Raw_Ticker"] == sel_stock]
+                matched_row = matched_match.iloc[0] if not matched_match.empty else df_raw.iloc[0]
                 live_ltp = float(matched_row["Price (₹)"])
                 ema20_val = float(matched_row["20 EMA"])
             with cw2:
@@ -1347,11 +1342,14 @@ if not df_raw.empty:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
         active_portfolio = st.session_state.get("paper_portfolio", [])
 
+        # 1. Order Placement Form (Synced with screener selection)
         with st.expander("➕ Execute New Paper Trade (Custom SL, Target & Remarks)", expanded=False):
             col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
             with col_add1:
                 available_tickers = df_raw["Raw_Ticker"].tolist() if not df_raw.empty else ["ACE.NS"]
-                trade_stock = st.selectbox("Stock:", available_tickers, index=0)
+                curr_selected_trade = st.session_state.get("selected_ticker", available_tickers[0])
+                default_trade_idx = available_tickers.index(curr_selected_trade) if curr_selected_trade in available_tickers else 0
+                trade_stock = st.selectbox("Stock:", available_tickers, index=default_trade_idx)
             with col_add2:
                 trade_date = st.date_input("Entry Date", value=date.today())
             with col_add3:

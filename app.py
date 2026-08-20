@@ -1769,8 +1769,7 @@ if not df_raw.empty:
             ]
             final_port_display = port_df[display_port_cols].copy()
 
-            def highlight_pnl_dark_green_red(val):
-    try:
+            def highlight_pnl_dark_green_red(val):try:
         clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
         num = float(clean_str)
         if num > 0:

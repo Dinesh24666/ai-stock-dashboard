@@ -142,37 +142,59 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- BROWSER PERMISSIONS & SOUND ALERT SYSTEM ---
+# --- TIME-DRIVEN MARKET HOURS & ALERT SYSTEM ---
 def render_alert_permission_banner():
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
         <div style="display: flex; align-items: center; gap: 10px;">
             <span style="font-size: 22px;">🔔</span>
             <div>
-                <div style="font-size: 14.5px; font-weight: 700; color: #065f46;">Live Trigger Audio & Push Notifications</div>
-                <div style="font-size: 12px; color: #047857;">Click below to grant browser sound & desktop popup permissions.</div>
+                <div style="font-size: 14.5px; font-weight: 700; color: #065f46;">Auto-Market Hours Alert Engine (9:15 AM – 3:30 PM IST)</div>
+                <div style="font-size: 12px; color: #047857;" id="market-time-status">Checking market hours & permission status...</div>
             </div>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
             <button id="alert-btn" onclick="activateSystemAlerts()" style="background: #059669; color: #ffffff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 13.5px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">
-                🔊 Enable Sound & Desktop Notifications
+                🔊 Grant Sound & Push Permission
             </button>
             <span id="alert-status-msg" style="font-size: 13px; font-weight: 700; color: #065f46;"></span>
         </div>
     </div>
     <script>
+    function checkMarketHoursAndPermissions() {
+        var statusSub = document.getElementById("market-time-status");
+        var btnEl = document.getElementById("alert-btn");
+        
+        var d = new Date();
+        var utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+        var istDate = new Date(utc + (3600000 * 5.5));
+        var hours = istDate.getHours();
+        var minutes = istDate.getMinutes();
+        var day = istDate.getDay();
+        
+        var timeVal = hours * 100 + minutes;
+        var isWeekday = (day >= 1 && day <= 5);
+        var isMarketHours = isWeekday && (timeVal >= 915 && timeVal <= 1530);
+        
+        if ("Notification" in window && Notification.permission === "granted") {
+            btnEl.style.display = "none";
+            if (isMarketHours) {
+                statusSub.innerText = "🟢 Market Open (9:15 AM - 3:30 PM IST): Audio & Notifications are FULLY ARMED.";
+            } else {
+                statusSub.innerText = "🌙 Market Closed: System is on standby for the next trading session.";
+            }
+        } else {
+            statusSub.innerText = "⚠️ Click the button once to enable browser sound permissions.";
+        }
+    }
+
     function activateSystemAlerts() {
         var statusEl = document.getElementById("alert-status-msg");
         if ("Notification" in window) {
             Notification.requestPermission().then(function(permission) {
                 if (permission === "granted") {
-                    statusEl.innerText = "✅ Sound & Push Active!";
-                    new Notification("⚡ Order Alerts Enabled", {
-                        body: "Audio chimes & popups will now sound when limit orders trigger.",
-                        icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
-                    });
-                } else {
-                    statusEl.innerText = "⚠️ Notifications: " + permission;
+                    statusEl.innerText = "✅ Active!";
+                    checkMarketHoursAndPermissions();
                 }
             });
         }
@@ -194,6 +216,9 @@ def render_alert_permission_banner():
             }
         } catch(e) {}
     }
+
+    window.onload = checkMarketHoursAndPermissions;
+    setTimeout(checkMarketHoursAndPermissions, 1000);
     </script>
     """
     components.html(banner_html, height=85)
@@ -754,7 +779,6 @@ rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
 min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
 
-# UPDATED MOVING AVERAGE ALIGNMENT (Golden Cross + Strict MACD Crossover Custom Setup)
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
@@ -881,7 +905,7 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # Strict MACD Line Crossover Check
+                # Strict MACD Crossover Check
                 exp1 = hist["Close"].ewm(span=12, adjust=False).mean()
                 exp2 = hist["Close"].ewm(span=26, adjust=False).mean()
                 macd_line = exp1 - exp2

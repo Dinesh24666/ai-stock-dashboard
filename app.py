@@ -754,6 +754,7 @@ rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
 min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
 
+# UPDATED MOVING AVERAGE ALIGNMENT (Added the Custom Multi-EMA & MACD/ADX setup)
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
@@ -763,7 +764,8 @@ sma_trend_filter = st.sidebar.selectbox(
         "🔥 Multi-Timeframe 20D Breakout",
         "Relative strength",
         "Golden Cross (50 SMA > 200 SMA)",
-                     ],
+        "⚡ Multi-EMA Crossover & MACD/ADX Momentum",
+    ],
 )
 
 enable_vol_multiplier = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
@@ -860,6 +862,7 @@ def fetch_screener_universe(ticker_list):
                 prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else curr_price
                 price_change_pct = round(((curr_price - prev_close) / prev_close) * 100.0, 2) if prev_close > 0 else 0.0
 
+                ema_5 = float(hist["Close"].ewm(span=5, adjust=False).mean().iloc[-1])
                 ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
                 ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
                 ema_44 = float(hist["Close"].ewm(span=44, adjust=False).mean().iloc[-1])
@@ -877,6 +880,27 @@ def fetch_screener_universe(ticker_list):
 
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
+
+                # MACD Calculation (26, 12, 9)
+                exp1 = hist["Close"].ewm(span=12, adjust=False).mean()
+                exp2 = hist["Close"].ewm(span=26, adjust=False).mean()
+                macd_line = exp1 - exp2
+                macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+                is_macd_bullish = bool(macd_line.iloc[-1] > macd_signal.iloc[-1])
+
+                # ADX Rising Check (ADX today > ADX 3 days ago)
+                prev_adx_val = compute_adx(hist.iloc[:-3], 14) if len(hist) > 17 else adx_val
+                is_adx_rising = bool(adx_val > prev_adx_val)
+
+                # Multi-EMA Crossover Condition (passes any of the 4 pairs from user image)
+                is_multi_ema_cross = bool(
+                    (ema_9 > ema_50) or 
+                    (ema_9 > ema_200) or 
+                    (ema_50 > ema_200) or 
+                    (ema_5 > ema_20)
+                )
+
+                is_custom_setup_match = bool(is_multi_ema_cross and is_macd_bullish and is_adx_rising)
 
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
@@ -932,7 +956,6 @@ def fetch_screener_universe(ticker_list):
                 close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
                 score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
                 
-                # Extension penalty to match AI thesis verdict on overextended spikes (> 8% gain)
                 is_overextended = price_change_pct > 8.0
                 if is_overextended:
                     score -= 30
@@ -983,6 +1006,7 @@ def fetch_screener_universe(ticker_list):
                     "_mtf_match": passes_mtf_breakout,
                     "_rs_match": is_relative_strength,
                     "_ob_gt_mcap": is_order_book_gt_mcap,
+                    "_custom_setup_match": is_custom_setup_match,
                 })
                 seen.add(clean_sym)
             except Exception:
@@ -1066,14 +1090,10 @@ if not df_raw.empty:
             filtered_df = filtered_df[filtered_df["_mtf_match"] == True]
         elif sma_trend_filter == "Relative strength":
             filtered_df = filtered_df[filtered_df["_rs_match"] == True]
-        elif sma_trend_filter == "Price > Both 50 & 200 SMA":
-            filtered_df = filtered_df[(filtered_df["Price (₹)"] >= filtered_df["SMA_50"]) & (filtered_df["Price (₹)"] >= filtered_df["SMA_200"])]
         elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
             filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
-        elif sma_trend_filter == "Price > 50 SMA":
-            filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_50"]]
-        elif sma_trend_filter == "Price > 200 SMA":
-            filtered_df = filtered_df[filtered_df["Price (₹)"] >= filtered_df["SMA_200"]]
+        elif sma_trend_filter == "⚡ Multi-EMA Crossover & MACD/ADX Momentum":
+            filtered_df = filtered_df[filtered_df["_custom_setup_match"] == True]
 
         if enable_vol_multiplier:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]

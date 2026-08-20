@@ -704,6 +704,7 @@ sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
     [
         "Any Trend",
+        "🌀 EMA Cluster Squeeze & Breakout",
         "⚡ 9/20/44 Triple EMA Bullish Cross",
         "Multi-Timeframe 20D Breakout",
         "Relative strength",
@@ -923,7 +924,24 @@ def fetch_screener_universe(ticker_list):
                 roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
 
                 # -------------------------------------------------------------
-                # SETUP 1: 9/20/44 TRIPLE EMA BULLISH CROSS
+                # SETUP 1: 🌀 EMA CLUSTER SQUEEZE & BREAKOUT (PINCH SETUP)
+                # All EMAs/SMAs tightly clustered within ~4% band and Price freshly breaks above
+                # -------------------------------------------------------------
+                cluster_high = max(ema_9, ema_20, ema_44, sma_50)
+                cluster_low = min(ema_9, ema_20, ema_44, sma_50)
+                cluster_spread_pct = ((cluster_high - cluster_low) / cluster_high * 100.0) if cluster_high > 0 else 10.0
+                
+                # Check if clustered (tight squeeze <= 4.5% spread) and price is breaking out above all
+                price_above_all_cluster = (curr_price >= cluster_high) and (curr_price >= ema_200 * 0.96)
+                fresh_cross_recent = (curr_price >= prev_close) and (curr_price >= ema_9)
+                is_cluster_squeeze_match = bool(
+                    cluster_spread_pct <= 4.5
+                    and price_above_all_cluster
+                    and fresh_cross_recent
+                )
+
+                # -------------------------------------------------------------
+                # SETUP 2: 9/20/44 TRIPLE EMA BULLISH CROSS
                 # -------------------------------------------------------------
                 cross_9_above_20 = (ema_9 > ema_20) and ((ema_9_prev <= ema_20_prev) or (ema_9 > ema_20 > ema_44))
                 cross_20_above_44 = (ema_20 > ema_44) and ((ema_20_prev <= ema_44_prev) or (ema_9 > ema_20 > ema_44))
@@ -938,7 +956,7 @@ def fetch_screener_universe(ticker_list):
                 )
 
                 # -------------------------------------------------------------
-                # SETUP 2: EXACT RELATIVE STRENGTH CONDITIONS
+                # SETUP 3: EXACT RELATIVE STRENGTH CONDITIONS
                 # -------------------------------------------------------------
                 close_20d_ago = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
                 close_125d_ago = float(hist["Close"].iloc[-126]) if len(hist) >= 126 else float(hist["Close"].iloc[0])
@@ -951,7 +969,7 @@ def fetch_screener_universe(ticker_list):
                 is_relative_strength_match = bool(cond1_ema200_dist and cond2_ret_125d and cond3_ema50_dist and cond4_ret_20d)
 
                 # -------------------------------------------------------------
-                # SETUP 3: MULTI-TIMEFRAME 20D BREAKOUT SETUP (IMAGE CRITERIA)
+                # SETUP 4: MULTI-TIMEFRAME 20D BREAKOUT SETUP (IMAGE CRITERIA)
                 # -------------------------------------------------------------
                 weekly_df = hist.resample("W").agg({
                     "Open": "first",
@@ -1029,7 +1047,7 @@ def fetch_screener_universe(ticker_list):
                 # Signal Classification (Strict Score Hierarchy)
                 if swing_composite >= 80 and curr_price >= ema_9 and ema_9 >= ema_20:
                     action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 60 or passes_mtf_breakout or is_relative_strength_match or is_triple_ema_match) and curr_price >= ema_20:
+                elif (swing_composite >= 60 or passes_mtf_breakout or is_relative_strength_match or is_triple_ema_match or is_cluster_squeeze_match) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
                 elif swing_composite >= 40:
                     action_signal = "🟠 CONSOLIDATING"
@@ -1070,6 +1088,7 @@ def fetch_screener_universe(ticker_list):
                         "_de_num": de,
                         "_mcap_num": mcap_cr,
                         "_adx_num": adx_val,
+                        "_cluster_squeeze_match": is_cluster_squeeze_match,
                         "_mtf_match": passes_mtf_breakout,
                         "_rs_match": is_relative_strength_match,
                         "_triple_ema_match": is_triple_ema_match,
@@ -1175,7 +1194,9 @@ if not df_raw.empty:
             & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
         ]
 
-        if sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
+        if sma_trend_filter == "🌀 EMA Cluster Squeeze & Breakout":
+            filtered_df = filtered_df[filtered_df["_cluster_squeeze_match"] == True]
+        elif sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
             filtered_df = filtered_df[filtered_df["_triple_ema_match"] == True]
         elif sma_trend_filter == "Multi-Timeframe 20D Breakout":
             filtered_df = filtered_df[filtered_df["_mtf_match"] == True]
@@ -1218,7 +1239,7 @@ if not df_raw.empty:
     # --- TAB 1: SCREENER & SIGNAL TABLE ---
     with tab_screener:
         st.info(
-            "💡 **Momentum Engine:** Evaluates 9/20/44 EMA Crossovers, % Price Change, Volume, RSI (50–75), ADX trend strength, and Multi-Timeframe breakout signals."
+            "💡 **Momentum Engine:** Evaluates EMA Cluster Squeezes, 9/20/44 EMA Crossovers, RSI (50–75), ADX trend strength, and Multi-Timeframe breakout signals."
         )
 
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
@@ -1527,7 +1548,9 @@ if not df_raw.empty:
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
-        if sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
+        if sma_trend_filter == "🌀 EMA Cluster Squeeze & Breakout":
+            selected_strategy_label = "EMA Cluster Squeeze & Breakout"
+        elif sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
             selected_strategy_label = "9/20/44 Triple EMA Bullish Cross"
         elif sma_trend_filter == "Multi-Timeframe 20D Breakout":
             selected_strategy_label = "Multi-Timeframe 20D Breakout"

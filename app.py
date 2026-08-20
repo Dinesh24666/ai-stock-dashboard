@@ -21,7 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Full center alignment for all dataframe and data_editor columns */
+    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Top Header Bar Styling */
+    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* Trade Performance Summary Grid Styling */
+    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -142,37 +142,82 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- BROWSER AUDIO & OS DESKTOP PUSH ALERT ENGINE ---
+# --- BROWSER PERMISSIONS & ALERT ENGINE ---
+def render_alert_permission_button():
+    """Renders a button to prompt for system permissions and unlock audio context."""
+    perm_html = """
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; padding:10px 14px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;">
+        <span style="font-size:14px; font-weight:600; color:#166534;">🔔 Step 1: Enable Alerts</span>
+        <button id="perm-btn" onclick="enableAlerts()" style="background:#16a34a; color:#ffffff; border:none; border-radius:6px; padding:6px 14px; font-size:13px; font-weight:700; cursor:pointer;">
+            Enable Sound & Desktop Notifications
+        </button>
+        <span id="perm-status" style="font-size:12.5px; color:#15803d; font-weight:500;"></span>
+    </div>
+    <script>
+    function enableAlerts() {
+        // 1. Request Notification Permission
+        if ("Notification" in window) {
+            Notification.requestPermission().then(function(permission) {
+                var statusEl = document.getElementById("perm-status");
+                if (permission === "granted") {
+                    statusEl.innerText = "✅ Notifications & Sound Enabled!";
+                    new Notification("⚡ Stock Dashboard Alerts Active", {
+                        body: "You will receive desktop & audio alerts when limit prices are hit."
+                    });
+                } else {
+                    statusEl.innerText = "⚠️ Permission: " + permission;
+                }
+            });
+        }
+        // 2. Unlock Browser Audio Context
+        try {
+            var AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                var ctx = new AudioContext();
+                if (ctx.state === "suspended") {
+                    ctx.resume();
+                }
+                var osc = ctx.createOscillator();
+                var gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                gain.gain.setValueAtTime(0.01, ctx.currentTime);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.05);
+            }
+        } catch(e) {}
+    }
+    </script>
+    """
+    components.html(perm_html, height=55)
+
+
 def play_trigger_alert(ticker, buy_price):
+    """Fires Web Audio chime + Desktop Notification."""
     alert_html = f"""
     <script>
     (function() {
-        // 1. Request Desktop Push Notification
-        if ("Notification" in window) {{
-            if (Notification.permission === "granted") {{
-                new Notification("🎯 PULLBACK LIMIT HIT!", {{
-                    body: "{ticker} reached buy limit price ₹{buy_price:,.2f}. Trade Executed!",
+        // 1. Desktop Notification
+        try {{
+            if (window.top && window.top.Notification && window.top.Notification.permission === "granted") {{
+                new window.top.Notification("🎯 PULLBACK LIMIT HIT!", {{
+                    body: "{ticker} reached buy level ₹{buy_price:,.2f}. Trade Executed!",
                     icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
                 }});
-            }} else if (Notification.permission !== "denied") {{
-                Notification.requestPermission().then(function (permission) {{
-                    if (permission === "granted") {{
-                        new Notification("🎯 PULLBACK LIMIT HIT!", {{
-                            body: "{ticker} reached buy limit price ₹{buy_price:,.2f}. Trade Executed!"
-                        }});
-                    }}
+            }} else if ("Notification" in window && Notification.permission === "granted") {{
+                new Notification("🎯 PULLBACK LIMIT HIT!", {{
+                    body: "{ticker} reached buy level ₹{buy_price:,.2f}. Trade Executed!",
+                    icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
                 }});
             }}
-        }}
+        }} catch(e) {{}}
 
-        // 2. Play Web Audio API Triple-Beep Chime
+        // 2. Audio Chime
         try {{
             var AudioContext = window.AudioContext || window.webkitAudioContext;
             if (AudioContext) {{
                 var ctx = new AudioContext();
-                if (ctx.state === 'suspended') {{
-                    ctx.resume();
-                }}
+                if (ctx.state === 'suspended') ctx.resume();
                 function beep(freq, delay, duration) {{
                     setTimeout(function() {{
                         try {{
@@ -502,7 +547,7 @@ NSE_FULL_EQUITIES = [
     "LOYAL", "LT", "LTF", "LTIM", "LTTS", "LUMAXIND", "LUMAXTECH", "LUPIN",
     "LUXIND", "LXCHEM", "LYKALABS", "LYPSAGEMS", "M&M", "M&MFIN", "MAANALU",
     "MACPOWER", "MADHAV", "MADHUCON", "MADRASFERT", "MAGADSUGAR", "MAGNUM",
-    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHINDCIE",
+    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHinDCIE",
     "MAHLIFE", "MAHLOG", "MAHSCOOTER", "MAHSEAMLES", "MAITHANALL", "MALLCOM",
     "MALUPAPER", "MANAKALUCO", "MANAKCOAT", "MANAKSIA", "MANAKSTEEL", "MANALIPETC",
     "MANAPPURAM", "MANBA", "MANCREDIT", "MANGALAM", "MANGCHEFER", "MANGLMCEM",
@@ -1248,6 +1293,10 @@ if not df_raw.empty:
     # TAB 3: PULLBACK WATCHLIST & AUTO LIMIT TRIGGER
     with tab_pullback_watchlist:
         st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
+        
+        # Step 1: Render permission and audio unlock button
+        render_alert_permission_button()
+        
         st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 
         # Candidate dropdown synced with selected screener stock
@@ -1276,7 +1325,7 @@ if not df_raw.empty:
             with sub1:
                 qty_input = st.number_input("Quantity", value=50, min_value=1, step=1, key="wb_qty_val")
             with sub2:
-                strat_note = st.text_input("Strategy Note", value="Pullback Dip Entry near 20 EMA")
+                strat_note = st.text_input("Strategy Note", value="Pullback Dip Entry near 20 EMA Support")
             with btn_col:
                 st.write("")
                 st.write("")

@@ -762,11 +762,8 @@ sma_trend_filter = st.sidebar.selectbox(
         "⚡ 9/20/44 Triple EMA Bullish Cross",
         "🔥 Multi-Timeframe 20D Breakout",
         "Relative strength",
-        "Price > Both 50 & 200 SMA",
         "Golden Cross (50 SMA > 200 SMA)",
-        "Price > 50 SMA",
-        "Price > 200 SMA",
-    ],
+                     ],
 )
 
 enable_vol_multiplier = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)

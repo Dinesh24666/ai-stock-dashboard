@@ -449,7 +449,7 @@ NSE_FULL_EQUITIES = [
     "LOYAL", "LT", "LTF", "LTIM", "LTTS", "LUMAXIND", "LUMAXTECH", "LUPIN",
     "LUXIND", "LXCHEM", "LYKALABS", "LYPSAGEMS", "M&M", "M&MFIN", "MAANALU",
     "MACPOWER", "MADHAV", "MADHUCON", "MADRASFERT", "MAGADSUGAR", "MAGNUM",
-    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHINDCIE",
+    "MAHABANK", "MAHAPEXLTD", "MAHASTEEL", "MAHEPC", "MAHESHWARI", "MAHinDCIE",
     "MAHLIFE", "MAHLOG", "MAHSCOOTER", "MAHSEAMLES", "MAITHANALL", "MALLCOM",
     "MALUPAPER", "MANAKALUCO", "MANAKCOAT", "MANAKSIA", "MANAKSTEEL", "MANALIPETC",
     "MANAPPURAM", "MANBA", "MANCREDIT", "MANGALAM", "MANGCHEFER", "MANGLMCEM",
@@ -532,7 +532,7 @@ NSE_FULL_EQUITIES = [
     "SHREECARE", "SHREECEM", "SHREEPUSHK", "SHREERAMA", "SHRENIK", "SHREYANIND",
     "SHRIKRISH", "SHRIRAMFIN", "SHRIRAMPPS", "SHYAMCENT", "SHYAMMETL", "SICALLTD",
     "SIEMENS", "SIGACHI", "SIGIND", "SIGMA", "SIGNPOST", "SIL", "SILGO",
-    "SILINV", "SILLYMONKS", "SILVERTUC", "SIMBHALS", "SIMPLEXINF", "SINDHUTRAD",
+    "SILINV", "SILLYmonks", "SILVERTUC", "SIMBHALS", "SIMPLEXINF", "SINDHUTRAD",
     "SINTERCOM", "SIRCA", "SIS", "SITASHREE", "SIYSIL", "SJVN", "SKFINDIA",
     "SKIPPER", "SKMEGGPROD", "SMARTLINK", "SMCGLOBAL", "SMLISUZU", "SMLT",
     "SMSLIFE", "SMSPHARMA", "SNOWMAN", "SOBHA", "SOFTTECH", "SOLARA", "SOLARINDS",
@@ -589,6 +589,7 @@ NSE_FULL_EQUITIES = [
     "ZICOM", "ZODIAC", "ZODIACLOTH", "ZOTA", "ZUARI", "ZUARIGLOB", "ZUARIIND",
     "ZYDUSLIFE", "ZYDUSWELL"
 ]
+
 
 # Sector & Basket Presets
 UNIVERSE_PRESETS = {
@@ -727,7 +728,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
-# Screener Engine
+# Screener Engine (Robust Single & Multi-Stock Parser)
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -759,9 +760,16 @@ def fetch_screener_universe(ticker_list):
             try:
                 hist = pd.DataFrame()
                 if len(chunk) == 1:
-                    hist = batch_data.dropna(how="all")
-                elif hasattr(batch_data.columns, "levels") and ticker in batch_data.columns.levels[0]:
-                    hist = batch_data[ticker].dropna(how="all")
+                    if isinstance(batch_data.columns, pd.MultiIndex):
+                        if ticker in batch_data.columns.levels[0]:
+                            hist = batch_data[ticker].dropna(how="all")
+                        else:
+                            hist = batch_data.droplevel(0, axis=1).dropna(how="all")
+                    else:
+                        hist = batch_data.dropna(how="all")
+                else:
+                    if hasattr(batch_data.columns, "levels") and ticker in batch_data.columns.levels[0]:
+                        hist = batch_data[ticker].dropna(how="all")
 
                 if hist.empty or len(hist) < 20:
                     continue
@@ -931,7 +939,7 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-# Scan Data Handler
+# Scan Data Handler (Auto-Scans for Single Stock, or uses cached data for baskets)
 if scan_button or is_single_search or st.session_state["screener_data"].empty:
     with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)

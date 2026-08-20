@@ -11,7 +11,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 
-# 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
@@ -21,7 +20,6 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +36,6 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +82,6 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -142,7 +138,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- BROWSER PERMISSIONS & SOUND ALERT SYSTEM ---
+
 def render_alert_permission_banner():
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
@@ -245,7 +241,6 @@ def play_trigger_alert(ticker, buy_price):
     components.html(alert_html, height=0)
 
 
-# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
     index_items = [
@@ -307,6 +302,7 @@ def fetch_live_market_indices():
             {"name": "Crude Oil", "value": "$74.85", "change": "+0.45", "pct": "(+0.60%)", "is_pos": True, "arrow": "↗"},
         ]
     return results
+
 
 market_indices = fetch_live_market_indices()
 if market_indices:
@@ -684,7 +680,7 @@ NSE_FULL_EQUITIES = [
 UNIVERSE_PRESETS = {
     "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
-    "Nifty 50 Core": "NIFTSY_50" if False else "NIFTY_50",
+    "Nifty 50 Core": "NIFTY_50",
     "Banking & Financial Services": [
         "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
         "BAJFINANCE.NS", "BAJAJFINSV.NS", "LTF.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS",
@@ -716,7 +712,6 @@ def get_all_nse_symbols():
 
 
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
-
 is_single_search = selected_universe == "🔍 Single Stock Search"
 
 if is_single_search:
@@ -733,9 +728,9 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=total_found,
+        value=min(100, total_found),
         step=25,
-        help="Full 1,960+ NSE Listed Equities Universe.",
+        help="Scanning fewer stocks at once prevents Yahoo Finance connection timeouts.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -819,17 +814,22 @@ def fetch_screener_universe(ticker_list):
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
     progress_bar = st.progress(0, text="Fetching market data...")
-    chunk_size = 50
+    chunk_size = 25
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
     rows = []
     seen = set()
 
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
-        try:
-            batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False)
-        except Exception:
-            continue
+        
+        batch_data = None
+        for attempt in range(3):
+            try:
+                batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False, timeout=10)
+                if batch_data is not None and not batch_data.empty:
+                    break
+            except Exception:
+                time.sleep(1)
 
         if batch_data is None or batch_data.empty:
             continue
@@ -864,9 +864,6 @@ def fetch_screener_universe(ticker_list):
                 ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
                 ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
                 ema_44 = float(hist["Close"].ewm(span=44, adjust=False).mean().iloc[-1])
-                ema_50 = float(hist["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
-                ema_200 = float(hist["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
-                
                 sma_50 = float(hist["Close"].rolling(50).mean().iloc[-1]) if len(hist) >= 50 else curr_price
                 sma_200 = float(hist["Close"].rolling(200).mean().iloc[-1]) if len(hist) >= 200 else curr_price
                 
@@ -929,22 +926,24 @@ def fetch_screener_universe(ticker_list):
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
-                # REFINED SCORING LOGIC FOR TRUE BREAKOUTS
-                candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
-                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
-                
+                # ADJUSTED SCORING WITH EXTENSION PENALTY TO MATCH AI THESIS
                 score = 0
                 if is_20d_high_breakout: score += 25
                 if vol_surge_2x: score += 25
                 if curr_price > ema_9 > ema_20: score += 25
                 if adx_val >= 25: score += 25
+                
+                # If a stock is up more than 8% today, penalize score so it falls into Pullback category
+                if price_change_pct > 8.0:
+                    score -= 30
+
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25:
+                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25 and price_change_pct <= 8.0:
                     action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 60 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
+                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 40:
+                elif swing_composite >= 30:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
                     action_signal = "🔴 AVOID / WEAK"
@@ -1010,6 +1009,7 @@ def get_single_stock_history(ticker):
             auto_adjust=True,
             progress=False,
             threads=False,
+            timeout=10,
         )
 
         if df is not None and not df.empty:
@@ -1133,16 +1133,8 @@ if not df_raw.empty:
         table_data["From 52W High (%)"] = table_data["From 52W High (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
 
-        styled_table = table_data.style.set_properties(**{
-            "text-align": "center",
-            "font-weight": "500"
-        }).set_table_styles([
-            {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-            {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-        ])
-
         selection_event = st.dataframe(
-            styled_table,
+            table_data,
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
@@ -1742,7 +1734,7 @@ if not df_raw.empty:
                         parsed_exit_date = date.today()
                     new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
                 with ec5:
-                    new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy / Entry Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
+                    new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
 
                 if st.button("💾 Save Position Updates", key=f"save_btn_{edit_idx}"):
                     active_portfolio[edit_idx]["SL (₹)"] = new_sl_val
@@ -1766,30 +1758,7 @@ if not df_raw.empty:
             ]
             final_port_display = port_df[display_port_cols].copy()
 
-            def highlight_pnl_dark_green_red(val):
-                try:
-                    clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
-                    num = float(clean_str)
-                    if num > 0:
-                        return "color: #15803d; font-weight: 700;"
-                    elif num < 0:
-                        return "color: #dc2626; font-weight: 700;"
-                    else:
-                        return "color: #64748b; font-weight: normal;"
-                except Exception:
-                    return ""
-
-            styled_port = final_port_display.style.map(
-                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
-            ).set_properties(**{
-                "text-align": "center",
-                "font-weight": "500"
-            }).set_table_styles([
-                {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-            ])
-
-            st.dataframe(styled_port, use_container_width=True, hide_index=True)
+            st.dataframe(final_port_display, use_container_width=True, hide_index=True)
 
             if st.button("🗑️ Reset / Clear All Trades"):
                 st.session_state["paper_portfolio"] = []

@@ -138,6 +138,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 def render_alert_permission_banner():
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
@@ -302,6 +303,7 @@ def fetch_live_market_indices():
         ]
     return results
 
+
 market_indices = fetch_live_market_indices()
 if market_indices:
     ticker_html = '<div class="index-ticker-container">'
@@ -324,6 +326,7 @@ st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
 
+
 def load_json_file(filename):
     if os.path.exists(filename):
         try:
@@ -333,12 +336,14 @@ def load_json_file(filename):
             return []
     return []
 
+
 def save_json_file(filename, data):
     try:
         with open(filename, "w") as f:
             json.dump(data, f, indent=4)
     except Exception as e:
         st.error(f"Error saving to {filename}: {e}")
+
 
 if "paper_portfolio" not in st.session_state:
     st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
@@ -707,7 +712,6 @@ def get_all_nse_symbols():
 
 
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
-
 is_single_search = selected_universe == "🔍 Single Stock Search"
 
 if is_single_search:
@@ -810,7 +814,7 @@ def fetch_screener_universe(ticker_list):
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
     progress_bar = st.progress(0, text="Fetching market data...")
-    chunk_size = 25  # Reduced chunk size to prevent timeouts
+    chunk_size = 25
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
     rows = []
     seen = set()
@@ -1012,68 +1016,6 @@ def get_single_stock_history(ticker):
     except Exception:
         return pd.DataFrame()
 
-
-selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
-is_single_search = selected_universe == "🔍 Single Stock Search"
-
-if is_single_search:
-    raw_sym_input = st.sidebar.text_input("Enter NSE Symbol", value="ACE")
-    clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
-    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
-elif selected_universe == "Nifty 50 Core":
-    all_symbols = get_all_nse_symbols()
-    tickers_to_scan = all_symbols[:50]
-elif selected_universe == "All NSE Stocks (Full Listed)":
-    all_symbols = get_all_nse_symbols()
-    total_found = len(all_symbols)
-    scan_limit = st.sidebar.slider(
-        "Number of Stocks to Scan",
-        min_value=25,
-        max_value=total_found,
-        value=min(100, total_found),
-        step=25,
-        help="Scanning fewer stocks at once prevents Yahoo Finance connection timeouts.",
-    )
-    tickers_to_scan = all_symbols[:scan_limit]
-else:
-    tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
-
-apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False if is_single_search else True)
-order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 100))
-mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (1000, 2000000), 500)
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, 0.1)
-
-price_range = st.sidebar.slider("Stock Price (₹)", 0, 10000, (30, 3000), 10)
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
-min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
-max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
-
-sma_trend_filter = st.sidebar.selectbox(
-    "Moving Average Alignment",
-    [
-        "Any Trend",
-        "🌀 EMA Cluster Squeeze & Breakout",
-        "⚡ 9/20/44 Triple EMA Bullish Cross",
-        "🔥 Multi-Timeframe 20D Breakout",
-        "Relative strength",
-        "Price > Both 50 & 200 SMA",
-        "Golden Cross (50 SMA > 200 SMA)",
-        "Price > 50 SMA",
-        "Price > 200 SMA",
-    ],
-)
-
-enable_vol_multiplier = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
-vol_multiplier = st.sidebar.slider("Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier)
-
-scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
-if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
-    st.cache_data.clear()
-    st.session_state["ai_analysis_cache"] = {}
-    st.session_state["screener_data"] = pd.DataFrame()
-    gc.collect()
-    st.rerun()
 
 if scan_button or is_single_search or st.session_state["screener_data"].empty:
     with st.spinner("Analyzing market data..."):

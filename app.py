@@ -144,7 +144,6 @@ st.markdown(
 
 # --- BROWSER PERMISSIONS & SOUND ALERT SYSTEM ---
 def render_alert_permission_banner():
-    """Explicitly rendered visual button in the Pullback Tab with fallback audio."""
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
         <div style="display: flex; align-items: center; gap: 10px;">
@@ -201,10 +200,9 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    """Triggers Web Audio tone + OS notification alert."""
     alert_html = f"""
     <script>
-    (function() {
+    (function() {{
         try {{
             var notif = window.top.Notification || window.Notification;
             if (notif && notif.permission === "granted") {{
@@ -227,6 +225,7 @@ def play_trigger_alert(ticker, buy_price):
                             var gain = ctx.createGain();
                             osc.connect(gain);
                             gain.connect(ctx.destination);
+                            osc.type = "sine";
                             osc.frequency.value = freq;
                             gain.gain.setValueAtTime(0.4, ctx.currentTime);
                             gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
@@ -240,7 +239,7 @@ def play_trigger_alert(ticker, buy_price):
                 beep(1318.51, 360, 0.45);// E6
             }}
         }} catch(e) {{}}
-    })();
+    }})();
     </script>
     """
     components.html(alert_html, height=0)
@@ -520,8 +519,7 @@ NSE_FULL_EQUITIES = [
     "ISGEC", "ISMTLTD", "ITC", "ITDC", "ITDCEM", "ITI", "IVC", "IVP", "IXIGO",
     "IZMO", "J&KBANK", "JAGRAN", "JAGSNPHARM", "JAIBALAJI", "JAICORPLTD", "JAIPURKURT",
     "JAMNAAUTO", "JASH", "JAYAGROGN", "JAYBARMARU", "JAYNECOIND", "JAYSREETEA",
-    "JBCHEPHARM", "JBMA", "JCHAC", "JETACCC", "JETFREIGHT", "JETAIRWAYS", "JHS",
-    "JINDALCO", "JINDALPHOT", "JINDALPOLY", "JINDALSAW", "JINDALSTEL", "JINDRILL",
+    "JBCHEPHARM", "JBMA", "JCHAC", "JETACCC", "JETFREIGHT", "JETAIRWAYS", "JHS", "JINDALCO", "JINDALPHOT", "JINDALPOLY", "JINDALSAW", "JINDALSTEL", "JINDRILL",
     "JINDWORLD", "JIOFIN", "JISLDVREQS", "JISLJALEQS", "JITFINFRA", "JKCEMENT",
     "JKIL", "JKLAKSHMI", "JKPAPER", "JKTYRE", "JMA", "JMFINANCIL", "JNKINDIA",
     "JOCIL", "JPASSOCIAT", "JPINFRATEC", "JPPOWER", "JSL", "JSLL", "JSWENERGY",
@@ -559,134 +557,136 @@ NSE_FULL_EQUITIES = [
     "MBAPL", "MBECL", "MBLINFRA", "MCDOWELL-N", "MCL", "MCLEODRUSS", "MCX",
     "MEDANTA", "MEDICAMEQ", "MEDICO", "MEDPLUS", "MEGASOFT", "MEGASTAR",
     "MELSTAR", "MENONBE", "MEP", "METROBRAND", "METROPOLIS", "MFSL", "MGEL",
-    "MGL", "MHLXMIRU", "MICEL", "MIDHANI", "MINDACORP", "MINDTECK", "MIRCELECTR",
-    "MIRZAINT", "MITCON", "MITTAL", "MMFL", "MMP", "MMTC", "MODIRUBBER",
-    "MODISNME", "MODTHREAD", "MOHITIND", "MOIL", "MOKSH", "MOL", "MOLDTECH",
-    "MOLDTKPAC", "MONARCH", "MONTECARLO", "MORARJEE", "MOREPENLAB", "MOTHERSON",
-    "MOTILALOFS", "MOTISONS", "MOTORGEN", "MPHASIS", "MPSLTD", "MRF", "MRO-TEK",
-    "MRPL", "MSPL", "MSTCLTD", "MSUMI", "MTARTECH", "MTEDUCARE", "MTNL",
-    "MUKANDLTD", "MUKKA", "MUKTAARTS", "MUNJALAU", "MUNJALSHOW", "MURUDCERA",
-    "MUTHOOTCAP", "MUTHOOTFIN", "MUTHOOTMF", "MVL", "NACLIND", "NAGAFERT",
-    "NAGREEKCAP", "NAGREEKEXP", "NAHARCAP", "NAHARINDUS", "NAHARPOLY", "NAHARSPING",
-    "NAM-INDIA", "NARMADA", "NATCOPHARM", "NATHBIOGEN", "NATIONALUM", "NAUKRI",
-    "NAVA", "NAVINFLUOR", "NAVKARCORP", "NAVNETEDUL", "NAZARA", "NBCC", "NBIFIN",
-    "NCC", "NCLIND", "NDGL", "NDL", "NDLVENTURE", "NDRAUTO", "NDTV", "NECCLTD",
-    "NECLIFE", "NELCAST", "NELCO", "NEOGEN", "NESCO", "NESTLEIND", "NETWEB",
-    "NETWORK18", "NEULANDLAB", "NEWGEN", "NEXTMEDIA", "NFL", "NGIL", "NGLFINE",
-    "NH", "NHPC", "NIACL", "NIBL", "NIITLTD", "NIITMTS", "NILAINFRA", "NILASPACES",
-    "NILKAMAL", "NINSYS", "NIPPOBATRY", "NIRAJ", "NIRAJISPAT", "NITCO", "NITINSPIN",
-    "NITIRAJ", "NKIND", "NLCINDIA", "NMDC", "NMDCLTD", "NOCIL", "NOIDATOLL",
-    "NORBTEAEXP", "NORTHARC", "NOVAAGRI", "NRAIL", "NRBBEARING", "NRL", "NSIL",
-    "NSLNISP", "NTPC", "NUCLEUS", "NUPUR", "NUVAMA", "NUVOCO", "NYKAA", "OAL",
-    "OBCL", "OBEROIRLTY", "OCCL", "OFSS", "OIL", "OILCOUNTUB", "OLECTRA",
-    "OLIL", "OMAXAUTO", "OMAXE", "OMINFRAL", "OMKARCHEM", "ONELIFECAP", "ONEPOINT",
-    "ONGC", "ONMOBILE", "ONWARDTEC", "OPTIEMUS", "ORBTEXP", "ORCHPHARMA", "ORICONENT",
-    "ORIENTALTL", "ORIENTBELL", "ORIENTCEM", "ORIENTCER", "ORIENTELEC", "ORIENTGREEN",
-    "ORIENTHOT", "ORIENTLTD", "ORIENTPPR", "ORISSAMINE", "ORTINLAB", "OSIAHYPER",
-    "OSWALAGRO", "OSWALGREEN", "OSWALSEEDS", "PAGEIND", "PAISALO", "PAKKA",
-    "PALASHSECU", "PALREDTEC", "PANACEABIO", "PANACHE", "PANAMAPET", "PANSARI",
-    "PAR", "PARACABLES", "PARADEEP", "PARAGMILK", "PARAS", "PARASDEFNS", "PARASPETRO",
-    "PARSVNATH", "PASUPTAC", "PATANJALI", "PATELENG", "PATINTLOG", "PAVNAIND",
-    "PAYTM", "PCBL", "PCHFL", "PCJEWELLER", "PDMJEPAPER", "PDSL", "PEARLPOLY",
-    "PEL", "PENIND", "PENINLAND", "PERSISTENT", "PETRONET", "PFC", "PFIZER",
-    "PFOCUS", "PFS", "PGEL", "PGHH", "PGHL", "PGIL", "PHOENIXLTD", "PIDILITIND",
-    "PIIND", "PILANIINVS", "PILITA", "PIONEEREMB", "PITTIENG", "PIXTRANS", "PKTEA",
-    "PLASTIBLEN", "PLATIND", "PLAZACABLE", "PNB", "PNBGILTS", "PNBHOUSING",
-    "PNC", "PNCINFRA", "PODDARHOUS", "PODDARMENT", "POKARNA", "POLICYBZR",
-    "POLYCAB", "POLYMED", "POLYPLEX", "PONNIERODE", "POONAWALLA", "POWERGRID",
-    "POWERINDIA", "POWERMECH", "PPAP", "PPL", "PPLPHARMA", "PRAENG", "PRAJIND",
-    "PRAKASH", "PRAKASHSTL", "PRAXIS", "PRECAM", "PRECOT", "PRECWIRE", "PREMEXPLN",
-    "PREMIER", "PREMIERENE", "PREMIERPOL", "PREMEXPLOS", "PRESTIGE", "PRICOLLTD",
-    "PRIMESECU", "PRINCEPIPE", "PRITI", "PRITIKAUTO", "PRIVISCL", "PROZONER",
-    "PRSMJOHNSN", "PRUDENT", "PRUDMOUNT", "PSB", "PSPPROJECT", "PTC", "PTCIL",
-    "PTL", "PUNJABCHEM", "PUNJLLOYD", "PURVA", "PVRINOX", "PVP", "QUESS",
-    "QUICKHEAL", "RADAAN", "RADHIKAJWE", "RADICO", "RADIOCITY", "RAILTEL",
-    "RAIN", "RAINBOW", "RAJESHEXPO", "RAJMET", "RAJRATAN", "RAJRILTD", "RAJSREESUG",
-    "RAJTV", "RALLIS", "RAMANEWS", "RAMAPHO", "RAMASTEEL", "RAMCOCEM", "RAMCOIND",
-    "RAMCOSYS", "RAMKY", "RANASUG", "RANEENGINE", "RANEHOLDIN", "RATNAMANI",
-    "RATNAVEER", "RAYMOND", "RAYMONDLSL", "RBA", "RBL", "RBLBANK", "RCF",
-    "RECLTD", "REDINGTON", "REFEX", "REGENCERAM", "RELAXO", "RELIABLE", "RELIANCE",
-    "RELIGARE", "RELINFRA", "REMSONSIND", "RENUKA", "REPCOHOME", "REPRO", "RESPONIND",
-    "RGL", "RHIM", "RHL", "RICOAUTO", "RIIL", "RITESHIN", "RITES", "RKDL",
-    "RKFORGE", "RKSWAMY", "RML", "ROHLTD", "ROLEXRINGS", "ROLLT", "ROLTA",
-    "ROML", "ROSSARI", "ROSSELLIND", "ROTO", "ROUTE", "RPGLIFE", "RPOWER",
-    "RPPINFRA", "RPPL", "RPSGVENT", "RRKABEL", "RSSOFTWARE", "RSWM", "RSYSTEMS",
-    "RTNINDIA", "RTNPOWER", "RUBYMILLS", "RUCHINFRA", "RUCHIRA", "RUPA", "RUSHIL",
-    "RUSTOMJEE", "RVHL", "RVNL", "S&SPOWER", "SABEVENTS", "SABTN", "SADBHAV",
-    "SADBHINFR", "SADHNANIQ", "SAFARI", "SAGARDEEP", "SAGCEM", "SAH", "SAHANA",
-    "SAHARA", "SAHASRA", "SAHYADRI", "SAIL", "SAKAR", "SAKHTISUG", "SAKSOFT",
-    "SAKUMA", "SALASAR", "SALONA", "SALSTEEL", "SALZITEC", "SAMBHAAV", "SAMBHI",
-    "SAMHI", "SAMMAANCAP", "SAMPRE", "SANCO", "SANDESH", "SANDHAR", "SANDUMA",
-    "SANGAMIND", "SANGHIIND", "SANGHVIMOV", "SANGINITA", "SANOFICONS", "SANOFI",
-    "SANSERA", "SANSTAR", "SANWARIA", "SAPPHIRE", "SARDAEN", "SAREGAMA", "SARLAPOLY",
-    "SARVESHWAR", "SASKEN", "SASTASUNDR", "SATIA", "SATINDLTD", "SATIN", "SBCL",
-    "SBC", "SBFC", "SBICARD", "SBILIFE", "SBIN", "SCAPDVR", "SCHAEFFLER",
-    "SCHAND", "SCHNEIDER", "SCI", "SCILAL", "SCPL", "SDBL", "SEAMECLTD", "SECURCRED",
-    "SECURKLOUD", "SEJALLTD", "SELAN", "SELMC", "SEMAC", "SENCO", "SEPC",
-    "SEQUENT", "SERVOTECH", "SESHAPAPER", "SETCO", "SETUINFRA", "SEYAIND", "SFL",
-    "SGIL", "SGL", "SHAH", "SHAHALLOYS", "SHAILY", "SHAKTIPUMP", "SHALBY",
-    "SHALPAINTS", "SHANKARA", "SHANTIGEAR", "SHARDACROP", "SHARDAMOTR", "SHAREINDIA",
-    "SHEKHAWATI", "SHEMAROO", "SHILPAMED", "SHIVALIK", "SHIVAMAUTO", "SHIVAMILLS",
-    "SHIVATEX", "SHK", "SHOPERSTOP", "SHRADHA", "SHREDIGCEM", "SHREEAUTO",
-    "SHREECARE", "SHREECEM", "SHREEPUSHK", "SHREERAMA", "SHRENIK", "SHREYANIND",
-    "SHRIKRISH", "SHRIRAMFIN", "SHRIRAMPPS", "SHYAMCENT", "SHYAMMETL", "SICALLTD",
-    "SIEMENS", "SIGACHI", "SIGIND", "SIGMA", "SIGNPOST", "SIL", "SILGO",
-    "SILINV", "SILLYMONKS", "SILVERTUC", "SIMBHALS", "SIMPLEXINF", "SINDHUTRAD",
-    "SINTERCOM", "SIRCA", "SIS", "SITASHREE", "SIYSIL", "SJVN", "SKFINDIA",
-    "SKIPPER", "SKMEGGPROD", "SMARTLINK", "SMCGLOBAL", "SMLISUZU", "SMLT",
-    "SMSLIFE", "SMSPHARMA", "SNOWMAN", "SOBHA", "SOFTTECH", "SOLARA", "SOLARINDS",
-    "SOMANYCERA", "SOMATEX", "SOMICONVEY", "SONACOMS", "SONAMLTD", "SONATSOFTW",
-    "SOTL", "SOUTHBANK", "SOUTHWEST", "SPAL", "SPANDANA", "SPARC", "SPCENET",
-    "SPECIALITY", "SPENCERS", "SPENTEX", "SPIC", "SPLIL", "SPLPETRO", "SPMLINFRA",
-    "SPORTKING", "SRD", "SREEL", "SRF", "SRGHFL", "SRHHYPOLTD", "SRM", "SRPL",
-    "SSDL", "SSFL", "SSWL", "STANLEY", "STAR", "STARCEMENT", "STARHEALTH",
-    "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND",
-    "STEL", "STERTOOLS", "STLTECH", "STOVEKRAFT", "STYLAMIND", "STYLEBAAZA",
-    "SUBCITY", "SUBEXLTD", "SUBROS", "SUDARSCHEM", "SUKHJITS", "SULA", "SUMICHEM",
-    "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD",
-    "SUNDRMBRAK", "SUNDRMFAST", "SUNFLAG", "SUNPHARMA", "SUNTECK", "SUNTV",
-    "SUPERHOUSE", "SUPERSPIN", "SUPRAJIT", "SUPREMEENG", "SUPREMEIND", "SUPRIYA",
-    "SURAJEST", "SURAJLTD", "SURANASOL", "SURANAT&P", "SURYALAXMI", "SURYAROSNI",
-    "SURYODAY", "SUTLEJTEX", "SUULD", "SUVEN", "SUVENPHAR", "SUVIDHAA", "SUZLON",
-    "SVLL", "SVPGLOB", "SWANENERGY", "SWARAJENG", "SWELECTES", "SWSOLAR", "SYMPHONY",
-    "SYNCOMF", "SYNGENE", "SYRMA", "TAINWALCHM", "TAJGVK", "TAKE", "TALBROAUT",
-    "TANFACIND", "TANLA", "TARC", "TARAPUR", "TARMAT", "TARSONS", "TASTYBITE",
-    "TATACHEM", "TATACOMM", "TATACONSUM", "TATAELXSI", "TATAINVEST", "TATAMOTORS",
-    "TATAMTRDVR", "TATAPOWER", "TATASTEEL", "TATATECH", "TBZ", "TCI", "TCIEXP",
-    "TCNSBRANDS", "TCPLPACK", "TCS", "TDPOWERSYS", "TEAMGRI", "TEAMLEASE",
-    "TECHIN", "TECHM", "TECHNOE", "TECILCHEM", "TEGA", "TEJASNET", "TEMBO",
-    "TERASOFT", "TEXINFRA", "TEXMOPIPES", "TEXRAIL", "TFCILTD", "TFL", "TGI",
-    "THANGAMAYL", "THEINVEST", "THEJO", "THEMISMED", "THERMAX", "THOMASCOOK",
-    "THOMASCOTT", "THYROCARE", "TI", "TIIL", "TIINDIA", "TIJARIA", "TIL",
-    "TIMESCAN", "TIMESGTY", "TIMETECHNO", "TIMKEN", "TINPLATE", "TIPSFILMS",
-    "TIPSMUSIC", "TIRUMALCHM", "TIRUPATIFL", "TITAGARH", "TITAN", "TMB", "TNIDRIL",
-    "TNPL", "TNTELE", "TOKYOPLAST", "TOLINS", "TORNTPHARM", "TORNTPOWER",
-    "TOTAL", "TOUCHWOOD", "TPHQ", "TPLPLASTEH", "TREEHOUSE", "TREJHARA", "TRENT",
-    "TRF", "TRIDENT", "TRIGYN", "TRIL", "TRITURBINE", "TRIVENI", "TRU", "TTKHLTCARE",
-    "TTKPRESTIG", "TTL", "TTML", "TV18BRDCST", "TVSELECT", "TVSMOTOR", "TVSSRICHAK",
-    "TVTODAY", "TVVISION", "TWL", "UBL", "UCAL", "UCOBANK", "UDS", "UFLEX",
-    "UFO", "UGARSUGAR", "UGROCAP", "UJAAS", "UJJIVAN", "UJJIVANSFB", "ULTRACEMCO",
-    "UMAEXPORTS", "UMANGDAIRY", "UMESLTD", "UNICHEMLAB", "UNIDT", "UNIENTER",
-    "UNIHEALTH", "UNIINFO", "UNIONBANK", "UNIPARTS", "UNITDSPR", "UNITECH",
-    "UNITEDTEA", "UNIVASTU", "UNIVCABLES", "UNIVPHOTO", "UNOMINDA", "UPL",
-    "URAVI", "URJA", "USHAMART", "USK", "UTIAMC", "UTKARSHBNK", "UTTAMSUGAR",
-    "VADILALIND", "VAIBHAVGBL", "VAISHALI", "VAKRANGEE", "VALIANTORG", "VARDHACRLC",
-    "VARDMNPOLY", "VARROC", "VASCONEQ", "VASWANI", "VBL", "VCL", "VEDL",
-    "VENKEYS", "VENUSPIPES", "VENUSREM", "VERANDA", "VERTOZ", "VESUVIUS",
-    "VETO", "VGUARD", "VHL", "VIDHIING", "VIJAYA", "VIKASLIFE", "VIKASPPROP",
-    "VIKASECO", "VIKRAM", "VIMTALABS", "VINATIORGA", "VINDHYATEL", "VINEETLAB",
-    "VINNY", "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
-    "VISAKAIND", "VISASTEEL", "VISHAL", "VISHNU", "VISHWARAJ", "VIVIDHA",
-    "VIVIANA", "VLEGOV", "VLSFINANCE", "VMART", "VOLTAMP", "VOLTAS", "VR",
-    "VRL", "VRLLOG", "VSSL", "VSTIND", "VSTTILLERS", "VTL", "WABAG", "WALCHANNAG",
-    "WANBURY", "WATERBASE", "WEALTH", "WEBELSOLAR", "WEIZMANIND", "WEL", "WELCORP",
-    "WELENT", "WELINV", "WELSPUNLIV", "WENDT", "WESTLIFE", "WHEELS", "WHIRLPOOL",
-    "WILLAMAGOR", "WINDLAS", "WINDMACHIN", "WINSOME", "WIPL", "WIPRO", "WOCKPHARMA",
-    "WONDERLA", "WORTH", "WSI", "WSTCSTPAPR", "XCHANGING", "XELPMOC", "XPROINDIA",
-    "YAARI", "YASHO", "YASTEEL", "YATRA", "YESBANK", "YUKEN", "ZEEL", "ZEELEARN",
-    "ZEEMEDIA", "ZENITHEXPO", "ZENITHSTL", "ZENSARTECH", "ZENTEC", "ZFSTEERING",
-    "ZICOM", "ZODIAC", "ZODIACLOTH", "ZOTA", "ZUARI", "ZUARIGLOB", "ZUARIIND",
-    "ZYDUSLIFE", "ZYDUSWELL"
+    * [
+        "MGL", "MHLXMIRU", "MICEL", "MIDHANI", "MINDACORP", "MINDTECK", "MIRCELECTR",
+        "MIRZAINT", "MITCON", "MITTAL", "MMFL", "MMP", "MMTC", "MODIRUBBER",
+        "MODISNME", "MODTHREAD", "MOHITIND", "MOIL", "MOKSH", "MOL", "MOLDTECH",
+        "MOLDTKPAC", "MONARCH", "MONTECARLO", "MORARJEE", "MOREPENLAB", "MOTHERSON",
+            "MOTILALOFS", "MOTISONS", "MOTORGEN", "MPHASIS", "MPSLTD", "MRF", "MRO-TEK",
+        "MRPL", "MSPL", "MSTCLTD", "MSUMI", "MTARTECH", "MTEDUCARE", "MTNL",
+        "MUKANDLTD", "MUKKA", "MUKTAARTS", "MUNJALAU", "MUNJALSHOW", "MURUDCERA",
+        "MUTHOOTCAP", "MUTHOOTFIN", "MUTHOOTMF", "MVL", "NACLIND", "NAGAFERT",
+        "NAGREEKCAP", "NAGREEKEXP", "NAHARCAP", "NAHARINDUS", "NAHARPOLY", "NAHARSPING",
+        "NAM-INDIA", "NARMADA", "NATCOPHARM", "NATHBIOGEN", "NATIONALUM", "NUKRI",
+        "NAVA", "NAVINFLUOR", "NAVKARCORP", "NAVNETEDUL", "NAZARA", "NBCC", "NBIFIN",
+        "NCC", "NCLIND", "NDGL", "NDL", "NDLVENTURE", "NDRAUTO", "NDTV", "NECCLTD",
+        "NECLIFE", "NELCAST", "NELCO", "NEOGEN", "NESCO", "NESTLEIND", "NETWEB",
+        "NETWORK18", "NEULANDLAB", "NEWGEN", "NEXTMEDIA", "NFL", "NGIL", "NGLFINE",
+        "NH", "NHPC", "NIACL", "NIBL", "NIITLTD", "NIITMTS", "NILAINFRA", "NILASPACES",
+        "NILKAMAL", "NINSYS", "NIPPOBATRY", "NIRAJ", "NIRAJISPAT", "NITCO", "NITINSPIN",
+        "NITIRAJ", "NKIND", "NLCINDIA", "NMDC", "NMDCLTD", "NOCIL", "NOIDATOLL",
+        "NORBTEAEXP", "NORTHARC", "NOVAAGRI", "NRAIL", "NRBBEARING", "NRL", "NSIL",
+        "NSLNISP", "NTPC", "NUCLEUS", "NUPUR", "NUVAMA", "NUVOCO", "NYKAA", "OAL",
+        "OBCL", "OBEROIRLTY", "OCCL", "OFSS", "OIL", "OILCOUNTUB", "OLECTRA",
+        "OLIL", "OMAXAUTO", "OMAXE", "OMINFRAL", "OMKARCHEM", "ONELIFECAP", "ONEPOINT",
+        "ONGC", "ONMOBILE", "ONWARDTEC", "OPTIEMUS", "ORBTEXP", "ORCHPHARMA", "ORICONENT",
+        "ORIENTALTL", "ORIENTBELL", "ORIENTCEM", "ORIENTCER", "ORIENTELEC", "ORIENTGREEN",
+        "ORIENTHOT", "ORIENTLTD", "ORIENTPPR", "ORISSAMINE", "ORTINLAB", "OSIAHYPER",
+        "OSWALAGRO", "OSWALGREEN", "OSWALSEEDS", "PAGEIND", "PAISALO", "PAKKA",
+        "PALASHSECU", "PALREDTEC", "PANACEABIO", "PANACHE", "PANAMAPET", "PANSARI",
+        "PAR", "PARACABLES", "PARADEEP", "PARAGMILK", "PARAS", "PARASDEFNS", "PARASPETRO",
+        "PARSVNATH", "PASUPTAC", "PATANJALI", "PATELENG", "PATINTLOG", "PAVNAIND",
+        "PAYTM", "PCBL", "PCHFL", "PCJEWELLER", "PDMJEPAPER", "PDSL", "PEARLPOLY",
+        "PEL", "PENIND", "PENINLAND", "PERSISTENT", "PETRONET", "PFC", "PFIZER",
+        "PFOCUS", "PFS", "PGEL", "PGHH", "PGHL", "PGIL", "PHOENIXLTD", "PIDILITIND",
+        "PIIND", "PILANIINVS", "PILITA", "PIONEEREMB", "PITTIENG", "PIXTRANS", "PKTEA",
+        "PLASTIBLEN", "PLATIND", "PLAZACABLE", "PNB", "PNBGILTS", "PNBHOUSING",
+        "PNC", "PNCINFRA", "PODDARHOUS", "PODDARMENT", "POKARNA", "POLICYBZR",
+        "POLYCAB", "POLYMED", "POLYPLEX", "PONNIERODE", "POONAWALLA", "POWERGRID",
+        "POWERINDIA", "POWERMECH", "PPAP", "PPL", "PPLPHARMA", "PRAENG", "PRAJIND",
+        "PRAKASH", "PRAKASHSTL", "PRAXIS", "PRECAM", "PRECOT", "PRECWIRE", "PREMEXPLN",
+        "PREMIER", "PREMIERENE", "PREMIERPOL", "PREMEXPLOS", "PRESTIGE", "PRICOLLTD",
+        "PRIMESECU", "PRINCEPIPE", "PRITI", "PRITIKAUTO", "PRIVISCL", "PROZONER",
+        "PRSMJOHNSN", "PRUDENT", "PRUDMOUNT", "PSB", "PSPPROJECT", "PTC", "PTCIL",
+        "PTL", "PUNJABCHEM", "PUNJLLOYD", "PURVA", "PVRINOX", "PVP", "QUESS",
+        "QUICKHEAL", "RADAAN", "RADHIKAJWE", "RADICO", "RADIOCITY", "RAILTEL",
+        "RAIN", "RAINBOW", "RAJESHEXPO", "RAJMET", "RAJRATAN", "RAJRILTD", "RAJSREESUG",
+        "RAJTV", "RALLIS", "RAMANEWS", "RAMAPHO", "RAMASTEEL", "RAMCOCEM", "RAMCOIND",
+        "RAMCOSYS", "RAMKY", "RANASUG", "RANEENGINE", "RANEHOLDIN", "RATNAMANI",
+        "RATNAVEER", "RAYMOND", "RAYMONDLSL", "RBA", "RBL", "RBLBANK", "RCF",
+        "RECLTD", "REDINGTON", "REFEX", "REGENCERAM", "RELAXO", "RELIABLE", "RELIANCE",
+        "RELIGARE", "RELINFRA", "REMSONSIND", "RENUKA", "REPCOHOME", "REPRO", "RESPONIND",
+        "RGL", "RHIM", "RHL", "RICOAUTO", "RIIL", "RITESHIN", "RITES", "RKDL",
+        "RKFORGE", "RKSWAMY", "RML", "ROHLTD", "ROLEXRINGS", "ROLLT", "ROLTA",
+        "ROML", "ROSSARI", "ROSSELLIND", "ROTO", "ROUTE", "RPGLIFE", "RPOWER",
+        "RPPINFRA", "RPPL", "RPSGVENT", "RRKABEL", "RSSOFTWARE", "RSWM", "RSYSTEMS",
+        "RTNINDIA", "RTNPOWER", "RUBYMILLS", "RUCHINFRA", "RUCHIRA", "RUPA", "RUSHIL",
+        "RUSTOMJEE", "RVHL", "RVNL", "S&SPOWER", "SABEVENTS", "SABTN", "SADBHAV",
+        "SADBHINFR", "SADHNANIQ", "SAFARI", "SAGARDEEP", "SAGCEM", "SAH", "SAHANA",
+        "SAHARA", "SAHASRA", "SAHYADRI", "SAIL", "SAKAR", "SAKHTISUG", "SAKSOFT",
+        "SAKUMA", "SALASAR", "SALONA", "SALSTEEL", "SALZITEC", "SAMBHAAV", "SAMBHI",
+        "SAMHI", "SAMMAANCAP", "SAMPRE", "SANCO", "SANDESH", "SANDHAR", "SANDUMA",
+        "SANGAMIND", "SANGHIIND", "SANGHVIMOV", "SANGINITA", "SANOFICONS", "SANOFI",
+        "SANSERA", "SANSTAR", "SANWARIA", "SAPPHIRE", "SARDAEN", "SAREGAMA", "SARLAPOLY",
+        "SARVESHWAR", "SASKEN", "SASTASUNDR", "SATIA", "SATINDLTD", "SATIN", "SBCL",
+        "SBC", "SBFC", "SBICARD", "SBILIFE", "SBIN", "SCAPDVR", "SCHAEFFLER",
+        "SCHAND", "SCHNEIDER", "SCI", "SCILAL", "SCPL", "SDBL", "SEAMECLTD", "SECURCRED",
+        "SECURKLOUD", "SEJALLTD", "SELAN", "SELMC", "SEMAC", "SENCO", "SEPC",
+        "SEQUENT", "SERVOTECH", "SESHAPAPER", "SETCO", "SETUINFRA", "SEYAIND", "SFL",
+        "SGIL", "SGL", "SHAH", "SHAHALLOYS", "SHAILY", "SHAKTIPUMP", "SHALBY",
+        "SHALPAINTS", "SHANKARA", "SHANTIGEAR", "SHARDACROP", "SHARDAMOTR", "SHAREINDIA",
+        "SHEKHAWATI", "SHEMAROO", "SHILPAMED", "SHIVALIK", "SHIVAMAUTO", "SHIVAMILLS",
+        "SHIVATEX", "SHK", "SHOPERSTOP", "SHRADHA", "SHREDIGCEM", "SHREEAUTO",
+        "SHREECARE", "SHREECEM", "SHREEPUSHK", "SHREERAMA", "SHRENIK", "SHREYANIND",
+        "SHRIKRISH", "SHRIRAMFIN", "SHRIRAMPPS", "SHYAMCENT", "SHYAMMETL", "SICALLTD",
+        "SIEMENS", "SIGACHI", "SIGIND", "SIGMA", "SIGNPOST", "SIL", "SILGO",
+        "SILINV", "SILLYMONKS", "SILVERTUC", "SIMBHALS", "SIMPLEXINF", "SINDHUTRAD",
+        "SINTERCOM", "SIRCA", "SIS", "SITASHREE", "SIYSIL", "SJVN", "SKFINDIA",
+        "SKIPPER", "SKMEGGPROD", "SMARTLINK", "SMCGLOBAL", "SMLISUZU", "SMLT",
+        "SMSLIFE", "SMSPHARMA", "SNOWMAN", "SOBHA", "SOFTTECH", "SOLARA", "SOLARINDS",
+        "SOMANYCERA", "SOMATEX", "SOMICONVEY", "SONACOMS", "SONAMLTD", "SONATSOFTW",
+        "SOTL", "SOUTHBANK", "SOUTHWEST", "SPAL", "SPANDANA", "SPARC", "SPCENET",
+        "SPECIALITY", "SPENCERS", "SPENTEX", "SPIC", "SPLIL", "SPLPETRO", "SPMLINFRA",
+        "SPORTKING", "SRD", "SREEL", "SRF", "SRGHFL", "SRHHYPOLTD", "SRM", "SRPL",
+        "SSDL", "SSFL", "SSWL", "STANLEY", "STAR", "STARCEMENT", "STARHEALTH",
+        "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND",
+        "STEL", "STERTOOLS", "STLTECH", "STOVEKRAFT", "STYLAMIND", "STYLEBAAZA",
+        "SUBCITY", "SUBEXLTD", "SUBROS", "SUDARSCHEM", "SUKHJITS", "SULA", "SUMICHEM",
+        "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD",
+        "SUNDRMBRAK", "SUNDRMFAST", "SUNFLAG", "SUNPHARMA", "SUNTECK", "SUNTV",
+        "SUPERHOUSE", "SUPERSPIN", "SUPRAJIT", "SUPREMEENG", "SUPREMEIND", "SUPRIYA",
+        "SURAJEST", "SURAJLTD", "SURANASOL", "SURANAT&P", "SURYALAXMI", "SURYAROSNI",
+        "SURYODAY", "SUTLEJTEX", "SUULD", "SUVEN", "SUVENPHAR", "SUVIDHAA", "SUZLON",
+        "SVLL", "SVPGLOB", "SWANENERGY", "SWARAJENG", "SWELECTES", "SWSOLAR", "SYMPHONY",
+        "SYNCOMF", "SYNGENE", "SYRMA", "TAINWALCHM", "TAJGVK", "TAKE", "TALBROAUT",
+        "TANFACIND", "TANLA", "TARC", "TARAPUR", "TARMAT", "TARSONS", "TASTYBITE",
+        "TATACHEM", "TATACOMM", "TATACONSUM", "TATAELXSI", "TATAINVEST", "TATAMOTORS",
+        "TATAMTRDVR", "TATAPOWER", "TATASTEEL", "TATATECH", "TBZ", "TCI", "TCIEXP",
+        "TCNSBRANDS", "TCPLPACK", "TCS", "TDPOWERSYS", "TEAMGRI", "TEAMLEASE",
+        "TECHIN", "TECHM", "TECHNOE", "TECILCHEM", "TEGA", "TEJASNET", "TEMBO",
+        "TERASOFT", "TEXINFRA", "TEXMOPIPES", "TEXRAIL", "TFCILTD", "TFL", "TGI",
+        "THANGAMAYL", "THEINVEST", "THEJO", "THEMISMED", "THERMAX", "THOMASCOOK",
+        "THOMASCOTT", "THYROCARE", "TI", "TIIL", "TIINDIA", "TIJARIA", "TIL",
+        "TIMESCAN", "TIMESGTY", "TIMETECHNO", "TIMKEN", "TINPLATE", "TIPSFILMS",
+        "TIPSMUSIC", "TIRUMALCHM", "TIRUPATIFL", "TITAGARH", "TITAN", "TMB", "TNIDRIL",
+        "TNPL", "TNTELE", "TOKYOPLAST", "TOLINS", "TORNTPHARM", "TORNTPOWER",
+        "TOTAL", "TOUCHWOOD", "TPHQ", "TPLPLASTEH", "TREEHOUSE", "TREJHARA", "TRENT",
+        "TRF", "TRIDENT", "TRIGYN", "TRIL", "TRITURBINE", "TRIVENI", "TRU", "TTKHLTCARE",
+        "TTKPRESTIG", "TTL", "TTML", "TV18BRDCST", "TVSELECT", "TVSMOTOR", "TVSSRICHAK",
+        "TVTODAY", "TVVISION", "TWL", "UBL", "UCAL", "UCOBANK", "UDS", "UFLEX",
+        "UFO", "UGARSUGAR", "UGROCAP", "UJAAS", "UJJIVAN", "UJJIVANSFB", "ULTRACEMCO",
+        "UMAEXPORTS", "UMANGDAIRY", "UMESLTD", "UNICHEMLAB", "UNIDT", "UNIENTER",
+        "UNIHEALTH", "UNIINFO", "UNIONBANK", "UNIPARTS", "UNITDSPR", "UNITECH",
+        "UNITEDTEA", "UNIVASTU", "UNIVCABLES", "UNIVPHOTO", "UNOMINDA", "UPL",
+        "URAVI", "URJA", "USHAMART", "USK", "UTIAMC", "UTKARSHBNK", "UTTAMSUGAR",
+        "VADILALIND", "VAIBHAVGBL", "VAISHALI", "VAKRANGEE", "VALIANTORG", "VARDHACRLC",
+        "VARDMNPOLY", "VARROC", "VASCONEQ", "VASWANI", "VBL", "VCL", "VEDL",
+        "VENKEYS", "VENUSPIPES", "VENUSREM", "VERANDA", "VERTOZ", "VESUVIUS",
+        "VETO", "VGUARD", "VHL", "VIDHIING", "VIJAYA", "VIKASLIFE", "VIKASPPROP",
+        "VIKASECO", "VIKRAM", "VIMTALABS", "VINATIORGA", "VINDHYATEL", "VINEETLAB",
+        "VINNY", "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
+        "VISAKAIND", "VISASTEEL", "VISHAL", "VISHNU", "VISHWARAJ", "VIVIDHA",
+        "VIVIANA", "VLEGOV", "VLSFINANCE", "VMART", "VOLTAMP", "VOLTAS", "VR",
+        "VRL", "VRLLOG", "VSSL", "VSTIND", "VSTTILLERS", "VTL", "WABAG", "WALCHANNAG",
+        "WANBURY", "WATERBASE", "WEALTH", "WEBELSOLAR", "WEIZMANIND", "WEL", "WELCORP",
+        "WELENT", "WELINV", "WELSPUNLIV", "WENDT", "WESTLIFE", "WHEELS", "WHIRLPOOL",
+        "WILLAMAGOR", "WINDLAS", "WINDMACHIN", "WINSOME", "WIPL", "WIPRO", "WOCKPHARMA",
+        "WONDERLA", "WORTH", "WSI", "WSTCSTPAPR", "XCHANGING", "XELPMOC", "XPROINDIA",
+        "YAARI", "YASHO", "YASTEEL", "YATRA", "YESBANK", "YUKEN", "ZEEL", "ZEELEARN",
+        "ZEEMEDIA", "ZENITHEXPO", "ZENITHSTL", "ZENSARTECH", "ZENTEC", "ZFSTEERING",
+        "ZICOM", "ZODIAC", "ZODIACLOTH", "ZOTA", "ZUARI", "ZUARIGLOB", "ZUARIIND",
+        "ZYDUSLIFE", "ZYDUSWELL"
+    ]
 ]
 
 # Sector & Basket Presets
@@ -725,7 +725,6 @@ def get_all_nse_symbols():
 
 
 # Sidebar Universe Selection
-st.sidebar.header("🎯 Universe Selection")
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
 
 is_single_search = selected_universe == "🔍 Single Stock Search"
@@ -753,14 +752,12 @@ else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
 # Sidebar Filters
-st.sidebar.header("📊 Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False if is_single_search else True)
 order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
 roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 100))
 mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (1000, 2000000), 500)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, 0.1)
 
-st.sidebar.header("📈 Technical Filters")
 price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (30, 3000), 10)
 rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
 min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
@@ -784,7 +781,6 @@ sma_trend_filter = st.sidebar.selectbox(
 enable_vol_multiplier = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
 vol_multiplier = st.sidebar.slider("Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier)
 
-# Scan Execution and Cache Controls
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     st.cache_data.clear()
@@ -794,7 +790,6 @@ if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     st.rerun()
 
 
-# Technical Helpers
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -827,7 +822,6 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
-# Screener Engine
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -917,7 +911,6 @@ def fetch_screener_universe(ticker_list):
                     ob_mcap_ratio = round(est_revenue / max(1.0, mcap_cr), 2)
                     is_order_book_gt_mcap = bool(ob_mcap_ratio >= 1.0)
 
-                # Setups
                 cluster_high = max(ema_9, ema_20, ema_44, sma_50)
                 cluster_low = min(ema_9, ema_20, ema_44, sma_50)
                 cluster_spread = ((cluster_high - cluster_low) / cluster_high * 100.0) if cluster_high > 0 else 10.0
@@ -925,7 +918,6 @@ def fetch_screener_universe(ticker_list):
 
                 is_triple_cross = bool(ema_9 > ema_20 > ema_44 and 30 <= curr_price <= 3000 and mcap_cr >= 1000)
 
-                # Multi-Timeframe 20D Breakout Setup
                 weekly_df = hist.resample("W").agg({"High": "max", "Low": "min", "Close": "last"}).dropna()
                 if len(weekly_df) >= 5:
                     w_close = float(weekly_df["Close"].iloc[-1])
@@ -939,7 +931,6 @@ def fetch_screener_universe(ticker_list):
                     w_close > w_ema20 and w_rsi >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_1_5x and curr_price >= (w_52h * 0.75)
                 )
 
-                # Relative Strength
                 c_20d = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
                 c_125d = float(hist["Close"].iloc[-126]) if len(hist) >= 126 else float(hist["Close"].iloc[0])
                 is_relative_strength = bool(
@@ -1010,7 +1001,6 @@ def fetch_screener_universe(ticker_list):
     return pd.DataFrame(rows)
 
 
-# Single Stock Detail History
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_single_stock_history(ticker):
     try:
@@ -1038,7 +1028,6 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-# Scan Data Handler (Auto-Scans for Single Stock, or uses cached data for baskets)
 if scan_button or is_single_search or st.session_state["screener_data"].empty:
     with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
@@ -1104,7 +1093,6 @@ if not df_raw.empty:
         ]
     )
 
-    # TAB 1: SCREENER
     with tab_screener:
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
         with col_title:
@@ -1172,7 +1160,6 @@ if not df_raw.empty:
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
             st.session_state["selected_ticker"] = f"{clicked_ticker_sym}.NS"
 
-    # TAB 2: DEEP DIVE & CHART
     with tab_deepdive:
         stock_options = sorted_results_df["Raw_Ticker"].tolist() if not sorted_results_df.empty else df_raw["Raw_Ticker"].tolist()
         current_choice = st.session_state.get("selected_ticker", stock_options[0] if stock_options else "ACE.NS")
@@ -1291,16 +1278,13 @@ if not df_raw.empty:
                                     for err in error_logs:
                                         st.code(err)
 
-    # TAB 3: PULLBACK WATCHLIST & AUTO LIMIT TRIGGER
     with tab_pullback_watchlist:
         st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
         
-        # Explicit Banner for one-click notification & sound unlock
         render_alert_permission_banner()
         
         st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 
-        # Candidate dropdown synced with selected screener stock
         pullback_candidates = df_raw["Raw_Ticker"].tolist()
         curr_selected = st.session_state.get("selected_ticker", pullback_candidates[0] if pullback_candidates else "ACE.NS")
         default_wb_idx = pullback_candidates.index(curr_selected) if curr_selected in pullback_candidates else 0
@@ -1372,7 +1356,6 @@ if not df_raw.empty:
                     except Exception:
                         curr_ltp = None
 
-                # Strict Trigger Evaluation + Sound Alarm
                 if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
                     status_str = "⚡ Triggered / Bought"
                     item["Status"] = status_str
@@ -1436,7 +1419,6 @@ if not df_raw.empty:
                     st.session_state["pullback_watchlist"] = updated_watchlist
                     save_json_file(WATCHLIST_FILE, updated_watchlist)
 
-                    # Remove any prematurely triggered paper trades for this symbol
                     st.session_state["paper_portfolio"] = [
                         p for p in st.session_state["paper_portfolio"]
                         if not (p.get("Ticker") == rearm_sym and "Pullback" in p.get("Remarks", ""))
@@ -1454,7 +1436,6 @@ if not df_raw.empty:
                     st.session_state["pullback_watchlist"] = updated_watchlist
                     save_json_file(WATCHLIST_FILE, updated_watchlist)
 
-                    # Remove any linked pullback trades
                     st.session_state["paper_portfolio"] = [
                         p for p in st.session_state["paper_portfolio"]
                         if not (p.get("Ticker") == removed_sym and "Pullback" in p.get("Remarks", ""))
@@ -1465,12 +1446,10 @@ if not df_raw.empty:
         else:
             st.info("Watchlist is empty. Add a pullback setup above.")
 
-    # TAB 4: COMPLETE RESTORED PAPER TRADING
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
         active_portfolio = st.session_state.get("paper_portfolio", [])
 
-        # 1. Order Placement Form (Synced with screener selection)
         with st.expander("➕ Execute New Paper Trade (Custom SL, Target & Remarks)", expanded=False):
             col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
             with col_add1:
@@ -1733,7 +1712,7 @@ if not df_raw.empty:
                         parsed_exit_date = datetime.strptime(str(existing_exit_date_str), "%Y-%m-%d").date() if existing_exit_date_str and existing_exit_date_str != "-" else date.today()
                     except Exception:
                         parsed_exit_date = date.today()
-                    new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
+                        new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
                 with ec5:
                     new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
 
@@ -1779,7 +1758,7 @@ if not df_raw.empty:
                 "font-weight": "500"
             }).set_table_styles([
                 {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+                {"selector": "dt", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
             ])
 
             st.dataframe(styled_port, use_container_width=True, hide_index=True)

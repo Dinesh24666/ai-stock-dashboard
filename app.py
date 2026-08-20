@@ -1266,9 +1266,16 @@ if not df_raw.empty:
                 if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
                     status_str = "⚡ Triggered / Bought"
                     item["Status"] = status_str
-                    st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="⚡")
-                    st.success(f"🔔 **Pullback Triggered:** {clean_sym} reached buy level ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
 
+                    # 1. Play Audio Alarm & Confetti
+                    play_trigger_sound()
+                    st.balloons()
+
+                    # 2. Display Toast & Success Alerts
+                    st.toast(f"🚨 ORDER EXECUTED: {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="🎯")
+                    st.success(f"🔔 **PULLBACK HIT:** {clean_sym} reached limit price ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
+
+                    # 3. Add to Paper Trading
                     trade_record = {
                         "id": f"{sym}_{int(time.time())}",
                         "Date": str(date.today()),
@@ -1287,55 +1294,6 @@ if not df_raw.empty:
                     if not any(p.get("id") == trade_record["id"] for p in st.session_state["paper_portfolio"]):
                         st.session_state["paper_portfolio"].append(trade_record)
                         save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-
-                item["Status"] = status_str
-                updated_watchlist.append(item)
-
-                dist_str = f"{((curr_ltp - target_buy) / target_buy * 100.0):+.2f}% away" if (curr_ltp and "Waiting" in status_str) else ("Executed ✅" if "Triggered" in status_str else "Fetching...")
-
-                display_rows.append({
-                    "Date Added": item.get("Date Added", str(date.today())),
-                    "Ticker": clean_sym,
-                    "Current LTP (₹)": f"₹{curr_ltp:,.2f}" if curr_ltp else "-",
-                    "Target Buy (₹)": f"₹{target_buy:,.2f}",
-                    "Distance to Entry": dist_str,
-                    "SL (₹)": f"₹{sl_price:,.2f}",
-                    "TGT (₹)": f"₹{tgt_price:,.2f}",
-                    "Qty": qty,
-                    "Status": status_str,
-                    "Strategy": item.get("Strategy", "Pullback Buy"),
-                })
-
-            st.session_state["pullback_watchlist"] = updated_watchlist
-            save_json_file(WATCHLIST_FILE, updated_watchlist)
-            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
-
-            m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
-            with m_col1:
-                del_choices = {f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
-                sel_del = st.selectbox("Select Watchlist Item:", list(del_choices.keys()), key="del_wb_select")
-            with m_col2:
-                st.write("")
-                st.write("")
-                if st.button("🔄 Re-Arm / Reset to Waiting", use_container_width=True):
-                    d_idx = del_choices[sel_del]
-                    updated_watchlist[d_idx]["Status"] = "⏳ Waiting for Pullback"
-                    st.session_state["pullback_watchlist"] = updated_watchlist
-                    save_json_file(WATCHLIST_FILE, updated_watchlist)
-                    st.success("Re-armed position back to Waiting!")
-                    st.rerun()
-            with m_col3:
-                st.write("")
-                st.write("")
-                if st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
-                    d_idx = del_choices[sel_del]
-                    updated_watchlist.pop(d_idx)
-                    st.session_state["pullback_watchlist"] = updated_watchlist
-                    save_json_file(WATCHLIST_FILE, updated_watchlist)
-                    st.success("Deleted from watchlist!")
-                    st.rerun()
-        else:
-            st.info("Watchlist is empty. Add a pullback setup above.")
 
     # TAB 4: COMPLETE RESTORED PAPER TRADING
     with tab_watchlist:

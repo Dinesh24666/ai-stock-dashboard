@@ -231,29 +231,33 @@ st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 
 # --- PERSISTENT STORAGE HELPERS ---
 PORTFOLIO_FILE = "portfolio.json"
+WATCHLIST_FILE = "watchlist.json"
 
 
-def load_portfolio():
-    if os.path.exists(PORTFOLIO_FILE):
+def load_json_file(filename):
+    if os.path.exists(filename):
         try:
-            with open(PORTFOLIO_FILE, "r") as f:
+            with open(filename, "r") as f:
                 return json.load(f)
         except Exception:
             return []
     return []
 
 
-def save_portfolio(portfolio_data):
+def save_json_file(filename, data):
     try:
-        with open(PORTFOLIO_FILE, "w") as f:
-            json.dump(portfolio_data, f, indent=4)
+        with open(filename, "w") as f:
+            json.dump(data, f, indent=4)
     except Exception as e:
-        st.error(f"Error saving portfolio: {e}")
+        st.error(f"Error saving to {filename}: {e}")
 
 
 # Initialize session states
 if "paper_portfolio" not in st.session_state:
-    st.session_state["paper_portfolio"] = load_portfolio()
+    st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
+
+if "pullback_watchlist" not in st.session_state:
+    st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
 
 if "ai_analysis_cache" not in st.session_state:
     st.session_state["ai_analysis_cache"] = {}
@@ -844,10 +848,10 @@ def fetch_screener_universe(ticker_list):
                 if hist.empty or len(hist) < 20:
                     continue
 
-                # Remove duplicate index stamps if live intraday candle is appended
+                # Clean duplicate index stamps
                 hist = hist[~hist.index.duplicated(keep="last")]
 
-                # Accurate Previous Close & Price Change Calculation
+                # Accurate Previous Close Calculation
                 if len(hist) >= 3 and hist.index[-1].date() == hist.index[-2].date():
                     curr_price = float(hist["Close"].iloc[-1])
                     prev_close = float(hist["Close"].iloc[-3])
@@ -925,13 +929,11 @@ def fetch_screener_universe(ticker_list):
 
                 # -------------------------------------------------------------
                 # SETUP 1: 🌀 EMA CLUSTER SQUEEZE & BREAKOUT (PINCH SETUP)
-                # All EMAs/SMAs tightly clustered within ~4% band and Price freshly breaks above
                 # -------------------------------------------------------------
                 cluster_high = max(ema_9, ema_20, ema_44, sma_50)
                 cluster_low = min(ema_9, ema_20, ema_44, sma_50)
                 cluster_spread_pct = ((cluster_high - cluster_low) / cluster_high * 100.0) if cluster_high > 0 else 10.0
                 
-                # Check if clustered (tight squeeze <= 4.5% spread) and price is breaking out above all
                 price_above_all_cluster = (curr_price >= cluster_high) and (curr_price >= ema_200 * 0.96)
                 fresh_cross_recent = (curr_price >= prev_close) and (curr_price >= ema_9)
                 is_cluster_squeeze_match = bool(
@@ -1228,10 +1230,11 @@ if not df_raw.empty:
 
     filtered_df = filtered_df.drop_duplicates(subset=["Ticker"]).reset_index(drop=True)
 
-    tab_screener, tab_deepdive, tab_watchlist = st.tabs(
+    tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
         [
             "📊 Screener & Momentum Signals",
             "🔬 Single Stock Chart & AI Thesis",
+            "🎯 Pullback Watchlist & Order Trigger",
             "💼 Paper Trading Portfolio",
         ]
     )
@@ -1544,7 +1547,205 @@ if not df_raw.empty:
                     f"Historical price data for {selected_stock} is temporarily unavailable."
                 )
 
-    # --- TAB 3: WATCHLIST & PAPER TRADING ---
+    # --- TAB 3: PULLBACK WATCHLIST & AUTO LIMIT TRIGGER ---
+    with tab_pullback_watchlist:
+        st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
+        st.info("💡 **Pullback Entry Engine:** Add stocks on Buy/Pullback signal with a custom entry limit price **below Current Market Price (LTP)**. The system continuously tracks live prices and automatically triggers/executes paper trades when the stock hits your desired dip price.")
+
+        # Pullback stocks from screener
+        pullback_candidates = (
+            df_raw[df_raw["Signal"].str.contains("BUY", na=False)]["Raw_Ticker"].tolist()
+            if not df_raw.empty
+            else ["ACE.NS"]
+        )
+        if not pullback_candidates and not df_raw.empty:
+            pullback_candidates = df_raw["Raw_Ticker"].tolist()
+
+        with st.expander("➕ Add Stock to Pullback Watchlist (Set Entry Below LTP)", expanded=False):
+            cw1, cw2, cw3, cw4, cw5 = st.columns([1.2, 1, 1, 1, 1])
+            with cw1:
+                selected_wb_stock = st.selectbox("Stock Candidate:", pullback_candidates, key="wb_stock_select")
+                matched_wb = df_raw[df_raw["Raw_Ticker"] == selected_wb_stock] if not df_raw.empty else pd.DataFrame()
+                wb_ltp = float(matched_wb["Price (₹)"].iloc[0]) if not matched_wb.empty else 100.0
+                wb_ema20 = float(matched_wb["20 EMA"].iloc[0]) if not matched_wb.empty else round(wb_ltp * 0.97, 2)
+            with cw2:
+                st.metric("Current Market Price (LTP)", f"₹{wb_ltp:,.2f}")
+            with cw3:
+                target_buy_price = st.number_input(
+                    "Target Pullback Entry (₹)",
+                    value=round(wb_ema20, 2),
+                    min_value=0.1,
+                    step=0.5,
+                    help="Desired entry price below LTP (e.g. 20 EMA or support dip level)",
+                )
+            with cw4:
+                wb_sl_price = st.number_input(
+                    "Stop Loss (SL ₹)",
+                    value=round(target_buy_price * 0.95, 2),
+                    min_value=0.0,
+                    step=0.5,
+                )
+            with cw5:
+                wb_tgt_price = st.number_input(
+                    "Target (TGT ₹)",
+                    value=round(target_buy_price * 1.10, 2),
+                    min_value=0.0,
+                    step=0.5,
+                )
+
+            cwb_sub1, cwb_sub2, cwb_btn = st.columns([1, 2.5, 1])
+            with cwb_sub1:
+                wb_qty = st.number_input("Quantity", value=50, min_value=1, step=1, key="wb_qty_input")
+            with cwb_sub2:
+                wb_notes = st.text_input("Strategy Note", value="Pullback Dip Entry near 20 EMA Support")
+            with cwb_btn:
+                st.write("")
+                st.write("")
+                if st.button("📥 Add to Watchlist", use_container_width=True):
+                    raw_sym = selected_wb_stock if selected_wb_stock.endswith(".NS") else f"{selected_wb_stock}.NS"
+                    clean_sym = raw_sym.replace(".NS", "").replace(".BO", "")
+                    new_item = {
+                        "id": f"wb_{clean_sym}_{int(time.time())}",
+                        "Date Added": str(date.today()),
+                        "Ticker": clean_sym,
+                        "Raw_Ticker": raw_sym,
+                        "Target Buy (₹)": float(target_buy_price),
+                        "SL (₹)": float(wb_sl_price),
+                        "TGT (₹)": float(wb_tgt_price),
+                        "Qty": int(wb_qty),
+                        "Strategy": wb_notes.strip(),
+                        "Status": "⏳ Waiting for Pullback",
+                    }
+                    st.session_state["pullback_watchlist"].append(new_item)
+                    save_json_file(WATCHLIST_FILE, st.session_state["pullback_watchlist"])
+                    st.success(f"Added {clean_sym} to Watchlist (Target Entry: ₹{target_buy_price:.2f})!")
+                    st.rerun()
+
+        # Watchlist Live Price Scan & Auto-Trigger Engine
+        active_watchlist = st.session_state.get("pullback_watchlist", [])
+        if active_watchlist:
+            wb_held_symbols = list({item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS" for item in active_watchlist})
+            wb_live_prices = {}
+            try:
+                wb_data = yf.download(
+                    tickers=" ".join(wb_held_symbols),
+                    period="5d",
+                    interval="1d",
+                    group_by="ticker",
+                    threads=False,
+                    auto_adjust=True,
+                    progress=False,
+                )
+                for sym in wb_held_symbols:
+                    if len(wb_held_symbols) == 1:
+                        wb_live_prices[sym] = round(float(wb_data["Close"].dropna().iloc[-1]), 2)
+                    elif hasattr(wb_data.columns, "levels") and sym in wb_data.columns.levels[0]:
+                        c_series = wb_data[sym]["Close"].dropna()
+                        if not c_series.empty:
+                            wb_live_prices[sym] = round(float(c_series.iloc[-1]), 2)
+            except Exception:
+                pass
+
+            updated_watchlist = []
+            executed_any_order = False
+            watchlist_display_rows = []
+
+            for w_idx, item in enumerate(active_watchlist):
+                sym = item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS"
+                clean_sym = item.get("Ticker", sym.replace(".NS", ""))
+                target_buy = float(item.get("Target Buy (₹)", 0.0))
+                sl_val = float(item.get("SL (₹)", 0.0))
+                tgt_val = float(item.get("TGT (₹)", 0.0))
+                qty_val = int(item.get("Qty", 1))
+                curr_market_p = wb_live_prices.get(sym, target_buy)
+                status_str = item.get("Status", "⏳ Waiting for Pullback")
+
+                # Auto-Execute Trigger when LTP reaches or dips below target buy price
+                if "Waiting" in status_str and curr_market_p <= target_buy:
+                    status_str = "⚡ Triggered / Bought"
+                    item["Status"] = status_str
+                    item["Execution_Date"] = str(date.today())
+                    st.toast(f"🎯 PULLBACK HIT! Limit order for {clean_sym} executed at ₹{curr_market_p:.2f}!", icon="⚡")
+                    st.success(f"🔔 **Pullback Triggered:** {clean_sym} hit limit buy level ₹{target_buy:,.2f} (LTP: ₹{curr_market_p:,.2f}). Auto-executed into Paper Trading Portfolio!")
+
+                    # Auto add to Paper Trading Portfolio
+                    trade_record = {
+                        "id": f"{sym}_{int(time.time())}",
+                        "Date": str(date.today()),
+                        "Exit_Date": "",
+                        "Ticker": clean_sym,
+                        "Buy Price (₹)": curr_market_p,
+                        "SL (₹)": sl_val,
+                        "TGT (₹)": tgt_val,
+                        "Exit Price (₹)": 0.0,
+                        "Qty": qty_val,
+                        "Remarks": f"Pullback Auto-Entry ({item.get('Strategy', 'Dip Buy')})",
+                        "Status": "🟢 Open",
+                        "Invested (₹)": round(curr_market_p * qty_val, 2),
+                        "Raw_Ticker": sym,
+                    }
+                    if not any(p.get("id") == trade_record["id"] for p in st.session_state["paper_portfolio"]):
+                        st.session_state["paper_portfolio"].append(trade_record)
+                        save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+                    executed_any_order = True
+
+                item["Status"] = status_str
+                updated_watchlist.append(item)
+
+                dist_to_entry_pct = ((curr_market_p - target_buy) / target_buy * 100.0) if target_buy > 0 else 0.0
+                dist_display = f"{dist_to_entry_pct:+.2f}% away" if "Waiting" in status_str else "Executed ✅"
+
+                watchlist_display_rows.append({
+                    "Date Added": item.get("Date Added", str(date.today())),
+                    "Ticker": clean_sym,
+                    "Current LTP (₹)": f"₹{curr_market_p:,.2f}",
+                    "Target Buy (₹)": f"₹{target_buy:,.2f}",
+                    "Distance to Entry": dist_display,
+                    "SL (₹)": f"₹{sl_val:,.2f}",
+                    "TGT (₹)": f"₹{tgt_val:,.2f}",
+                    "Qty": qty_val,
+                    "Status": status_str,
+                    "Strategy": item.get("Strategy", "Pullback Buy"),
+                    "_dist_num": dist_to_entry_pct,
+                })
+
+            st.session_state["pullback_watchlist"] = updated_watchlist
+            save_json_file(WATCHLIST_FILE, updated_watchlist)
+
+            df_watchlist = pd.DataFrame(watchlist_display_rows)
+            st.dataframe(
+                df_watchlist[[
+                    "Date Added", "Ticker", "Current LTP (₹)", "Target Buy (₹)",
+                    "Distance to Entry", "SL (₹)", "TGT (₹)", "Qty", "Status", "Strategy"
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Watchlist Management Row
+            col_wb_del, col_wb_clr = st.columns([3, 1])
+            with col_wb_del:
+                del_choices = {f"{it.get('Ticker')} (Target Entry: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
+                sel_to_del = st.selectbox("Select Watchlist Item to Delete:", list(del_choices.keys()), key="del_wb_item_select")
+                if st.button("🗑️ Remove Selected Item"):
+                    del_i = del_choices[sel_to_del]
+                    removed_sym = updated_watchlist[del_i].get("Ticker")
+                    updated_watchlist.pop(del_i)
+                    st.session_state["pullback_watchlist"] = updated_watchlist
+                    save_json_file(WATCHLIST_FILE, updated_watchlist)
+                    st.success(f"Removed {removed_sym} from Watchlist!")
+                    st.rerun()
+            with col_wb_clr:
+                st.write("")
+                st.write("")
+                if st.button("🗑️ Clear Entire Watchlist"):
+                    st.session_state["pullback_watchlist"] = []
+                    save_json_file(WATCHLIST_FILE, [])
+                    st.rerun()
+        else:
+            st.info("Your Pullback Watchlist is empty. Select a pullback candidate above and set your desired entry price.")
+
+    # --- TAB 4: WATCHLIST & PAPER TRADING ---
     with tab_watchlist:
         st.subheader("💼 Paper Trading Portfolio & Risk Manager")
 
@@ -1655,7 +1856,7 @@ if not df_raw.empty:
                     if "paper_portfolio" not in st.session_state:
                         st.session_state["paper_portfolio"] = []
                     st.session_state["paper_portfolio"].append(new_trade)
-                    save_portfolio(st.session_state["paper_portfolio"])
+                    save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
                     st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']} ({remarks.strip()})!")
                     st.rerun()
 
@@ -1683,7 +1884,7 @@ if not df_raw.empty:
                         deleted_ticker = active_portfolio[del_idx].get("Ticker", "Trade")
                         active_portfolio.pop(del_idx)
                         st.session_state["paper_portfolio"] = active_portfolio
-                        save_portfolio(active_portfolio)
+                        save_json_file(PORTFOLIO_FILE, active_portfolio)
                         st.success(f"Successfully deleted {deleted_ticker} position!")
                         st.rerun()
 
@@ -1732,7 +1933,7 @@ if not df_raw.empty:
                             })
 
                         st.session_state["paper_portfolio"] = clean_restored
-                        save_portfolio(clean_restored)
+                        save_json_file(PORTFOLIO_FILE, clean_restored)
                         st.success("Portfolio successfully restored!")
                 except Exception as e:
                     st.error(f"Failed to restore backup: {e}")
@@ -1987,7 +2188,7 @@ if not df_raw.empty:
                     else:
                         active_portfolio[edit_idx]["Exit_Date"] = ""
                         active_portfolio[edit_idx]["Exit Price (₹)"] = 0.0
-                    save_portfolio(active_portfolio)
+                    save_json_file(PORTFOLIO_FILE, active_portfolio)
                     st.success("Position successfully updated!")
                     st.rerun()
 
@@ -2042,7 +2243,7 @@ if not df_raw.empty:
 
             if st.button("🗑️ Reset / Clear All Trades"):
                 st.session_state["paper_portfolio"] = []
-                save_portfolio([])
+                save_json_file(PORTFOLIO_FILE, [])
                 st.rerun()
         else:
             st.info("No active paper trades. Upload your backup file or place a trade above.")

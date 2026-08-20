@@ -634,10 +634,10 @@ NSE_FULL_EQUITIES = [
     "SPECIALITY", "SPENCERS", "SPENTEX", "SPIC", "SPLIL", "SPLPETRO", "SPMLINFRA",
     "SPORTKING", "SRD", "SREEL", "SRF", "SRGHFL", "SRHHYPOLTD", "SRM", "SRPL",
     "SSDL", "SSFL", "SSWL", "STANLEY", "STAR", "STARCEMENT", "STARHEALTH",
-    "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND",
+    "STARPAPER", "STARTECK", "STCINDIA", "STEELCAS", "STEELCITY", "STEELXIND", 
     "STEL", "STERTOOLS", "STLTECH", "STOVEKRAFT", "STYLAMIND", "STYLEBAAZA",
     "SUBCITY", "SUBEXLTD", "SUBROS", "SUDARSCHEM", "SUKHJITS", "SULA", "SUMICHEM",
-    "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD",
+    "SUMIT", "SUMMITSEC", "SUNCLAY", "SUNDARAM", "SUNDARMFIN", "SUNDARMHLD", 
     "SUNDRMBRAK", "SUNDRMFAST", "SUNFLAG", "SUNPHARMA", "SUNTECK", "SUNTV",
     "SUPERHOUSE", "SUPERSPIN", "SUPRAJIT", "SUPREMEENG", "SUPREMEIND", "SUPRIYA",
     "SURAJEST", "SURAJLTD", "SURANASOL", "SURANAT&P", "SURYALAXMI", "SURYAROSNI",
@@ -669,7 +669,7 @@ NSE_FULL_EQUITIES = [
     "VENKEYS", "VENUSPIPES", "VENUSREM", "VERANDA", "VERTOZ", "VESUVIUS",
     "VETO", "VGUARD", "VHL", "VIDHIING", "VIJAYA", "VIKASLIFE", "VIKASPPROP",
     "VIKASECO", "VIKRAM", "VIMTALABS", "VINATIORGA", "VINDHYATEL", "VINEETLAB",
-    "VINNY", "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
+    "VINYLINDIA", "VIPCLOTHNG", "VIPIND", "VIPULLTD", "VIRINCHI",
     "VISAKAIND", "VISASTEEL", "VISHAL", "VISHNU", "VISHWARAJ", "VIVIDHA",
     "VIVIANA", "VLEGOV", "VLSFINANCE", "VMART", "VOLTAMP", "VOLTAS", "VR",
     "VRL", "VRLLOG", "VSSL", "VSTIND", "VSTTILLERS", "VTL", "WABAG", "WALCHANNAG",
@@ -932,22 +932,20 @@ def fetch_screener_universe(ticker_list):
                 )
 
                 candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
-close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
-score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
+                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
+                score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
+                
+                # Extension penalty to match AI thesis verdict on overextended spikes (> 8% gain)
+                is_overextended = price_change_pct > 8.0
+                if is_overextended:
+                    score -= 30
 
-# --- EXTENSION PENALTY TO MATCH AI THESIS ---
-# If a stock spikes excessively in a single day (e.g. > 8% like upper-circuit stocks), 
-# it's overextended. We penalize its score and require price to be closer to the 9/20 EMA for a true breakout.
-is_overextended = price_change_pct > 8.0 or dist_52w_high == 0.0 and price_change_pct > 5.0
-if is_overextended:
-    score -= 35
+                swing_composite = float(np.clip(score, 10, 100))
 
-swing_composite = float(np.clip(score, 10, 100))
-
-if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
-    action_signal = "🟢 STRONG BUY (Breakout)"
-elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
-    action_signal = "🟡 BUY / PULLBACK"
+                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
+                    action_signal = "🟢 STRONG BUY (Breakout)"
+                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
+                    action_signal = "🟡 BUY / PULLBACK"
                 elif swing_composite >= 40:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
@@ -1298,7 +1296,7 @@ if not df_raw.empty:
                             st.success("Pullback watchlist successfully restored!")
                             st.rerun()
                         else:
-                            st.error("Uploaded file does not contain valid pullback watchlist entries. (Make sure to upload a watchlist backup file, not a portfolio file).")
+                            st.error("Uploaded file does not contain valid pullback watchlist entries.")
                 except Exception as e:
                     st.error(f"Failed to restore watchlist backup: {e}")
 
@@ -1771,30 +1769,7 @@ if not df_raw.empty:
             ]
             final_port_display = port_df[display_port_cols].copy()
 
-            def highlight_pnl_dark_green_red(val):
-                try:
-                    clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
-                    num = float(clean_str)
-                    if num > 0:
-                        return "color: #15803d; font-weight: 700;"
-                    elif num < 0:
-                        return "color: #dc2626; font-weight: 700;"
-                    else:
-                        return "color: #64748b; font-weight: normal;"
-                except Exception:
-                    return ""
-
-            styled_port = final_port_display.style.map(
-                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
-            ).set_properties(**{
-                "text-align": "center",
-                "font-weight": "500"
-            }).set_table_styles([
-                {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-            ])
-
-            st.dataframe(styled_port, use_container_width=True, hide_index=True)
+            st.dataframe(final_port_display, use_container_width=True, hide_index=True)
 
             if st.button("🗑️ Reset / Clear All Trades"):
                 st.session_state["paper_portfolio"] = []
@@ -1802,5 +1777,3 @@ if not df_raw.empty:
                 st.rerun()
         else:
             st.info("No active paper trades. Execute a trade above.")
-else:
-    st.info("👈 Click **'🚀 Run Screener Scan'** in the sidebar to begin.")

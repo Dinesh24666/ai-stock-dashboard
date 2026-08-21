@@ -760,9 +760,9 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=total_found,
+        value=min(100, total_found),
         step=25,
-        help="Full 1,960+ NSE Listed Equities Universe.",
+        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -788,15 +788,14 @@ sma_trend_filter = st.sidebar.selectbox(
         "🔥 Multi-Timeframe 20D Breakout",
         "Relative strength",
         "Golden Cross (50 SMA > 200 SMA)",
-        "⚡ Weekly MACD Crossover, Stochastics & RSI(7)",
     ],
 )
 
-enable_vol_multiplier = st.sidebar.checkbox("Volume > 10D SMA Multiplier", value=False)
-vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier)
+enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", value=False)
+vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_10d)
 
 enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
-vol_multiplier = st.sidebar.slider("Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_20d)
+vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_20d)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
@@ -847,17 +846,22 @@ def fetch_screener_universe(ticker_list):
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
     progress_bar = st.progress(0, text="Fetching market data...")
-    chunk_size = 50
+    chunk_size = 25
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
     rows = []
     seen = set()
 
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
-        try:
-            batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False)
-        except Exception:
-            continue
+        
+        batch_data = None
+        for attempt in range(3):
+            try:
+                batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False, timeout=10)
+                if batch_data is not None and not batch_data.empty:
+                    break
+            except Exception:
+                time.sleep(1)
 
         if batch_data is None or batch_data.empty:
             continue
@@ -904,50 +908,12 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # Weekly Setup Calculations (MACD 21,13,9 | Fast Stochastic %K 4,1 | RSI 7 | ATR 7)
-                weekly_df = hist.resample("W").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
-                is_weekly_setup_match = False
-                if len(weekly_df) >= 30:
-                    w_close = weekly_df["Close"]
-                    w_high = weekly_df["High"]
-                    w_low = weekly_df["Low"]
-
-                    # Weekly MACD (21, 13, 9)
-                    w_exp1 = w_close.ewm(span=13, adjust=False).mean()
-                    w_exp2 = w_close.ewm(span=21, adjust=False).mean()
-                    w_macd_line = w_exp1 - w_exp2
-                    w_macd_signal = w_macd_line.ewm(span=9, adjust=False).mean()
-                    w_macd_cross = (w_macd_line.iloc[-1] > w_macd_signal.iloc[-1]) and (w_macd_line.iloc[-2] <= w_macd_signal.iloc[-2])
-
-                    # Weekly Fast Stochastic %K (4, 1)
-                    lowest_low = w_low.rolling(window=4).min()
-                    highest_high = w_high.rolling(window=4).max()
-                    stoch_k = 100 * ((w_close - lowest_low) / (highest_high - lowest_low + 1e-9))
-                    w_stoch_cross = (stoch_k.iloc[-1] > 80) and (stoch_k.iloc[-2] <= 80)
-
-                    # Weekly RSI (7)
-                    w_delta = w_close.diff()
-                    w_gain = w_delta.where(w_delta > 0, 0.0)
-                    w_loss = -w_delta.where(w_delta < 0, 0.0)
-                    w_avg_g = w_gain.ewm(alpha=1.0 / 7, min_periods=7, adjust=False).mean()
-                    w_avg_l = w_loss.ewm(alpha=1.0 / 7, min_periods=7, adjust=False).mean()
-                    w_rs = w_avg_g / (w_avg_l + 1e-9)
-                    w_rsi7 = 100.0 - (100.0 / (1.0 + w_rs))
-                    w_rsi_cross = (w_rsi7.iloc[-1] > 70) and (w_rsi7.iloc[-2] <= 70)
-
-                    # Weekly ATR (7)
-                    w_tr = pd.concat([w_high - w_low, (w_high - w_close.shift(1)).abs(), (w_low - w_close.shift(1)).abs()], axis=1).max(axis=1)
-                    w_atr7 = w_tr.ewm(alpha=1.0 / 7, min_periods=7, adjust=False).mean().iloc[-1]
-                    w_atr_cond = bool(w_atr7 > 0)
-
-                    is_weekly_setup_match = bool(w_macd_cross and w_stoch_cross and w_rsi_cross and w_atr_cond)
-
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
                 avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
                 avg_vol_20 = float(vol_series.rolling(20).mean().iloc[-1]) if len(vol_series) >= 20 else float(curr_vol)
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
-                vol_surge_1_5x = bool(curr_vol > (avg_vol_20 * 1.5))
+                vol_surge_2x = bool(curr_vol > (avg_vol_20 * 2.0))
 
                 mcap_cr = round(max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1)
                 pe = round(float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)), 1)
@@ -971,17 +937,17 @@ def fetch_screener_universe(ticker_list):
 
                 is_triple_cross = bool(ema_9 > ema_20 > ema_44 and 30 <= curr_price <= 3000 and mcap_cr >= 1000)
 
-                weekly_df_hist = hist.resample("W").agg({"High": "max", "Low": "min", "Close": "last"}).dropna()
-                if len(weekly_df_hist) >= 5:
-                    w_close_h = float(weekly_df_hist["Close"].iloc[-1])
-                    w_ema20_h = float(weekly_df_hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
-                    w_rsi_h = compute_rsi(weekly_df_hist["Close"], 14)
-                    w_52h = float(weekly_df_hist["High"].tail(52).max())
+                weekly_df = hist.resample("W").agg({"High": "max", "Low": "min", "Close": "last"}).dropna()
+                if len(weekly_df) >= 5:
+                    w_close = float(weekly_df["Close"].iloc[-1])
+                    w_ema20 = float(weekly_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                    w_rsi = compute_rsi(weekly_df["Close"], 14)
+                    w_52h = float(weekly_df["High"].tail(52).max())
                 else:
-                    w_close_h, w_ema20_h, w_rsi_h, w_52h = curr_price, ema_20, rsi_val, high_52w
+                    w_close, w_ema20, w_rsi, w_52h = curr_price, ema_20, rsi_val, high_52w
 
                 passes_mtf_breakout = bool(
-                    w_close_h > w_ema20_h and w_rsi_h >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_1_5x and curr_price >= (w_52h * 0.75)
+                    w_close > w_ema20 and w_rsi >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_2x and curr_price >= (w_52h * 0.80)
                 )
 
                 c_20d = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
@@ -993,21 +959,22 @@ def fetch_screener_universe(ticker_list):
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
-                candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
-                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
-                score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
+                score = 0
+                if is_20d_high_breakout: score += 25
+                if vol_surge_2x: score += 25
+                if curr_price > ema_9 > ema_20: score += 25
+                if adx_val >= 25: score += 25
                 
-                is_overextended = price_change_pct > 8.0
-                if is_overextended:
+                if price_change_pct > 8.0:
                     score -= 30
 
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
+                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25 and price_change_pct <= 8.0:
                     action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
+                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 40:
+                elif swing_composite >= 30:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
                     action_signal = "🔴 AVOID / WEAK"
@@ -1048,7 +1015,6 @@ def fetch_screener_universe(ticker_list):
                     "_mtf_match": passes_mtf_breakout,
                     "_rs_match": is_relative_strength,
                     "_ob_gt_mcap": is_order_book_gt_mcap,
-                    "_weekly_setup_match": is_weekly_setup_match,
                 })
                 seen.add(clean_sym)
             except Exception:
@@ -1075,6 +1041,7 @@ def get_single_stock_history(ticker):
             auto_adjust=True,
             progress=False,
             threads=False,
+            timeout=10,
         )
 
         if df is not None and not df.empty:
@@ -1088,7 +1055,12 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-if scan_button or is_single_search or st.session_state["screener_data"].empty:
+# AUTO-RUN SCAN ON STARTUP IF EMPTY
+if st.session_state["screener_data"].empty:
+    with st.spinner("Initializing market scan..."):
+        st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
+
+if scan_button or is_single_search:
     with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
         st.session_state["screener_data"] = df_raw
@@ -1134,10 +1106,8 @@ if not df_raw.empty:
             filtered_df = filtered_df[filtered_df["_rs_match"] == True]
         elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
             filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
-        elif sma_trend_filter == "⚡ Weekly MACD Crossover, Stochastics & RSI(7)":
-            filtered_df = filtered_df[filtered_df["_weekly_setup_match"] == True]
 
-        if enable_vol_multiplier:
+        if enable_vol_multiplier_10d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_10"] * vol_multiplier_10d)]
 
         if enable_vol_multiplier_20d:

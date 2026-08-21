@@ -38,17 +38,17 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Ribbon */
+    /* Live Market Index Ribbon - UPDATED FOR COMPLETE VIEW (WRAPPING) */
     .index-ticker-container {
         display: flex;
-        flex-wrap: nowrap;
-        overflow-x: auto;
+        flex-wrap: wrap; /* Allows items to wrap onto the next line */
+        justify-content: center; /* Centers the items nicely */
         background-color: #f8fafc;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
-        padding: 8px 14px;
+        padding: 12px 14px;
         margin-bottom: 18px;
-        gap: 16px;
+        gap: 12px 16px; /* Row and column gap */
         align-items: center;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }

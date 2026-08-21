@@ -230,74 +230,47 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # Completely escapes the iframe to force notifications and audio on the parent window
+    # Runs safely inside Streamlit's iframe without triggering cross-origin security blocks
     js_html = f"""
     <script>
     (function() {{
+        // 1. Loud Multi-Tone Alarm
         try {{
-            window.parent.eval(`
-                var nTitle = "🎯 PULLBACK HIT: {ticker}";
-                var nBody = "Trade executed at ₹{buy_price:,.2f}. Moved to Portfolio.";
-                var nIcon = "https://cdn-icons-png.flaticon.com/512/190/190411.png";
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if(AudioCtx) {{
+                var ctx = new AudioCtx();
+                ctx.resume(); // Force audio context to wake up
                 
-                // 1. Sticky Push Notification
-                var notifFired = false;
-                try {{
-                    if (window.Notification && Notification.permission === "granted") {{
-                        var n = new Notification(nTitle, {{
-                            body: nBody, 
-                            icon: nIcon,
-                            requireInteraction: true // Forces it to stay on screen until manually closed
-                        }});
-                        notifFired = true;
-                    }}
-                }} catch(err) {{
-                    console.log("Push notification failed:", err);
+                function playLoudBeep(freq, startTime, duration) {{
+                    var osc = ctx.createOscillator();
+                    var gain = ctx.createGain();
+                    
+                    osc.type = "square"; // Piercing digital alarm tone
+                    osc.frequency.value = freq;
+                    
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    
+                    gain.gain.setValueAtTime(1.0, startTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+                    
+                    osc.start(startTime);
+                    osc.stop(startTime + duration);
                 }}
                 
-                // 2. Hard Popup Fallback (If OS blocks Push Notifications)
-                if (!notifFired) {{
-                    setTimeout(function() {{
-                        alert("🔔 " + nTitle + "\\n\\n" + nBody);
-                    }}, 200);
-                }}
-
-                // 3. Loud Multi-Tone Alarm
-                try {{
-                    var AudioCtx = window.AudioContext || window.webkitAudioContext;
-                    if(AudioCtx) {{
-                        var ctx = new AudioCtx();
-                        ctx.resume();
-                        
-                        function playLoudBeep(freq, startTime, duration) {{
-                            var osc = ctx.createOscillator();
-                            var gain = ctx.createGain();
-                            
-                            osc.type = "square"; // Piercing digital alarm tone
-                            osc.frequency.value = freq;
-                            
-                            osc.connect(gain);
-                            gain.connect(ctx.destination);
-                            
-                            gain.gain.setValueAtTime(1.0, startTime);
-                            gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
-                            
-                            osc.start(startTime);
-                            osc.stop(startTime + duration);
-                        }}
-                        
-                        var now = ctx.currentTime;
-                        playLoudBeep(900, now, 0.25);
-                        playLoudBeep(900, now + 0.35, 0.25);
-                        playLoudBeep(1200, now + 0.70, 0.5);
-                    }}
-                }} catch(err) {{
-                    console.log("Audio failed:", err);
-                }}
-            `);
-        }} catch(e) {{ 
-            console.log("Alert script error:", e); 
+                var now = ctx.currentTime;
+                playLoudBeep(900, now, 0.25);
+                playLoudBeep(900, now + 0.35, 0.25);
+                playLoudBeep(1200, now + 0.70, 0.5);
+            }}
+        }} catch(err) {{
+            console.log("Audio failed:", err);
         }}
+
+        // 2. Hard Browser Popup (Freezes screen until user clicks OK)
+        setTimeout(function() {{
+            alert("🚨 PULLBACK ALERT: {ticker}\\n\\nTarget hit at ₹{buy_price:,.2f}. Trade successfully executed and moved to your Paper Trading Portfolio!");
+        }}, 400); // Waits a split second so the audio starts before the alert freezes the screen
     }})();
     </script>
     """

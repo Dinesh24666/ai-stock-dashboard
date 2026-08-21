@@ -386,6 +386,37 @@ if "ai_analysis_cache" not in st.session_state:
 if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
+# --- DEFAULT FILTER VALUES DICTIONARY ---
+DEFAULT_FILTERS = {
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 100,
+    "strict_fund": False,
+    "pat_growth": False,
+    "ob_mcap": False,
+    "roce_rng": (-20, 100),
+    "mcap_rng": (0, 2000000),
+    "max_de": 5.0,
+    "price_rng": (10, 10000),
+    "rsi_rng": (10, 95),
+    "min_adx": 0,
+    "dist_52w": 100,
+    "ma_align": "Any Trend",
+    "vol_10d_en": False,
+    "vol_10d_mult": 1.1,
+    "vol_20d_en": False,
+    "vol_20d_mult": 1.2
+}
+
+# Ensure defaults are initialized in session state
+for key, val in DEFAULT_FILTERS.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+def reset_sidebar_filters():
+    for key, val in DEFAULT_FILTERS.items():
+        st.session_state[key] = val
+
+
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -741,8 +772,37 @@ def get_all_nse_symbols():
     unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
     return [f"{s}.NS" for s in unique_list]
 
+# --- DEFAULT FILTER VALUES DICTIONARY ---
+DEFAULT_FILTERS = {
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 100,
+    "strict_fund": False,
+    "pat_growth": False,
+    "ob_mcap": False,
+    "roce_rng": (-20, 100),
+    "mcap_rng": (0, 2000000),
+    "max_de": 5.0,
+    "price_rng": (10, 10000),
+    "rsi_rng": (10, 95),
+    "min_adx": 0,
+    "dist_52w": 100,
+    "ma_align": "Any Trend",
+    "vol_10d_en": False,
+    "vol_10d_mult": 1.1,
+    "vol_20d_en": False,
+    "vol_20d_mult": 1.2
+}
 
-selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), index=0)
+# Ensure defaults are initialized in session state
+for key, val in DEFAULT_FILTERS.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+def reset_sidebar_filters():
+    for key, val in DEFAULT_FILTERS.items():
+        st.session_state[key] = val
+
+selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
 
 is_single_search = selected_universe == "🔍 Single Stock Search"
 
@@ -760,27 +820,27 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=100,  # Fast default
         step=25,
         help="Increase this slider to scan more stocks. Default is 100 for instant loading.",
+        key="scan_limit"
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
 st.sidebar.markdown("### Fundamental Filters")
-apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False)
-pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", value=False)
-order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
+apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", key="strict_fund")
+pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", key="pat_growth")
+order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", key="ob_mcap")
 
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (-20, 100))
-mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (0, 2000000), 500)
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 5.0, 0.1)
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, key="roce_rng")
+mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, step=500, key="mcap_rng")
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, step=0.1, key="max_de")
 
-price_range = st.sidebar.slider("Stock Price (₹)", 30, 5000, (30, 5000), 30)
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (10, 95))
-min_adx = st.sidebar.slider("Min ADX", 0, 50, 0)
-max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
+price_range = st.sidebar.slider("Stock Price (₹)", 30, 5000, step=10, key="price_rng")
+rsi_range = st.sidebar.slider("RSI (14)", 0, 100, key="rsi_rng")
+min_adx = st.sidebar.slider("Min ADX", 0, 50, key="min_adx")
+max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, key="dist_52w")
 
 sma_trend_filter = st.sidebar.selectbox(
     "Moving Average Alignment",
@@ -793,13 +853,16 @@ sma_trend_filter = st.sidebar.selectbox(
         "Golden Cross (50 SMA > 200 SMA)",
         "⚡ Weekly MACD Crossover, Stochastics & RSI(7)",
     ],
+    key="ma_align"
 )
 
-enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", value=False)
-vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 1.1, 0.1, disabled=not enable_vol_multiplier_10d)
+enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", key="vol_10d_en")
+vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_10d_en, key="vol_10d_mult")
 
-enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False)
-vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, 1.2, 0.1, disabled=not enable_vol_multiplier_20d)
+enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", key="vol_20d_en")
+vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_20d_en, key="vol_20d_mult")
+
+st.sidebar.button("⚙️ Reset Filters to Default", on_click=reset_sidebar_filters, use_container_width=True)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
@@ -1054,11 +1117,11 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
+                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25 and price_change_pct <= 8.0:
                     action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
+                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 40:
+                elif swing_composite >= 30:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
                     action_signal = "🔴 AVOID / WEAK"
@@ -1200,7 +1263,6 @@ if not df_raw.empty:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
     # --- FUNDAMENTAL FETCH: ONLY FOR SURVIVING STOCKS ---
-    # This prevents the app from hanging while checking earnings for 2000 stocks
     if pat_growth_filter and not filtered_df.empty:
         filtered_df = filtered_df.copy()
         with st.spinner("Fetching real-time earnings data (PAT YoY)..."):

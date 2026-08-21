@@ -174,7 +174,9 @@ def render_alert_permission_banner():
         
         var timeVal = hours * 100 + minutes;
         var isWeekday = (day >= 1 && day <= 5);
-        var isMarketHours = true; // Temporarily force ON for testing
+        
+        // TEMPORARY BYPASS: Forces system "ON" regardless of time/day for testing
+        var isMarketHours = true; 
         
         if ("Notification" in window && Notification.permission === "granted") {
             btnEl.style.display = "none";
@@ -198,23 +200,10 @@ def render_alert_permission_banner():
                 }
             });
         }
-        try {
-            var AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if (AudioCtx) {
-                var ctx = new AudioCtx();
-                if (ctx.state === "suspended") ctx.resume();
-                var osc = ctx.createOscillator();
-                var gain = ctx.createGain();
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.type = "sine";
-                osc.frequency.setValueAtTime(880, ctx.currentTime);
-                gain.gain.setValueAtTime(0.3, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
-                osc.start();
-                osc.stop(ctx.currentTime + 0.25);
-            }
-        } catch(e) {}
+        
+        // Play a test sound to ensure browser allows audio
+        var testAudio = new Audio("https://upload.wikimedia.org/wikipedia/commons/3/34/Sound_Effect_-_Mushroom_Laser_Ping.ogg");
+        testAudio.play().catch(e => console.log("Audio test blocked:", e));
     }
 
     window.onload = checkMarketHoursAndPermissions;
@@ -224,28 +213,38 @@ def render_alert_permission_banner():
     components.html(banner_html, height=85)
 
 
-def  play_trigger_alert(ticker, buy_price):
-    # Uses HTML5 Audio (bypasses JS AudioContext blocks) and forces parent window notifications
-    alert_html = f"""
-    <audio autoplay>
-        <source src="https://upload.wikimedia.org/wikipedia/commons/1/15/Bicycle_bell.wav" type="audio/wav">
-    </audio>
+def play_trigger_alert(ticker, buy_price):
+    # 1. Native HTML5 Audio Tag: Bypasses iframe restrictions by injecting into main DOM
+    audio_url = "https://upload.wikimedia.org/wikipedia/commons/3/34/Sound_Effect_-_Mushroom_Laser_Ping.ogg"
+    st.markdown(
+        f'<audio autoplay style="display:none;"><source src="{audio_url}" type="audio/ogg"></audio>',
+        unsafe_allow_html=True,
+    )
+    
+    # 2. Standard Push Notification Logic
+    js_html = f"""
     <script>
     (function() {{
         try {{
-            // Target the main browser window, not the Streamlit iframe
-            var notif = window.parent.Notification || window.Notification;
-            if (notif && notif.permission === "granted") {{
-                new notif("🎯 PULLBACK LIMIT HIT!", {{
-                    body: "{ticker} reached buy level ₹{buy_price:,.2f}. Trade Executed!",
-                    icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
-                }});
+            var nTitle = "🎯 PULLBACK HIT: {ticker}";
+            var nBody = "Trade executed at ₹{buy_price:,.2f}. Moved to Portfolio.";
+            var nIcon = "https://cdn-icons-png.flaticon.com/512/190/190411.png";
+            
+            if (window.Notification) {{
+                if (Notification.permission === "granted") {{
+                    new Notification(nTitle, {{body: nBody, icon: nIcon}});
+                }} else {{
+                    Notification.requestPermission().then(function(p) {{
+                        if (p === "granted") new Notification(nTitle, {{body: nBody, icon: nIcon}});
+                    }});
+                }}
             }}
-        }} catch(e) {{}}
+        }} catch(e) {{ console.log(e); }}
     }})();
     </script>
     """
-    components.html(alert_html, height=0, width=0)
+    components.html(js_html, height=0, width=0)
+
 
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)

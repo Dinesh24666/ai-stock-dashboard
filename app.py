@@ -225,13 +225,12 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # Fix: Uses a unique window key so the alert ONLY flashes and beeps exactly once per trade
     js_html = f"""
     <script>
     (function() {{
         var lockKey = "alert_fired_{ticker}_{buy_price}";
         if (!window.parent[lockKey]) {{
-            window.parent[lockKey] = true; // Lock it so it never fires again
+            window.parent[lockKey] = true; 
             
             try {{
                 var AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -456,7 +455,6 @@ def fetch_screener_universe(ticker_list):
 
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
-    progress_bar = st.progress(0, text="Fetching market data...")
     
     chunk_size = 50
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
@@ -464,18 +462,17 @@ def fetch_screener_universe(ticker_list):
     seen = set()
 
     for c_idx, chunk in enumerate(chunks):
-        progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
-        
         batch_data = pd.DataFrame()
         
         for attempt in range(3):
             try:
+                # Disabled threads to prevent Streamlit threading crash
                 batch_data = yf.download(
                     tickers=" ".join(chunk), 
                     period="1y", 
                     interval="1d", 
                     group_by="ticker", 
-                    threads=True, 
+                    threads=False, 
                     auto_adjust=True, 
                     progress=False, 
                     timeout=10
@@ -653,7 +650,6 @@ def fetch_screener_universe(ticker_list):
                 swing_composite = float(np.clip(score, 10, 100))
                 is_overextended = bool(curr_price > ema_9 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
 
-                # STRICT MATCH: Score of 100 is ALWAYS Strong Buy (Breakout)
                 if swing_composite >= 100.0:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
@@ -712,8 +708,6 @@ def fetch_screener_universe(ticker_list):
         del batch_data
         gc.collect()
 
-    progress_bar.empty()
-    
     final_df = pd.DataFrame(rows)
     if not final_df.empty:
         float_cols = final_df.select_dtypes(include=['float64']).columns
@@ -1155,91 +1149,17 @@ UNIVERSE_PRESETS = {
 }
 
 
-@st.cache_data(ttl=86400)
-def get_all_nse_symbols():
-    unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
-    return [f"{s}.NS" for s in unique_list]
-
-selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
-
-is_single_search = selected_universe == "🔍 Single Stock Search"
-
-if is_single_search:
-    raw_sym_input = st.sidebar.text_input("Enter NSE Symbol", value="ACE")
-    clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
-    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
-elif selected_universe == "Nifty 50 Core":
-    all_symbols = get_all_nse_symbols()
-    tickers_to_scan = all_symbols[:50]
-elif selected_universe == "All NSE Stocks (Full Listed)":
-    all_symbols = get_all_nse_symbols()
-    total_found = len(all_symbols)
-    scan_limit = st.sidebar.slider(
-        "Number of Stocks to Scan",
-        min_value=25,
-        max_value=total_found,
-        step=25,
-        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
-        key="scan_limit"
-    )
-    tickers_to_scan = all_symbols[:scan_limit]
-else:
-    tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
-
-st.sidebar.markdown("### Fundamental Filters")
-apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", key="strict_fund")
-pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", key="pat_growth")
-order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", key="ob_mcap")
-
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, key="roce_rng")
-mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, step=500, key="mcap_rng")
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, step=0.1, key="max_de")
-
-price_range = st.sidebar.slider("Stock Price (₹)", 0, 10000, step=10, key="price_rng")
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, key="rsi_rng")
-min_adx = st.sidebar.slider("Min ADX", 0, 50, key="min_adx")
-max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, key="dist_52w")
-
-sma_trend_filter = st.sidebar.selectbox(
-    "Moving Average Alignment",
-    [
-        "Any Trend",
-        "🌀 EMA Cluster Squeeze & Breakout",
-        "⚡ 9/20/44 Triple EMA Bullish Cross",
-        "🔥 Multi-Timeframe 20D Breakout",
-        "Relative strength",
-        "Golden Cross (50 SMA > 200 SMA)",
-        "⚡ Weekly MACD Crossover, Stochastics & RSI(7)",
-    ],
-    key="ma_align"
-)
-
-enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", key="vol_10d_en")
-vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_10d_en, key="vol_10d_mult")
-
-enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", key="vol_20d_en")
-vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_20d_en, key="vol_20d_mult")
-
-st.sidebar.button("🔓 Restore Open Defaults", on_click=reset_to_open_filters, use_container_width=True)
-st.sidebar.button("🎯 Apply Strict Strategy", on_click=apply_strict_filters, use_container_width=True)
-
-scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
-if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
-    st.cache_data.clear()
-    st.session_state["ai_analysis_cache"] = {}
-    st.session_state["screener_data"] = pd.DataFrame()
-    gc.collect()
-    st.rerun()
-
 # AUTO-RUN SCAN ON STARTUP IF EMPTY
 if st.session_state["screener_data"].empty:
-    with st.spinner("Initializing market scan..."):
-        st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
+    scan_msg = st.info("⏳ Initializing market scan...")
+    st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
+    scan_msg.empty()
 
 if scan_button or is_single_search:
-    with st.spinner("Analyzing market data..."):
-        df_raw = fetch_screener_universe(tickers_to_scan)
-        st.session_state["screener_data"] = df_raw
+    scan_msg = st.info("⏳ Analyzing market data...")
+    df_raw = fetch_screener_universe(tickers_to_scan)
+    st.session_state["screener_data"] = df_raw
+    scan_msg.empty()
 else:
     df_raw = st.session_state.get("screener_data", pd.DataFrame())
 
@@ -1311,36 +1231,37 @@ if not df_raw.empty:
 
     if not filtered_df.empty:
         filtered_df = filtered_df.copy()
-        with st.spinner("Fetching real-time earnings data (PAT YoY) for matched stocks..."):
-            valid_indices = []
-            for idx, row in filtered_df.iterrows():
-                try:
-                    t_info = yf.Ticker(row["Raw_Ticker"]).info
-                    gr = t_info.get("earningsQuarterlyGrowth")
-                    if gr is None:
-                        gr = t_info.get("earningsGrowth")
-                    
-                    if gr is not None:
-                        pat_pct = float(gr) * 100
-                        filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
-                        filtered_df.at[idx, "_pat_num"] = pat_pct
-                    else:
-                        pat_pct = 0.0
-                        filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
-                        filtered_df.at[idx, "_pat_num"] = 0.0
-                    
-                    if pat_growth_filter:
-                        if gr is not None and pat_pct >= 20.0:
-                            valid_indices.append(idx)
-                    else:
-                        valid_indices.append(idx)
-                except Exception:
+        pat_msg = st.info("⏳ Fetching real-time earnings data (PAT YoY) for matched stocks...")
+        valid_indices = []
+        for idx, row in filtered_df.iterrows():
+            try:
+                t_info = yf.Ticker(row["Raw_Ticker"]).info
+                gr = t_info.get("earningsQuarterlyGrowth")
+                if gr is None:
+                    gr = t_info.get("earningsGrowth")
+                
+                if gr is not None:
+                    pat_pct = float(gr) * 100
+                    filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
+                    filtered_df.at[idx, "_pat_num"] = pat_pct
+                else:
+                    pat_pct = 0.0
                     filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
-                    filtered_df.at[idx, "_pat_num"] = -999.0
-                    if not pat_growth_filter:
+                    filtered_df.at[idx, "_pat_num"] = 0.0
+                
+                if pat_growth_filter:
+                    if gr is not None and pat_pct >= 20.0:
                         valid_indices.append(idx)
-            
-            filtered_df = filtered_df.loc[valid_indices]
+                else:
+                    valid_indices.append(idx)
+            except Exception:
+                filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
+                filtered_df.at[idx, "_pat_num"] = -999.0
+                if not pat_growth_filter:
+                    valid_indices.append(idx)
+        
+        filtered_df = filtered_df.loc[valid_indices]
+        pat_msg.empty()
 
 
 tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(

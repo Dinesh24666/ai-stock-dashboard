@@ -386,20 +386,22 @@ if "ai_analysis_cache" not in st.session_state:
 if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
-# --- DEFAULT FILTER VALUES DICTIONARY ---
+# ==========================================
+# --- STRICT EXACT DEFAULTS (FROM IMAGE 2) --
+# ==========================================
 DEFAULT_FILTERS = {
     "sel_universe": "All NSE Stocks (Full Listed)",
-    "scan_limit": 100,
+    "scan_limit": 1950,
     "strict_fund": False,
     "pat_growth": False,
     "ob_mcap": False,
-    "roce_rng": (-20, 100),
-    "mcap_rng": (0, 2000000),
-    "max_de": 5.0,
-    "price_rng": (10, 10000),
-    "rsi_rng": (10, 95),
-    "min_adx": 0,
-    "dist_52w": 100,
+    "roce_rng": (20, 100),
+    "mcap_rng": (1000, 2000000),
+    "max_de": 0.50,
+    "price_rng": (30, 2000),
+    "rsi_rng": (55, 75),
+    "min_adx": 20,
+    "dist_52w": 12,
     "ma_align": "Any Trend",
     "vol_10d_en": False,
     "vol_10d_mult": 1.1,
@@ -415,7 +417,6 @@ for key, val in DEFAULT_FILTERS.items():
 def reset_sidebar_filters():
     for key, val in DEFAULT_FILTERS.items():
         st.session_state[key] = val
-
 
 st.sidebar.header("🔑 API Setup")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
@@ -772,35 +773,6 @@ def get_all_nse_symbols():
     unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
     return [f"{s}.NS" for s in unique_list]
 
-# --- DEFAULT FILTER VALUES DICTIONARY ---
-DEFAULT_FILTERS = {
-    "sel_universe": "All NSE Stocks (Full Listed)",
-    "scan_limit": 100,
-    "strict_fund": False,
-    "pat_growth": False,
-    "ob_mcap": False,
-    "roce_rng": (-20, 100),
-    "mcap_rng": (0, 2000000),
-    "max_de": 5.0,
-    "price_rng": (10, 10000),
-    "rsi_rng": (10, 95),
-    "min_adx": 0,
-    "dist_52w": 100,
-    "ma_align": "Any Trend",
-    "vol_10d_en": False,
-    "vol_10d_mult": 1.1,
-    "vol_20d_en": False,
-    "vol_20d_mult": 1.2
-}
-
-# Ensure defaults are initialized in session state
-for key, val in DEFAULT_FILTERS.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
-
-def reset_sidebar_filters():
-    for key, val in DEFAULT_FILTERS.items():
-        st.session_state[key] = val
 
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
 
@@ -821,7 +793,7 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         min_value=25,
         max_value=total_found,
         step=25,
-        help="Increase this slider to scan more stocks. Default is 100 for instant loading.",
+        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
         key="scan_limit"
     )
     tickers_to_scan = all_symbols[:scan_limit]
@@ -862,7 +834,7 @@ vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 
 enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", key="vol_20d_en")
 vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_20d_en, key="vol_20d_mult")
 
-st.sidebar.button("⚙️ Reset Filters to Default", on_click=reset_sidebar_filters, use_container_width=True)
+st.sidebar.button("🔄 Restore Default Settings", on_click=reset_sidebar_filters, use_container_width=True)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):

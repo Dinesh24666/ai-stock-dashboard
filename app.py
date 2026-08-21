@@ -905,7 +905,6 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # Strict MACD Crossover Check
                 exp1 = hist["Close"].ewm(span=12, adjust=False).mean()
                 exp2 = hist["Close"].ewm(span=26, adjust=False).mean()
                 macd_line = exp1 - exp2
@@ -917,11 +916,9 @@ def fetch_screener_universe(ticker_list):
                     macd_line.iloc[-2] <= macd_signal.iloc[-2]
                 )
 
-                # ADX Rising Check (ADX today > ADX 3 days ago)
                 prev_adx_val = compute_adx(hist.iloc[:-3], 14) if len(hist) > 17 else adx_val
                 is_adx_rising = bool(adx_val > prev_adx_val)
 
-                # Multi-EMA Crossover Condition (passes any of the 4 pairs)
                 is_multi_ema_cross = bool(
                     (ema_9 > ema_50) or 
                     (ema_9 > ema_200) or 
@@ -1382,7 +1379,7 @@ if not df_raw.empty:
             with sub1:
                 qty_input = st.number_input("Quantity", value=50, min_value=1, step=1, key="wb_qty_val")
             with sub2:
-                strat_note = st.text_input("Strategy Note", value="Pullback Dip Entry near 20 EMA Support")
+                strat_note = st.text_input("Strategy Note", value=sma_trend_filter)
             with btn_col:
                 st.write("")
                 st.write("")
@@ -1449,7 +1446,7 @@ if not df_raw.empty:
                         "TGT (₹)": tgt_price,
                         "Exit Price (₹)": 0.0,
                         "Qty": qty,
-                        "Remarks": f"Pullback Auto-Entry ({item.get('Strategy', 'Dip Buy')})",
+                        "Remarks": f"Pullback Auto-Entry ({item.get('Strategy', sma_trend_filter)})",
                         "Status": "🟢 Open",
                         "Invested (₹)": round(curr_ltp * qty, 2),
                         "Raw_Ticker": sym,
@@ -1473,7 +1470,7 @@ if not df_raw.empty:
                     "TGT (₹)": f"₹{tgt_price:,.2f}",
                     "Qty": qty,
                     "Status": status_str,
-                    "Strategy": item.get("Strategy", "Pullback Buy"),
+                    "Strategy": item.get("Strategy", sma_trend_filter),
                 })
 
             st.session_state["pullback_watchlist"] = updated_watchlist
@@ -1549,7 +1546,7 @@ if not df_raw.empty:
             with col_sub1:
                 quantity = st.number_input("Quantity", value=50, min_value=1, step=1)
             with col_sub2:
-                remarks = st.text_input("Trade Remarks / Strategy", value="9/20 EMA Breakout Swing Setup")
+                remarks = st.text_input("Trade Remarks / Strategy", value=sma_trend_filter)
             with col_btn:
                 st.write("")
                 st.write("")
@@ -1652,7 +1649,7 @@ if not df_raw.empty:
                 tgt = float(pos.get("TGT (₹)", 0.0))
                 pos_date_str = str(pos.get("Date", date.today()))
                 pos_exit_date_str = str(pos.get("Exit_Date", "") or "")
-                pos_remarks = str(pos.get("Remarks", "Swing Trade"))
+                pos_remarks = str(pos.get("Remarks", sma_trend_filter))
                 pos_status = str(pos.get("Status", "🟢 Open"))
                 saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
 

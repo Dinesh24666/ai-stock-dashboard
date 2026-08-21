@@ -224,12 +224,17 @@ def render_alert_permission_banner():
     components.html(banner_html, height=85)
 
 
-def play_trigger_alert(ticker, buy_price):
+def def play_trigger_alert(ticker, buy_price):
+    # Uses HTML5 Audio (bypasses JS AudioContext blocks) and forces parent window notifications
     alert_html = f"""
+    <audio autoplay>
+        <source src="https://upload.wikimedia.org/wikipedia/commons/1/15/Bicycle_bell.wav" type="audio/wav">
+    </audio>
     <script>
     (function() {{
         try {{
-            var notif = window.top.Notification || window.Notification;
+            // Target the main browser window, not the Streamlit iframe
+            var notif = window.parent.Notification || window.Notification;
             if (notif && notif.permission === "granted") {{
                 new notif("🎯 PULLBACK LIMIT HIT!", {{
                     body: "{ticker} reached buy level ₹{buy_price:,.2f}. Trade Executed!",
@@ -237,38 +242,10 @@ def play_trigger_alert(ticker, buy_price):
                 }});
             }}
         }} catch(e) {{}}
-
-        try {{
-            var AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if (AudioCtx) {{
-                var ctx = new AudioCtx();
-                if (ctx.state === 'suspended') ctx.resume();
-                function beep(freq, delay, duration) {{
-                    setTimeout(function() {{
-                        try {{
-                            var osc = ctx.createOscillator();
-                            var gain = ctx.createGain();
-                            osc.connect(gain);
-                            gain.connect(ctx.destination);
-                            osc.type = "sine";
-                            osc.frequency.value = freq;
-                            gain.gain.setValueAtTime(0.4, ctx.currentTime);
-                            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
-                            osc.start();
-                            osc.stop(ctx.currentTime + duration);
-                        }} catch(err){{}}
-                    }}, delay);
-                }}
-                beep(659.25, 0, 0.2);   // E5
-                beep(880.00, 180, 0.2); // A5
-                beep(1318.51, 360, 0.45);// E6
-            }}
-        }} catch(e) {{}}
     }})();
     </script>
     """
-    components.html(alert_html, height=0)
-
+    components.html(alert_html, height=0, width=0)
 
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)

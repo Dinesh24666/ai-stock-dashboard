@@ -174,7 +174,7 @@ def render_alert_permission_banner():
         
         var timeVal = hours * 100 + minutes;
         var isWeekday = (day >= 1 && day <= 5);
-        var isMarketHours = isWeekday && (timeVal >= 915 && timeVal <= 1530);
+        var isMarketHours = true; // Temporarily force ON for testing
         
         if ("Notification" in window && Notification.permission === "granted") {
             btnEl.style.display = "none";

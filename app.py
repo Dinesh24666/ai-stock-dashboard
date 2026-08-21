@@ -200,23 +200,26 @@ def render_alert_permission_banner():
                 }
             });
         }
+        
+        // Play a LOUD test sound
         try {
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) {
                 var ctx = new AudioCtx();
-                if (ctx.state === "suspended") ctx.resume();
+                ctx.resume();
                 var osc = ctx.createOscillator();
                 var gain = ctx.createGain();
+                osc.type = "square"; // Harsh, loud alarm sound
+                osc.frequency.value = 900;
                 osc.connect(gain);
                 gain.connect(ctx.destination);
-                osc.type = "sine";
-                osc.frequency.setValueAtTime(880, ctx.currentTime);
-                gain.gain.setValueAtTime(0.3, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+                gain.gain.setValueAtTime(1.0, ctx.currentTime); // 100% volume
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
                 osc.start();
-                osc.stop(ctx.currentTime + 0.25);
+                osc.stop(ctx.currentTime + 0.5);
             }
-        } catch(e) {}
+        } catch(e) { console.log(e); }
+    }
     }
 
     window.onload = checkMarketHoursAndPermissions;
@@ -227,55 +230,51 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # Completely escapes the iframe to play audio on the parent window directly
+    # Runs safely inside Streamlit's iframe without triggering cross-origin security blocks
     js_html = f"""
     <script>
     (function() {{
+        // 1. Loud Multi-Tone Alarm
         try {{
-            // 1. Push Notification
-            var nTitle = "🎯 PULLBACK HIT: {ticker}";
-            var nBody = "Trade executed at ₹{buy_price:,.2f}. Moved to Portfolio.";
-            var nIcon = "https://cdn-icons-png.flaticon.com/512/190/190411.png";
-            var notif = window.parent.Notification || window.Notification;
-            
-            if (notif && notif.permission === "granted") {{
-                new notif(nTitle, {{body: nBody, icon: nIcon}});
-            }}
-
-            // 2. Bypassing iframe restrictions by executing audio directly on the parent window
-            window.parent.eval(`
-                var audio = new Audio("https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg");
-                var playPromise = audio.play();
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if(AudioCtx) {{
+                var ctx = new AudioCtx();
+                ctx.resume(); // Force audio context to wake up
                 
-                if (playPromise !== undefined) {{
-                    playPromise.catch(function(e) {{
-                        console.log("Audio file blocked, attempting Web Audio API beep fallback...", e);
-                        var AudioCtx = window.AudioContext || window.webkitAudioContext;
-                        if(AudioCtx) {{
-                            var ctx = new AudioCtx();
-                            ctx.resume();
-                            var osc = ctx.createOscillator();
-                            var gain = ctx.createGain();
-                            osc.connect(gain);
-                            gain.connect(ctx.destination);
-                            osc.frequency.value = 880; // Beep pitch
-                            gain.gain.setValueAtTime(0.4, ctx.currentTime);
-                            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1);
-                            osc.start();
-                            osc.stop(ctx.currentTime + 1);
-                        }}
-                    }});
+                function playLoudBeep(freq, startTime, duration) {{
+                    var osc = ctx.createOscillator();
+                    var gain = ctx.createGain();
+                    
+                    osc.type = "square"; // Piercing digital alarm tone
+                    osc.frequency.value = freq;
+                    
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    
+                    gain.gain.setValueAtTime(1.0, startTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+                    
+                    osc.start(startTime);
+                    osc.stop(startTime + duration);
                 }}
-            `);
-        }} catch(e) {{ 
-            console.log("Alert script error:", e); 
+                
+                var now = ctx.currentTime;
+                playLoudBeep(900, now, 0.25);
+                playLoudBeep(900, now + 0.35, 0.25);
+                playLoudBeep(1200, now + 0.70, 0.5);
+            }}
+        }} catch(err) {{
+            console.log("Audio failed:", err);
         }}
+
+        // 2. Hard Browser Popup (Freezes screen until user clicks OK)
+        setTimeout(function() {{
+            alert("🚨 PULLBACK ALERT: {ticker}\\n\\nTarget hit at ₹{buy_price:,.2f}. Trade successfully executed and moved to your Paper Trading Portfolio!");
+        }}, 400); // Waits a split second so the audio starts before the alert freezes the screen
     }})();
     </script>
     """
     components.html(js_html, height=0, width=0)
-
-
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():

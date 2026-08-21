@@ -230,7 +230,7 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # Completely escapes the iframe to play audio on the parent window directly
+    # Completely escapes the iframe to play a loud synthetic alarm on the parent window
     js_html = f"""
     <script>
     (function() {{
@@ -245,29 +245,40 @@ def play_trigger_alert(ticker, buy_price):
                 new notif(nTitle, {{body: nBody, icon: nIcon}});
             }}
 
-            // 2. Bypassing iframe restrictions by executing audio directly on the parent window
+            // 2. Loud Multi-Tone Alarm using Web Audio API (Bypasses file blocks)
             window.parent.eval(`
-                var audio = new Audio("https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg");
-                var playPromise = audio.play();
-                
-                if (playPromise !== undefined) {{
-                    playPromise.catch(function(e) {{
-                        console.log("Audio file blocked, attempting Web Audio API beep fallback...", e);
-                        var AudioCtx = window.AudioContext || window.webkitAudioContext;
-                        if(AudioCtx) {{
-                            var ctx = new AudioCtx();
-                            ctx.resume();
+                try {{
+                    var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    if(AudioCtx) {{
+                        var ctx = new AudioCtx();
+                        ctx.resume();
+                        
+                        function playLoudBeep(freq, startTime, duration) {{
                             var osc = ctx.createOscillator();
                             var gain = ctx.createGain();
+                            
+                            osc.type = "square"; // 'square' is a piercing digital alarm tone
+                            osc.frequency.value = freq;
+                            
                             osc.connect(gain);
                             gain.connect(ctx.destination);
-                            osc.frequency.value = 880; // Beep pitch
-                            gain.gain.setValueAtTime(0.4, ctx.currentTime);
-                            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1);
-                            osc.start();
-                            osc.stop(ctx.currentTime + 1);
+                            
+                            // Max Volume (1.0)
+                            gain.gain.setValueAtTime(1.0, startTime);
+                            gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+                            
+                            osc.start(startTime);
+                            osc.stop(startTime + duration);
                         }}
-                    }});
+                        
+                        var now = ctx.currentTime;
+                        // Play 3 loud piercing alarm beeps
+                        playLoudBeep(900, now, 0.25);
+                        playLoudBeep(900, now + 0.35, 0.25);
+                        playLoudBeep(1200, now + 0.70, 0.5);
+                    }}
+                }} catch(err) {{
+                    console.log("Audio failed:", err);
                 }}
             `);
         }} catch(e) {{ 
@@ -277,7 +288,6 @@ def play_trigger_alert(ticker, buy_price):
     </script>
     """
     components.html(js_html, height=0, width=0)
-
 
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)

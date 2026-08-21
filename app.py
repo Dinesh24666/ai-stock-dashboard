@@ -21,6 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -37,6 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
+    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -83,6 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
+    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -757,9 +760,9 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=total_found,
+        value=min(100, total_found),
         step=25,
-        help="Full 1,960+ NSE Listed Equities Universe.",
+        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -785,7 +788,7 @@ sma_trend_filter = st.sidebar.selectbox(
         "🔥 Multi-Timeframe 20D Breakout",
         "Relative strength",
         "Golden Cross (50 SMA > 200 SMA)",
-        "⚡ Weekly MACD, Stochastics & RSI(7) Breakout",
+        "⚡ Weekly MACD Crossover, Stochastics & RSI(7)",
     ],
 )
 
@@ -852,18 +855,17 @@ def fetch_screener_universe(ticker_list):
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
         
-        batch_data = None
-        for attempt in range(2):
-            try:
-                batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False)
-                if batch_data is not None and not batch_data.empty:
-                    break
-            except Exception:
-                time.sleep(1)
-                continue
-
-        if batch_data is None or batch_data.empty:
-            continue
+        batch_data = pd.DataFrame()
+        
+        # Isolate yf.download to only multi-ticker batches to prevent MultiIndex errors on single tickers
+        if len(chunk) > 1:
+            for attempt in range(2):
+                try:
+                    batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False, timeout=10)
+                    if batch_data is not None and not batch_data.empty:
+                        break
+                except Exception:
+                    time.sleep(1)
 
         for ticker in chunk:
             clean_sym = ticker.replace(".NS", "").replace(".BO", "")
@@ -872,16 +874,19 @@ def fetch_screener_universe(ticker_list):
 
             try:
                 hist = pd.DataFrame()
-                if isinstance(batch_data.columns, pd.MultiIndex):
-                    if ticker in batch_data.columns.levels[0]:
-                        hist = batch_data[ticker]
-                    elif ticker in batch_data.columns.levels[1]:
-                        hist = batch_data.xs(ticker, axis=1, level=1)
+                if len(chunk) == 1:
+                    # Safe single ticker extraction
+                    hist = yf.Ticker(ticker).history(period="1y")
                 else:
-                    if len(chunk) == 1:
-                        hist = batch_data
-                    else:
+                    if batch_data is None or batch_data.empty:
                         continue
+                    if isinstance(batch_data.columns, pd.MultiIndex):
+                        if ticker in batch_data.columns.levels[0]:
+                            hist = batch_data[ticker]
+                        elif ticker in batch_data.columns.levels[1]:
+                            hist = batch_data.xs(ticker, axis=1, level=1)
+                    else:
+                        hist = batch_data
 
                 hist = hist.dropna(how="all")
                 if hist.empty or len(hist) < 20:
@@ -907,56 +912,71 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # --- WEEKLY MACD, STOCHASTICS, RSI(7) SETUP LOGIC ---
+                # --- WEEKLY SETUP MATCH: EXACTLY AS PER YOUR IMAGE ---
                 is_weekly_setup_match = False
-                weekly_df = hist.resample("W").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
-                
-                if len(weekly_df) >= 26:
-                    w_close = weekly_df["Close"]
-                    w_high = weekly_df["High"]
-                    w_low = weekly_df["Low"]
-
-                    # 1. Weekly MACD (21, 13, 9) Crossover
-                    exp1 = w_close.ewm(span=13, adjust=False).mean()
-                    exp2 = w_close.ewm(span=21, adjust=False).mean()
-                    macd_line = exp1 - exp2
-                    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+                try:
+                    # Fix timezone offsets for safe Weekly resampling
+                    temp_hist = hist.copy()
+                    if temp_hist.index.tz is None:
+                        temp_hist.index = temp_hist.index.tz_localize('UTC')
                     
-                    macd_cross = False
-                    if len(macd_line) >= 2 and pd.notna(macd_line.iloc[-1]) and pd.notna(macd_signal.iloc[-1]):
-                        macd_cross = (macd_line.iloc[-1] > macd_signal.iloc[-1]) and (macd_line.iloc[-2] <= macd_signal.iloc[-2])
+                    weekly_df = temp_hist.resample("W-FRI").agg({
+                        "Open": "first", 
+                        "High": "max", 
+                        "Low": "min", 
+                        "Close": "last", 
+                        "Volume": "sum"
+                    }).dropna()
 
-                    # 2. Weekly Fast Stochastic %K (4, 1) Crossover > 80
-                    lowest_low = w_low.rolling(window=4).min()
-                    highest_high = w_high.rolling(window=4).max()
-                    stoch_k = 100 * ((w_close - lowest_low) / (highest_high - lowest_low + 1e-9))
-                    
-                    stoch_cross = False
-                    if len(stoch_k) >= 2 and pd.notna(stoch_k.iloc[-1]):
-                        stoch_cross = (stoch_k.iloc[-1] > 80) and (stoch_k.iloc[-2] <= 80)
+                    if len(weekly_df) >= 26:
+                        w_close = weekly_df["Close"]
+                        w_high = weekly_df["High"]
+                        w_low = weekly_df["Low"]
 
-                    # 3. Weekly RSI (7) Crossover > 70
-                    delta = w_close.diff()
-                    gain = delta.where(delta > 0, 0.0)
-                    loss = -delta.where(delta < 0, 0.0)
-                    avg_gain = gain.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
-                    avg_loss = loss.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
-                    rs = avg_gain / (avg_loss + 1e-9)
-                    w_rsi = 100.0 - (100.0 / (1.0 + rs))
-                    
-                    rsi_cross = False
-                    if len(w_rsi) >= 2 and pd.notna(w_rsi.iloc[-1]):
-                        rsi_cross = (w_rsi.iloc[-1] > 70) and (w_rsi.iloc[-2] <= 70)
+                        # 1. Weekly MACD (21, 13, 9) Crossover
+                        w_exp1 = w_close.ewm(span=13, adjust=False).mean()
+                        w_exp2 = w_close.ewm(span=21, adjust=False).mean()
+                        w_macd_line = w_exp1 - w_exp2
+                        w_macd_signal = w_macd_line.ewm(span=9, adjust=False).mean()
+                        macd_cross = False
+                        if len(w_macd_line) >= 2:
+                            macd_cross = (w_macd_line.iloc[-1] > w_macd_signal.iloc[-1]) and (w_macd_line.iloc[-2] <= w_macd_signal.iloc[-2])
 
-                    # 4. Weekly ATR (7) > 0
-                    tr = pd.concat([w_high - w_low, (w_high - w_close.shift(1)).abs(), (w_low - w_close.shift(1)).abs()], axis=1).max(axis=1)
-                    w_atr = tr.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
-                    atr_cond = False
-                    if len(w_atr) >= 1 and pd.notna(w_atr.iloc[-1]):
-                        atr_cond = w_atr.iloc[-1] > 0
+                        # 2. Weekly Fast Stochastic %K (4, 1) Crossover > 80
+                        lowest_low = w_low.rolling(window=4).min()
+                        highest_high = w_high.rolling(window=4).max()
+                        stoch_k = 100 * ((w_close - lowest_low) / (highest_high - lowest_low + 1e-9))
+                        stoch_cross = False
+                        if len(stoch_k) >= 2:
+                            stoch_cross = (stoch_k.iloc[-1] > 80) and (stoch_k.iloc[-2] <= 80)
 
-                    is_weekly_setup_match = bool(macd_cross and stoch_cross and rsi_cross and atr_cond)
+                        # 3. Weekly RSI (7) Crossover > 70
+                        delta = w_close.diff()
+                        gain = delta.where(delta > 0, 0.0)
+                        loss = -delta.where(delta < 0, 0.0)
+                        avg_gain = gain.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
+                        avg_loss = loss.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
+                        rs = avg_gain / (avg_loss + 1e-9)
+                        w_rsi = 100.0 - (100.0 / (1.0 + rs))
+                        rsi_cross = False
+                        if len(w_rsi) >= 2:
+                            rsi_cross = (w_rsi.iloc[-1] > 70) and (w_rsi.iloc[-2] <= 70)
 
+                        # 4. Weekly ATR (7) > 0
+                        tr1 = w_high - w_low
+                        tr2 = (w_high - w_close.shift(1)).abs()
+                        tr3 = (w_low - w_close.shift(1)).abs()
+                        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+                        w_atr = tr.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
+                        atr_cond = False
+                        if len(w_atr) >= 1:
+                            atr_cond = w_atr.iloc[-1] > 0
+
+                        is_weekly_setup_match = bool(macd_cross and stoch_cross and rsi_cross and atr_cond)
+                except Exception:
+                    is_weekly_setup_match = False
+
+                # --- DAILY VOLUME AND INDICATORS ---
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
                 avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
@@ -986,13 +1006,20 @@ def fetch_screener_universe(ticker_list):
 
                 is_triple_cross = bool(ema_9 > ema_20 > ema_44 and 30 <= curr_price <= 3000 and mcap_cr >= 1000)
 
-                if len(weekly_df) >= 5:
-                    w_close_mtf = float(weekly_df["Close"].iloc[-1])
-                    w_ema20_mtf = float(weekly_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
-                    w_rsi_mtf = compute_rsi(weekly_df["Close"], 14)
-                    w_52h_mtf = float(weekly_df["High"].tail(52).max())
-                else:
-                    w_close_mtf, w_ema20_mtf, w_rsi_mtf, w_52h_mtf = curr_price, ema_20, rsi_val, high_52w
+                # Safe Multi-Timeframe breakout check
+                w_close_mtf, w_ema20_mtf, w_rsi_mtf, w_52h_mtf = curr_price, ema_20, rsi_val, high_52w
+                try:
+                    weekly_df_mtf = hist.copy()
+                    if weekly_df_mtf.index.tz is None:
+                        weekly_df_mtf.index = weekly_df_mtf.index.tz_localize('UTC')
+                    weekly_df_mtf = weekly_df_mtf.resample("W-FRI").agg({"High": "max", "Low": "min", "Close": "last"}).dropna()
+                    if len(weekly_df_mtf) >= 5:
+                        w_close_mtf = float(weekly_df_mtf["Close"].iloc[-1])
+                        w_ema20_mtf = float(weekly_df_mtf["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                        w_rsi_mtf = compute_rsi(weekly_df_mtf["Close"], 14)
+                        w_52h_mtf = float(weekly_df_mtf["High"].tail(52).max())
+                except Exception:
+                    pass
 
                 passes_mtf_breakout = bool(
                     w_close_mtf > w_ema20_mtf and w_rsi_mtf >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_2x and curr_price >= (w_52h_mtf * 0.80)
@@ -1017,11 +1044,11 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25 and price_change_pct <= 8.0:
+                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
                     action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
+                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 30:
+                elif swing_composite >= 40:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
                     action_signal = "🔴 AVOID / WEAK"
@@ -1065,7 +1092,7 @@ def fetch_screener_universe(ticker_list):
                     "_weekly_setup_match": is_weekly_setup_match,
                 })
                 seen.add(clean_sym)
-            except Exception:
+            except Exception as loop_e:
                 continue
 
         del batch_data
@@ -1089,7 +1116,6 @@ def get_single_stock_history(ticker):
             auto_adjust=True,
             progress=False,
             threads=False,
-            timeout=10,
         )
 
         if df is not None and not df.empty:
@@ -1151,7 +1177,7 @@ if not df_raw.empty:
             filtered_df = filtered_df[filtered_df["_rs_match"] == True]
         elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
             filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
-        elif sma_trend_filter == "⚡ Weekly MACD, Stochastics & RSI(7) Breakout":
+        elif sma_trend_filter == "⚡ Weekly MACD Crossover, Stochastics & RSI(7)":
             filtered_df = filtered_df[filtered_df["_weekly_setup_match"] == True]
 
         if enable_vol_multiplier_10d:
@@ -1753,7 +1779,7 @@ with tab_watchlist:
                 "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
                 "Current Price (₹)": f"₹{effective_curr_p:,.2f}",
                 "Qty": qty,
-                "Invested (₹)": f"₹{invested:,.2f}",
+                "Invested (₹)": f"Invested (₹)",
                 "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
                 "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
                 "_raw_pnl": pnl,
@@ -1887,5 +1913,3 @@ with tab_watchlist:
             st.session_state["paper_portfolio"] = []
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
-    else:
-        st.info("No active paper trades. Execute a trade above.")

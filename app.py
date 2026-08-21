@@ -792,8 +792,11 @@ sma_trend_filter = st.sidebar.selectbox(
     ],
 )
 
-enable_vol_multiplier = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
-vol_multiplier = st.sidebar.slider("Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier)
+enable_vol_multiplier = st.sidebar.checkbox("Volume > 10D SMA Multiplier", value=False)
+vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier)
+
+enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
+vol_multiplier = st.sidebar.slider("Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_20d)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
@@ -930,6 +933,7 @@ def fetch_screener_universe(ticker_list):
 
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
+                avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
                 avg_vol_20 = float(vol_series.rolling(20).mean().iloc[-1]) if len(vol_series) >= 20 else float(curr_vol)
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
                 vol_surge_1_5x = bool(curr_vol > (avg_vol_20 * 1.5))
@@ -1021,6 +1025,7 @@ def fetch_screener_universe(ticker_list):
                     "SMA_200": round(sma_200, 2),
                     "Raw_Ticker": ticker,
                     "_raw_vol": curr_vol,
+                    "_avg_vol_10": avg_vol_10,
                     "_avg_vol_20": avg_vol_20,
                     "_change_num": price_change_pct,
                     "_roce_num": roce,
@@ -1122,6 +1127,9 @@ if not df_raw.empty:
             filtered_df = filtered_df[filtered_df["_custom_setup_match"] == True]
 
         if enable_vol_multiplier:
+            filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_10"] * vol_multiplier_10d)]
+
+        if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
     tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(

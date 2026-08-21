@@ -11,6 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 
+# 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
     page_title="Indian Market AI Stock Screener & Paper Trading",
     page_icon="⚡",
@@ -20,6 +21,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -36,6 +38,7 @@ st.markdown(
         justify-content: center !important;
     }
 
+    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: wrap;
@@ -82,6 +85,7 @@ st.markdown(
         color: #cbd5e1;
     }
 
+    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -138,6 +142,93 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+PORTFOLIO_FILE = "portfolio.json"
+WATCHLIST_FILE = "watchlist.json"
+
+def load_json_file(filename):
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_json_file(filename, data):
+    try:
+        with open(filename, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        st.error(f"Error saving to {filename}: {e}")
+
+if "paper_portfolio" not in st.session_state:
+    st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
+
+if "pullback_watchlist" not in st.session_state:
+    st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
+
+if "ai_analysis_cache" not in st.session_state:
+    st.session_state["ai_analysis_cache"] = {}
+
+if "screener_data" not in st.session_state:
+    st.session_state["screener_data"] = pd.DataFrame()
+
+# ==========================================
+# --- FILTER DICTIONARIES & CALLBACKS ------
+# ==========================================
+WIDE_OPEN_FILTERS = {
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 100,  
+    "strict_fund": False,
+    "pat_growth": False,
+    "ob_mcap": False,
+    "roce_rng": (-20, 100),
+    "mcap_rng": (0, 2000000),
+    "max_de": 5.0,
+    "price_rng": (10, 10000),
+    "rsi_rng": (10, 95),
+    "min_adx": 0,
+    "dist_52w": 100,
+    "ma_align": "Any Trend",
+    "vol_10d_en": False,
+    "vol_10d_mult": 1.1,
+    "vol_20d_en": False,
+    "vol_20d_mult": 1.2
+}
+
+STRICT_STRATEGY_FILTERS = {
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 1950, 
+    "strict_fund": True, 
+    "pat_growth": False,
+    "ob_mcap": False,
+    "roce_rng": (20, 100),
+    "mcap_rng": (1000, 2000000),
+    "max_de": 0.50,
+    "price_rng": (30, 2000),
+    "rsi_rng": (55, 75),
+    "min_adx": 20,
+    "dist_52w": 12,
+    "ma_align": "Any Trend",
+    "vol_10d_en": False,
+    "vol_10d_mult": 1.1,
+    "vol_20d_en": False,
+    "vol_20d_mult": 1.2
+}
+
+for key, val in WIDE_OPEN_FILTERS.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+def reset_to_open_filters():
+    for k, v in WIDE_OPEN_FILTERS.items():
+        st.session_state[k] = v
+
+def apply_strict_filters():
+    for k, v in STRICT_STRATEGY_FILTERS.items():
+        st.session_state[k] = v
+
+# --- TIME-DRIVEN MARKET HOURS & ALERT SYSTEM ---
 def render_alert_permission_banner():
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
@@ -209,7 +300,6 @@ def render_alert_permission_banner():
     """
     components.html(banner_html, height=85)
 
-
 def play_trigger_alert(ticker, buy_price):
     js_html = f"""
     <script>
@@ -243,125 +333,8 @@ def play_trigger_alert(ticker, buy_price):
     """
     components.html(js_html, height=0, width=0)
 
-
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_live_market_indices():
-    index_items = [
-        ("^NSEI", "Nifty 50", ""),
-        ("^NSEBANK", "Bank Nifty", ""),
-        ("^NSEMDCP50", "Nifty Midcap", ""),
-        ("^CNXSC", "Nifty Smallcap", ""),
-        ("^INDIAVIX", "India VIX", ""),
-        ("CL=F", "Crude Oil", "$"),
-    ]
-    tickers_str = " ".join([t[0] for t in index_items])
-    results = []
-    try:
-        data = yf.download(
-            tickers=tickers_str,
-            period="5d",
-            interval="1d",
-            group_by="ticker",
-            threads=False,
-            auto_adjust=True,
-            progress=False,
-        )
-        for ticker_sym, name, prefix in index_items:
-            try:
-                df = pd.DataFrame()
-                if hasattr(data.columns, "levels") and ticker_sym in data.columns.levels[0]:
-                    df = data[ticker_sym].dropna(how="all")
-                elif not hasattr(data.columns, "levels"):
-                    df = data.dropna(how="all")
-
-                if not df.empty and len(df) >= 1:
-                    curr_val = float(df["Close"].iloc[-1])
-                    prev_val = float(df["Close"].iloc[-2]) if len(df) >= 2 else curr_val
-                    change = curr_val - prev_val
-                    pct_change = (change / prev_val * 100.0) if prev_val > 0 else 0.0
-                    val_str = f"{prefix}{curr_val:,.2f}" if prefix else f"{curr_val:,.2f}"
-                    change_str = f"{'+' if change >= 0 else ''}{change:.2f}"
-                    pct_str = f"({'+' if pct_change >= 0 else ''}{pct_change:.2f}%)"
-                    results.append({
-                        "name": name,
-                        "value": val_str,
-                        "change": change_str,
-                        "pct": pct_str,
-                        "is_pos": bool(change >= 0),
-                        "arrow": "↗" if change >= 0 else "↘",
-                    })
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    if not results:
-        results = [
-            {"name": "Nifty 50", "value": "24,054.90", "change": "-100.00", "pct": "(-0.41%)", "is_pos": False, "arrow": "↘"},
-            {"name": "Bank Nifty", "value": "57,067.85", "change": "-194.55", "pct": "(-0.34%)", "is_pos": False, "arrow": "↘"},
-            {"name": "Nifty Midcap", "value": "18,201.50", "change": "-15.30", "pct": "(-0.08%)", "is_pos": False, "arrow": "↘"},
-            {"name": "Nifty Smallcap", "value": "16,845.20", "change": "+34.10", "pct": "(+0.20%)", "is_pos": True, "arrow": "↗"},
-            {"name": "India VIX", "value": "11.51", "change": "+0.12", "pct": "(+1.05%)", "is_pos": True, "arrow": "↗"},
-            {"name": "Crude Oil", "value": "$74.85", "change": "+0.45", "pct": "(+0.60%)", "is_pos": True, "arrow": "↗"},
-        ]
-    return results
-
-market_indices = fetch_live_market_indices()
-if market_indices:
-    ticker_html = '<div class="index-ticker-container">'
-    for i, idx in enumerate(market_indices):
-        cls = "index-pos" if idx["is_pos"] else "index-neg"
-        ticker_html += f"""
-        <div class="index-item">
-            <span class="index-name">{idx['name']}</span>
-            <span class="index-val">{idx['value']}</span>
-            <span class="{cls}">{idx['change']} {idx['pct']} {idx['arrow']}</span>
-        </div>
-        """
-        if i < len(market_indices) - 1:
-            ticker_html += '<span class="index-divider">|</span>'
-    ticker_html += '</div>'
-    st.markdown(ticker_html, unsafe_allow_html=True)
-
-st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
-
-PORTFOLIO_FILE = "portfolio.json"
-WATCHLIST_FILE = "watchlist.json"
-
-
-def load_json_file(filename):
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
-
-
-def save_json_file(filename, data):
-    try:
-        with open(filename, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        st.error(f"Error saving to {filename}: {e}")
-
-
-if "paper_portfolio" not in st.session_state:
-    st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
-
-if "pullback_watchlist" not in st.session_state:
-    st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
-
-if "ai_analysis_cache" not in st.session_state:
-    st.session_state["ai_analysis_cache"] = {}
-
-if "screener_data" not in st.session_state:
-    st.session_state["screener_data"] = pd.DataFrame()
-
-
 def stream_gemini_analysis(prompt):
-    candidate_models = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-2.0-flash"]
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     for model_name in candidate_models:
         try:
             model = genai.GenerativeModel(model_name)
@@ -373,7 +346,6 @@ def stream_gemini_analysis(prompt):
         except Exception:
             continue
     yield "Error: Failed to connect to Gemini API. Please check your key or verify your API permissions in Google AI Studio."
-
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_live_ltp_bulk(ticker_list):
@@ -390,7 +362,6 @@ def fetch_live_ltp_bulk(ticker_list):
     except Exception:
         return {}
 
-
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
         return 50.0
@@ -402,7 +373,6 @@ def compute_rsi(series: pd.Series, period: int = 14) -> float:
     rs = avg_gain.iloc[-1] / (avg_loss.iloc[-1] + 1e-9)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     return float(rsi) if not pd.isna(rsi) else 50.0
-
 
 def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
     if len(df) < period * 2:
@@ -421,302 +391,6 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return round(float(adx), 1) if not pd.isna(adx) else 25.0
     except Exception:
         return 25.0
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_screener_universe(ticker_list):
-    if not ticker_list:
-        return pd.DataFrame()
-
-    unique_tickers = list(dict.fromkeys(ticker_list))
-    total = len(unique_tickers)
-    
-    chunk_size = 50
-    chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
-    rows = []
-    seen = set()
-
-    for c_idx, chunk in enumerate(chunks):
-        batch_data = pd.DataFrame()
-        
-        for attempt in range(3):
-            try:
-                batch_data = yf.download(
-                    tickers=" ".join(chunk), 
-                    period="1y", 
-                    interval="1d", 
-                    group_by="ticker", 
-                    threads=False, 
-                    auto_adjust=True, 
-                    progress=False, 
-                    timeout=10
-                )
-                if not batch_data.empty:
-                    break
-            except Exception:
-                time.sleep(1)
-                
-        if len(chunks) > 1:
-            time.sleep(0.5)
-
-        if batch_data.empty:
-            continue
-
-        for ticker in chunk:
-            clean_sym = ticker.replace(".NS", "").replace(".BO", "")
-            if clean_sym in seen:
-                continue
-
-            try:
-                hist = pd.DataFrame()
-                if isinstance(batch_data.columns, pd.MultiIndex):
-                    if ticker in batch_data.columns.get_level_values(0):
-                        hist = batch_data[ticker]
-                else:
-                    if len(chunk) == 1:
-                        hist = batch_data
-
-                hist = hist.dropna(how="all")
-                if hist.empty or len(hist) < 26:
-                    continue
-
-                hist = hist[~hist.index.duplicated(keep="last")]
-                curr_price = float(hist["Close"].iloc[-1])
-                prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else curr_price
-                price_change_pct = round(((curr_price - prev_close) / prev_close) * 100.0, 2) if prev_close > 0 else 0.0
-
-                ema_5 = float(hist["Close"].ewm(span=5, adjust=False).mean().iloc[-1])
-                ema_9 = float(hist["Close"].ewm(span=9, adjust=False).mean().iloc[-1])
-                ema_20 = float(hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
-                ema_44 = float(hist["Close"].ewm(span=44, adjust=False).mean().iloc[-1])
-                ema_50 = float(hist["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
-                ema_200 = float(hist["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
-                
-                sma_50 = float(hist["Close"].rolling(50).mean().iloc[-1]) if len(hist) >= 50 else curr_price
-                sma_200 = float(hist["Close"].rolling(200).mean().iloc[-1]) if len(hist) >= 200 else curr_price
-                
-                high_52w = float(hist["High"].max())
-                dist_52w_high = max(0.0, ((high_52w - curr_price) / high_52w) * 100.0)
-
-                prev_20d_high = float(hist["High"].iloc[:-1].tail(20).max()) if len(hist) > 20 else float(hist["High"].max())
-                is_20d_high_breakout = bool(curr_price > prev_20d_high)
-
-                rsi_val = compute_rsi(hist["Close"], 14)
-                adx_val = compute_adx(hist, 14)
-
-                is_weekly_setup_match = False
-                try:
-                    temp_hist = hist.copy()
-                    if getattr(temp_hist.index, 'tz', None) is not None:
-                        temp_hist.index = temp_hist.index.tz_convert(None)
-                    
-                    weekly_df = temp_hist.resample("W-FRI").agg({
-                        "Open": "first", 
-                        "High": "max", 
-                        "Low": "min", 
-                        "Close": "last", 
-                        "Volume": "sum"
-                    }).dropna()
-
-                    if len(weekly_df) >= 26:
-                        w_close = weekly_df["Close"]
-                        w_high = weekly_df["High"]
-                        w_low = weekly_df["Low"]
-
-                        w_exp1 = w_close.ewm(span=13, adjust=False).mean()
-                        w_exp2 = w_close.ewm(span=21, adjust=False).mean()
-                        w_macd_line = w_exp1 - w_exp2
-                        w_macd_signal = w_macd_line.ewm(span=9, adjust=False).mean()
-                        macd_cross = False
-                        if len(w_macd_line) >= 2 and pd.notna(w_macd_line.iloc[-1]):
-                            macd_cross = (w_macd_line.iloc[-1] > w_macd_signal.iloc[-1]) and (w_macd_line.iloc[-2] <= w_macd_signal.iloc[-2])
-
-                        lowest_low = w_low.rolling(window=4).min()
-                        highest_high = w_high.rolling(window=4).max()
-                        stoch_k = 100 * ((w_close - lowest_low) / (highest_high - lowest_low + 1e-9))
-                        stoch_cross = False
-                        if len(stoch_k) >= 2 and pd.notna(stoch_k.iloc[-1]):
-                            stoch_cross = (stoch_k.iloc[-1] > 80) and (stoch_k.iloc[-2] <= 80)
-
-                        delta = w_close.diff()
-                        gain = delta.where(delta > 0, 0.0)
-                        loss = -delta.where(delta < 0, 0.0)
-                        avg_gain = gain.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
-                        avg_loss = loss.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
-                        rs = avg_gain / (avg_loss + 1e-9)
-                        w_rsi = 100.0 - (100.0 / (1.0 + rs))
-                        rsi_cross = False
-                        if len(w_rsi) >= 2 and pd.notna(w_rsi.iloc[-1]):
-                            rsi_cross = (w_rsi.iloc[-1] > 70) and (w_rsi.iloc[-2] <= 70)
-
-                        tr1 = w_high - w_low
-                        tr2 = (w_high - w_close.shift(1)).abs()
-                        tr3 = (w_low - w_close.shift(1)).abs()
-                        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-                        w_atr = tr.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
-                        atr_cond = False
-                        if len(w_atr) >= 1 and pd.notna(w_atr.iloc[-1]):
-                            atr_cond = w_atr.iloc[-1] > 0
-
-                        is_weekly_setup_match = bool(macd_cross and stoch_cross and rsi_cross and atr_cond)
-                except Exception:
-                    is_weekly_setup_match = False
-
-                vol_series = hist["Volume"].dropna()
-                curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
-                avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
-                avg_vol_20 = float(vol_series.rolling(20).mean().iloc[-1]) if len(vol_series) >= 20 else float(curr_vol)
-                vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
-                vol_surge_2x = bool(curr_vol > (avg_vol_20 * 2.0))
-
-                mcap_cr = round(max(100.0, (curr_price * max(1000.0, avg_vol_20) * 180) / 1e7), 1)
-                pe = round(float(np.clip(curr_price / max(1.0, curr_price * 0.05), 8.0, 85.0)), 1)
-                roce = round(float(np.clip(14.0 + (rsi_val - 50.0) * 0.4, 5.0, 65.0)), 1)
-
-                ob_val = ORDER_BOOK_CR_MAP.get(clean_sym, 0.0)
-                if ob_val > 0:
-                    ob_display = f"₹{ob_val:,.0f}"
-                    ob_mcap_ratio = round(ob_val / max(1.0, mcap_cr), 2)
-                    is_order_book_gt_mcap = bool(ob_val >= mcap_cr)
-                else:
-                    est_revenue = round(mcap_cr / max(1.0, pe) * 3.5, 1)
-                    ob_display = f"₹{est_revenue:,.0f} (Est. Sales)"
-                    ob_mcap_ratio = round(est_revenue / max(1.0, mcap_cr), 2)
-                    is_order_book_gt_mcap = bool(ob_mcap_ratio >= 1.0)
-
-                cluster_high = max(ema_9, ema_20, ema_44, sma_50)
-                cluster_low = min(ema_9, ema_20, ema_44, sma_50)
-                cluster_spread = ((cluster_high - cluster_low) / cluster_high * 100.0) if cluster_high > 0 else 10.0
-                is_cluster_squeeze = bool(cluster_spread <= 4.5 and curr_price >= cluster_high)
-
-                is_triple_cross = bool(ema_9 > ema_20 > ema_44 and 30 <= curr_price <= 3000 and mcap_cr >= 1000)
-
-                if len(weekly_df) >= 5:
-                    w_close_mtf = float(weekly_df["Close"].iloc[-1])
-                    w_ema20_mtf = float(weekly_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
-                    w_rsi_mtf = compute_rsi(weekly_df["Close"], 14)
-                    w_52h_mtf = float(weekly_df["High"].tail(52).max())
-                else:
-                    w_close_mtf, w_ema20_mtf, w_rsi_mtf, w_52h_mtf = curr_price, ema_20, rsi_val, high_52w
-
-                passes_mtf_breakout = bool(
-                    w_close_mtf > w_ema20_mtf and w_rsi_mtf >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_2x and curr_price >= (w_52h_mtf * 0.80)
-                )
-
-                c_20d = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
-                c_125d = float(hist["Close"].iloc[-126]) if len(hist) >= 126 else float(hist["Close"].iloc[0])
-                is_relative_strength = bool(
-                    ((curr_price - ema_200) / ema_200 * 100.0 > 30.0)
-                    and ((curr_price - c_125d) / c_125d * 100.0 > 20.0)
-                    and ((curr_price - sma_50) / sma_50 * 100.0 > 20.0)
-                    and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
-                )
-
-                score = 0
-                if is_20d_high_breakout: score += 25
-                if vol_surge_2x: score += 25
-                if curr_price > ema_9 > ema_20: score += 25
-                if adx_val >= 25: score += 25
-                
-                if price_change_pct > 8.0:
-                    score -= 30
-
-                swing_composite = float(np.clip(score, 10, 100))
-                is_overextended = bool(curr_price > ema_9 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
-
-                if swing_composite >= 100.0:
-                    action_signal = "🟢 STRONG BUY (Breakout)"
-                elif swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
-                    action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
-                    action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 40:
-                    action_signal = "🟠 CONSOLIDATING"
-                else:
-                    action_signal = "🔴 AVOID / WEAK"
-
-                change_display = f"{'+' if price_change_pct >= 0 else ''}{price_change_pct:.2f}%"
-
-                rows.append({
-                    "Ticker": clean_sym,
-                    "Signal": action_signal,
-                    "Price (₹)": round(curr_price, 2),
-                    "Change (%)": change_display,
-                    "Volume": f"{curr_vol:,}",
-                    "Composite Score": round(swing_composite, 1),
-                    "ROCE (%)": roce,
-                    "PAT YoY (%)": "N/A",  
-                    "ADX (14)": adx_val,
-                    "RSI (14)": round(rsi_val, 1),
-                    "From 52W High (%)": round(dist_52w_high, 1),
-                    "Vol Surge": vol_surge,
-                    "Market Cap (₹ Cr)": mcap_cr,
-                    "Order Book (₹ Cr)": ob_display,
-                    "OB / MCap": f"{ob_mcap_ratio:.2f}x",
-                    "9 EMA": round(ema_9, 2),
-                    "20 EMA": round(ema_20, 2),
-                    "44 EMA": round(ema_44, 2),
-                    "SMA_50": round(sma_50, 2),
-                    "SMA_200": round(sma_200, 2),
-                    "Raw_Ticker": ticker,
-                    "_raw_vol": curr_vol,
-                    "_avg_vol_10": avg_vol_10,
-                    "_avg_vol_20": avg_vol_20,
-                    "_change_num": price_change_pct,
-                    "_roce_num": roce,
-                    "_pat_num": 0.0,
-                    "_de_num": 0.5,
-                    "_mcap_num": mcap_cr,
-                    "_adx_num": adx_val,
-                    "_cluster_squeeze_match": is_cluster_squeeze,
-                    "_triple_ema_match": is_triple_cross,
-                    "_mtf_match": passes_mtf_breakout,
-                    "_rs_match": is_relative_strength,
-                    "_ob_gt_mcap": is_order_book_gt_mcap,
-                    "_weekly_setup_match": is_weekly_setup_match,
-                })
-                seen.add(clean_sym)
-            except Exception:
-                continue
-
-        del batch_data
-        gc.collect()
-
-    final_df = pd.DataFrame(rows)
-    if not final_df.empty:
-        float_cols = final_df.select_dtypes(include=['float64']).columns
-        final_df[float_cols] = final_df[float_cols].astype('float32')
-        
-    return final_df
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_single_stock_history(ticker):
-    try:
-        clean_ticker = ticker.strip()
-        if not (clean_ticker.endswith(".NS") or clean_ticker.endswith(".BO")):
-            clean_ticker = f"{clean_ticker}.NS"
-
-        df = yf.download(
-            tickers=clean_ticker,
-            period="1y",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-            timeout=10,
-        )
-
-        if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df = df.droplevel(1, axis=1) if df.columns.nlevels > 1 else df
-            return df.dropna(how="all")
-
-        t = yf.Ticker(clean_ticker)
-        return t.history(period="1y")
-    except Exception:
-        return pd.DataFrame()
-
 
 ORDER_BOOK_CR_MAP = {
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
@@ -1048,11 +722,32 @@ UNIVERSE_PRESETS = {
     ],
 }
 
-
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_all_nse_symbols():
     unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
     return [f"{s}.NS" for s in unique_list]
+
+# ==========================================
+# --- SIDEBAR CONTROLS ---------------------
+# ==========================================
+st.sidebar.header("🔑 API Setup")
+api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
+
+if api_key_from_secrets:
+    GEMINI_API_KEY = str(api_key_from_secrets).strip()
+    st.sidebar.success("✅ Gemini API Key connected")
+else:
+    GEMINI_API_KEY = st.sidebar.text_input(
+        "Google Gemini API Key",
+        type="password",
+        help="Get a key from Google AI Studio (aistudio.google.com)",
+    )
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY.strip())
+    except Exception as e:
+        st.sidebar.error(f"Error configuring API: {e}")
 
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
 
@@ -1126,9 +821,8 @@ if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     st.rerun()
 
 # ==========================================
-# --- DATA FETCH & EXECUTION BLOCK ---
+# --- DATA PIPELINE ------------------------
 # ==========================================
-
 if st.session_state["screener_data"].empty:
     status_box = st.info("⏳ Initializing market scan...")
     st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
@@ -1241,11 +935,9 @@ if not df_raw.empty:
         filtered_df = filtered_df.loc[valid_indices]
         pat_status.empty()
 
-
 # ==========================================
-# --- UI TABS ---
+# --- UI TABS ------------------------------
 # ==========================================
-
 tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
     [
         "📊 Screener & Momentum Signals",
@@ -1312,7 +1004,6 @@ with tab_screener:
             return f"{int(score)}" if pd.notna(score) else "-"
 
         table_data["Composite Score"] = table_data.apply(lambda r: format_comp(r["Composite Score"], r["Ticker"]), axis=1)
-
         table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
         table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")

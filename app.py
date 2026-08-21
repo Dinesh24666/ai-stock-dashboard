@@ -770,13 +770,13 @@ else:
 
 apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False if is_single_search else True)
 order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 100))
-mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (1000, 2000000), 500)
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, 0.1)
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (-20, 100))
+mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (0, 2000000), 500)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 5.0, 0.1)
 
-price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (30, 3000), 10)
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
-min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
+price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (10, 10000), 10)
+rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (30, 90))
+min_adx = st.sidebar.slider("Min ADX", 0, 50, 0)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
 
 sma_trend_filter = st.sidebar.selectbox(
@@ -794,7 +794,7 @@ sma_trend_filter = st.sidebar.selectbox(
 enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", value=False)
 vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_10d)
 
-enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
+enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False)
 vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_20d)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)

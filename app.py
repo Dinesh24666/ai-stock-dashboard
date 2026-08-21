@@ -200,26 +200,23 @@ def render_alert_permission_banner():
                 }
             });
         }
-        
-        // Play a LOUD test sound
         try {
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) {
                 var ctx = new AudioCtx();
-                ctx.resume();
+                if (ctx.state === "suspended") ctx.resume();
                 var osc = ctx.createOscillator();
                 var gain = ctx.createGain();
-                osc.type = "square"; // Harsh, loud alarm sound
-                osc.frequency.value = 900;
                 osc.connect(gain);
                 gain.connect(ctx.destination);
-                gain.gain.setValueAtTime(1.0, ctx.currentTime); // 100% volume
-                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
                 osc.start();
-                osc.stop(ctx.currentTime + 0.5);
+                osc.stop(ctx.currentTime + 0.25);
             }
-        } catch(e) { console.log(e); }
-    }
+        } catch(e) {}
     }
 
     window.onload = checkMarketHoursAndPermissions;
@@ -275,6 +272,8 @@ def play_trigger_alert(ticker, buy_price):
     </script>
     """
     components.html(js_html, height=0, width=0)
+
+
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
@@ -873,6 +872,40 @@ if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     gc.collect()
     st.rerun()
 
+# --- OPTIMIZATION 3 HELPER: Fast Streamed AI ---
+def stream_gemini_analysis(prompt):
+    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-pro"]
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+            return
+        except Exception:
+            continue
+    yield "Error: Failed to connect to Gemini API. Please check your key or try again later."
+
+
+# --- OPTIMIZATION 2 HELPER: Fast Live Price Bulk Polling ---
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_live_ltp_bulk(ticker_list):
+    """Fetches real-time market prices instantly bypassing heavy downloads."""
+    if not ticker_list:
+        return {}
+    try:
+        # Use simple fast_info looping for ultimate speed on small lists
+        results = {}
+        for sym in ticker_list:
+            try:
+                results[sym] = float(yf.Ticker(sym).fast_info.last_price)
+            except:
+                pass
+        return results
+    except Exception:
+        return {}
+
 
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
@@ -915,7 +948,6 @@ def fetch_screener_universe(ticker_list):
     total = len(unique_tickers)
     progress_bar = st.progress(0, text="Fetching market data...")
     
-    # Safe chunk size to avoid Yahoo Finance IP block limits
     chunk_size = 50
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
     rows = []
@@ -926,7 +958,6 @@ def fetch_screener_universe(ticker_list):
         
         batch_data = pd.DataFrame()
         
-        # Retry mechanism to handle yfinance random rate limit failures
         for attempt in range(3):
             try:
                 batch_data = yf.download(
@@ -944,7 +975,6 @@ def fetch_screener_universe(ticker_list):
             except Exception:
                 time.sleep(1)
                 
-        # Sleep slightly between chunks to prevent 429 errors from YF
         if len(chunks) > 1:
             time.sleep(0.5)
 
@@ -993,7 +1023,6 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # --- WEEKLY MACD, STOCHASTICS, RSI(7) SETUP LOGIC ---
                 is_weekly_setup_match = False
                 try:
                     temp_hist = hist.copy()
@@ -1013,7 +1042,6 @@ def fetch_screener_universe(ticker_list):
                         w_high = weekly_df["High"]
                         w_low = weekly_df["Low"]
 
-                        # 1. Weekly MACD (21, 13, 9) Crossover
                         w_exp1 = w_close.ewm(span=13, adjust=False).mean()
                         w_exp2 = w_close.ewm(span=21, adjust=False).mean()
                         w_macd_line = w_exp1 - w_exp2
@@ -1022,7 +1050,6 @@ def fetch_screener_universe(ticker_list):
                         if len(w_macd_line) >= 2 and pd.notna(w_macd_line.iloc[-1]):
                             macd_cross = (w_macd_line.iloc[-1] > w_macd_signal.iloc[-1]) and (w_macd_line.iloc[-2] <= w_macd_signal.iloc[-2])
 
-                        # 2. Weekly Fast Stochastic %K (4, 1) Crossover > 80
                         lowest_low = w_low.rolling(window=4).min()
                         highest_high = w_high.rolling(window=4).max()
                         stoch_k = 100 * ((w_close - lowest_low) / (highest_high - lowest_low + 1e-9))
@@ -1030,7 +1057,6 @@ def fetch_screener_universe(ticker_list):
                         if len(stoch_k) >= 2 and pd.notna(stoch_k.iloc[-1]):
                             stoch_cross = (stoch_k.iloc[-1] > 80) and (stoch_k.iloc[-2] <= 80)
 
-                        # 3. Weekly RSI (7) Crossover > 70
                         delta = w_close.diff()
                         gain = delta.where(delta > 0, 0.0)
                         loss = -delta.where(delta < 0, 0.0)
@@ -1042,7 +1068,6 @@ def fetch_screener_universe(ticker_list):
                         if len(w_rsi) >= 2 and pd.notna(w_rsi.iloc[-1]):
                             rsi_cross = (w_rsi.iloc[-1] > 70) and (w_rsi.iloc[-2] <= 70)
 
-                        # 4. Weekly ATR (7) > 0
                         tr1 = w_high - w_low
                         tr2 = (w_high - w_close.shift(1)).abs()
                         tr3 = (w_low - w_close.shift(1)).abs()
@@ -1056,7 +1081,6 @@ def fetch_screener_universe(ticker_list):
                 except Exception:
                     is_weekly_setup_match = False
 
-                # --- DAILY VOLUME AND INDICATORS ---
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
                 avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
@@ -1117,6 +1141,9 @@ def fetch_screener_universe(ticker_list):
                     score -= 30
 
                 swing_composite = float(np.clip(score, 10, 100))
+                
+                # Check for overextended
+                is_overextended = bool(curr_price > ema_9 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
 
                 if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
                     action_signal = "🟢 STRONG BUY (Breakout)"
@@ -1137,7 +1164,7 @@ def fetch_screener_universe(ticker_list):
                     "Volume": f"{curr_vol:,}",
                     "Composite Score": round(swing_composite, 1),
                     "ROCE (%)": roce,
-                    "PAT YoY (%)": "N/A",  # Default placeholder for exact fundamental matching
+                    "PAT YoY (%)": "N/A",  
                     "ADX (14)": adx_val,
                     "RSI (14)": round(rsi_val, 1),
                     "From 52W High (%)": round(dist_52w_high, 1),
@@ -1175,7 +1202,14 @@ def fetch_screener_universe(ticker_list):
         gc.collect()
 
     progress_bar.empty()
-    return pd.DataFrame(rows)
+    
+    # --- OPTIMIZATION 4: Downcast Memory for large DataFrames ---
+    final_df = pd.DataFrame(rows)
+    if not final_df.empty:
+        float_cols = final_df.select_dtypes(include=['float64']).columns
+        final_df[float_cols] = final_df[float_cols].astype('float32')
+        
+    return final_df
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -1440,6 +1474,7 @@ with tab_deepdive:
 
                 st.subheader("🤖 AI Short-Term Swing Thesis & Trade Setup")
                 cached_thesis = st.session_state.get("ai_analysis_cache", {}).get(selected_stock)
+                
                 if cached_thesis:
                     st.markdown(cached_thesis)
 
@@ -1463,50 +1498,19 @@ with tab_deepdive:
                         3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
                         4. **Exit Trigger**: Invalidation condition for swing trades.
                         """
-                        with st.spinner("Analyzing momentum setup with Gemini..."):
-                            success = False
-                            error_logs = []
-                            candidate_models = []
-                            try:
-                                for m in genai.list_models():
-                                    if "generateContent" in m.supported_generation_methods:
-                                        candidate_models.append(m.name.replace("models/", ""))
-                            except Exception as e:
-                                error_logs.append(f"Model listing error: {e}")
+                        # OPTIMIZATION 3: Stream generated response instantly
+                        try:
+                            st.session_state["ai_analysis_cache"][selected_stock] = st.write_stream(stream_gemini_analysis(prompt))
+                        except Exception as e:
+                            st.error(f"Failed to generate: {e}")
 
-                            if not candidate_models:
-                                candidate_models = [
-                                    "gemini-1.5-flash",
-                                    "gemini-2.0-flash",
-                                    "gemini-1.5-flash-8b",
-                                    "gemini-1.5-pro",
-                                    "gemini-pro",
-                                ]
-
-                            for model_name in candidate_models:
-                                try:
-                                    model = genai.GenerativeModel(model_name)
-                                    res = model.generate_content(prompt)
-                                    if res and res.text:
-                                        st.session_state["ai_analysis_cache"][selected_stock] = res.text
-                                        st.markdown(res.text)
-                                        success = True
-                                        break
-                                except Exception as err:
-                                    error_logs.append(f"{model_name}: {str(err)}")
-                                    continue
-
-                            if not success:
-                                st.error("Failed to generate AI thesis.")
-                                with st.expander("🔍 View Error Details"):
-                                    for err in error_logs:
-                                        st.code(err)
-
-with tab_pullback_watchlist:
+# ==========================================
+# OPTIMIZATION 1: ISOLATED FRAGMENTS FOR TABS
+# ==========================================
+@st.fragment
+def render_pullback_watchlist_tab(screener_data_df):
     st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
-    
     render_alert_permission_banner()
-    
     st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 
     col_w_dl, col_w_up = st.columns([1, 1])
@@ -1538,8 +1542,8 @@ with tab_pullback_watchlist:
                 use_container_width=True,
             )
 
-    if not df_raw.empty:
-        pullback_candidates = df_raw["Raw_Ticker"].tolist()
+    if not screener_data_df.empty:
+        pullback_candidates = screener_data_df["Raw_Ticker"].tolist()
         curr_selected = st.session_state.get("selected_ticker", pullback_candidates[0] if pullback_candidates else "ACE.NS")
         default_wb_idx = pullback_candidates.index(curr_selected) if curr_selected in pullback_candidates else 0
 
@@ -1547,8 +1551,8 @@ with tab_pullback_watchlist:
             cw1, cw2, cw3, cw4, cw5 = st.columns([1.2, 1, 1, 1, 1])
             with cw1:
                 sel_stock = st.selectbox("Stock Candidate:", pullback_candidates, index=default_wb_idx)
-                matched_match = df_raw[df_raw["Raw_Ticker"] == sel_stock]
-                matched_row = matched_match.iloc[0] if not matched_match.empty else df_raw.iloc[0]
+                matched_match = screener_data_df[screener_data_df["Raw_Ticker"] == sel_stock]
+                matched_row = matched_match.iloc[0] if not matched_match.empty else screener_data_df.iloc[0]
                 live_ltp = float(matched_row["Price (₹)"])
                 ema20_val = float(matched_row["20 EMA"])
             with cw2:
@@ -1590,9 +1594,13 @@ with tab_pullback_watchlist:
 
     active_watchlist = st.session_state.get("pullback_watchlist", [])
     if active_watchlist:
-        live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        # OPTIMIZATION 2: Fast isolated price check for watchlist
+        wb_tickers = [item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS" for item in active_watchlist]
+        live_price_dict = fetch_live_ltp_bulk(wb_tickers)
+        
         updated_watchlist = []
         display_rows = []
+        trade_executed = False
 
         for item in active_watchlist:
             if not isinstance(item, dict) or "Target Buy (₹)" not in item:
@@ -1607,15 +1615,11 @@ with tab_pullback_watchlist:
             status_str = item.get("Status", "⏳ Waiting for Pullback")
 
             curr_ltp = live_price_dict.get(sym)
-            if curr_ltp is None:
-                try:
-                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
-                except Exception:
-                    curr_ltp = None
 
             if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
                 status_str = "⚡ Triggered / Bought"
                 item["Status"] = status_str
+                trade_executed = True
                 
                 play_trigger_alert(clean_sym, target_buy)
                 st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="⚡")
@@ -1721,7 +1725,7 @@ with tab_pullback_watchlist:
                 ]
                 save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
                 st.success(f"Re-armed {rearm_sym} and synchronized trades!")
-                st.rerun()
+                st.rerun() # Full rerun to sync tabs
         with m_col3:
             st.write("")
             st.write("")
@@ -1738,26 +1742,31 @@ with tab_pullback_watchlist:
                 ]
                 save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
                 st.success(f"Deleted {removed_sym} from watchlist!")
-                st.rerun()
+                st.rerun() # Full rerun to sync tabs
+                
+        if trade_executed:
+            st.rerun() # Force full app refresh so portfolio tab updates automatically
     else:
         st.info("Watchlist is empty. Add a pullback setup above.")
 
-with tab_watchlist:
+
+@st.fragment
+def render_portfolio_tab(screener_data_df):
     st.subheader("💼 Paper Trading Portfolio & Risk Manager")
     active_portfolio = st.session_state.get("paper_portfolio", [])
 
-    if not df_raw.empty:
+    if not screener_data_df.empty:
         with st.expander("➕ Execute New Paper Trade (Custom SL, Target & Remarks)", expanded=False):
             col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
             with col_add1:
-                available_tickers = df_raw["Raw_Ticker"].tolist() if not df_raw.empty else ["ACE.NS"]
+                available_tickers = screener_data_df["Raw_Ticker"].tolist() if not screener_data_df.empty else ["ACE.NS"]
                 curr_selected_trade = st.session_state.get("selected_ticker", available_tickers[0])
                 default_trade_idx = available_tickers.index(curr_selected_trade) if curr_selected_trade in available_tickers else 0
                 trade_stock = st.selectbox("Stock:", available_tickers, index=default_trade_idx)
             with col_add2:
                 trade_date = st.date_input("Entry Date", value=date.today())
             with col_add3:
-                matched_stock = df_raw[df_raw["Raw_Ticker"] == trade_stock] if not df_raw.empty else pd.DataFrame()
+                matched_stock = screener_data_df[screener_data_df["Raw_Ticker"] == trade_stock] if not screener_data_df.empty else pd.DataFrame()
                 live_price = float(matched_stock["Price (₹)"].iloc[0]) if not matched_stock.empty else 100.0
                 buy_price = st.number_input("Entry Price (₹)", value=live_price, min_value=0.1, step=0.5)
             with col_add4:
@@ -1827,6 +1836,7 @@ with tab_watchlist:
                     st.session_state["paper_portfolio"] = restored_data
                     save_json_file(PORTFOLIO_FILE, restored_data)
                     st.success("Portfolio successfully restored!")
+                    st.rerun()
             except Exception as e:
                 st.error(f"Failed to restore backup: {e}")
 
@@ -1841,7 +1851,10 @@ with tab_watchlist:
             )
 
     if active_portfolio:
-        live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        # OPTIMIZATION 2: Fast isolated price check for active portfolio
+        port_tickers = [pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS") for pos in active_portfolio if "Open" in pos.get("Status", "")]
+        live_price_dict = fetch_live_ltp_bulk(port_tickers)
+        
         open_invested = 0.0
         open_current_val = 0.0
         unrealised_pnl_total = 0.0
@@ -1859,13 +1872,6 @@ with tab_watchlist:
             clean_t = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
             buy_p = float(pos.get("Buy Price (₹)", 0.0))
             
-            curr_p = live_price_dict.get(sym)
-            if curr_p is None:
-                try:
-                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
-                except Exception:
-                    curr_p = buy_p
-
             qty = int(pos.get("Qty", 1))
             invested = float(pos.get("Invested (₹)", buy_p * qty))
             sl = float(pos.get("SL (₹)", 0.0))
@@ -1875,6 +1881,15 @@ with tab_watchlist:
             pos_remarks = str(pos.get("Remarks", sma_trend_filter))
             pos_status = str(pos.get("Status", "🟢 Open"))
             saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
+
+            # Get price from fast fetch, fallback to cached raw data
+            if pos_status == "🟢 Open":
+                curr_p = live_price_dict.get(sym)
+            else:
+                curr_p = saved_exit_price
+                
+            if curr_p is None: 
+                curr_p = buy_p
 
             if pos_status == "🟢 Open":
                 if sl > 0 and curr_p <= sl:
@@ -2064,3 +2079,10 @@ with tab_watchlist:
             st.session_state["paper_portfolio"] = []
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
+
+# Call the fragments to render them in their respective tabs
+with tab_pullback_watchlist:
+    render_pullback_watchlist_tab(filtered_df)
+
+with tab_watchlist:
+    render_portfolio_tab(filtered_df)

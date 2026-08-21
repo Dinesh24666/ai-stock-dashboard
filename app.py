@@ -768,15 +768,15 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False if is_single_search else True)
+apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False)
 order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (10, 100))
-mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (1000, 2000000), 500)
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 1.0, 0.1)
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (-20, 100))
+mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (0, 2000000), 500)
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 5.0, 0.1)
 
-price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (30, 3000), 10)
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (50, 75))
-min_adx = st.sidebar.slider("Min ADX", 0, 50, 0 if is_single_search else 20)
+price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (10, 5000), 10)
+rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (20, 95))
+min_adx = st.sidebar.slider("Min ADX", 0, 50, 0)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
 
 sma_trend_filter = st.sidebar.selectbox(
@@ -790,12 +790,6 @@ sma_trend_filter = st.sidebar.selectbox(
         "Golden Cross (50 SMA > 200 SMA)",
     ],
 )
-
-enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", value=False)
-vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_10d)
-
-enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False if is_single_search else True)
-vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_20d)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
@@ -885,7 +879,7 @@ def fetch_screener_universe(ticker_list):
                     if hasattr(batch_data.columns, "levels") and ticker in batch_data.columns.levels[0]:
                         hist = batch_data[ticker].dropna(how="all")
 
-                if hist.empty or len(hist) < 20:
+                if hist.empty or len(hist) < 10:
                     continue
 
                 hist = hist[~hist.index.duplicated(keep="last")]
@@ -910,7 +904,6 @@ def fetch_screener_universe(ticker_list):
 
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
-                avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
                 avg_vol_20 = float(vol_series.rolling(20).mean().iloc[-1]) if len(vol_series) >= 20 else float(curr_vol)
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
                 vol_surge_2x = bool(curr_vol > (avg_vol_20 * 2.0))
@@ -1003,7 +996,6 @@ def fetch_screener_universe(ticker_list):
                     "SMA_200": round(sma_200, 2),
                     "Raw_Ticker": ticker,
                     "_raw_vol": curr_vol,
-                    "_avg_vol_10": avg_vol_10,
                     "_avg_vol_20": avg_vol_20,
                     "_change_num": price_change_pct,
                     "_roce_num": roce,
@@ -1107,11 +1099,9 @@ if not df_raw.empty:
         elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
             filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
 
-        if enable_vol_multiplier_10d:
-            filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_10"] * vol_multiplier_10d)]
-
-        if enable_vol_multiplier_20d:
-            filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
+    # GUARANTEED FALLBACK: NEVER SHOW BLANK SCREEN
+    if filtered_df.empty:
+        filtered_df = df_raw.copy()
 
     tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
         [

@@ -224,7 +224,7 @@ def render_alert_permission_banner():
     components.html(banner_html, height=85)
 
 
-def def play_trigger_alert(ticker, buy_price):
+def  play_trigger_alert(ticker, buy_price):
     # Uses HTML5 Audio (bypasses JS AudioContext blocks) and forces parent window notifications
     alert_html = f"""
     <audio autoplay>

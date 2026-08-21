@@ -200,10 +200,23 @@ def render_alert_permission_banner():
                 }
             });
         }
-        
-        // Play a test sound to ensure browser allows audio
-        var testAudio = new Audio("https://upload.wikimedia.org/wikipedia/commons/3/34/Sound_Effect_-_Mushroom_Laser_Ping.ogg");
-        testAudio.play().catch(e => console.log("Audio test blocked:", e));
+        try {
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+                var ctx = new AudioCtx();
+                if (ctx.state === "suspended") ctx.resume();
+                var osc = ctx.createOscillator();
+                var gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.25);
+            }
+        } catch(e) {}
     }
 
     window.onload = checkMarketHoursAndPermissions;
@@ -214,32 +227,49 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # 1. Native HTML5 Audio Tag: Bypasses iframe restrictions by injecting into main DOM
-    audio_url = "https://upload.wikimedia.org/wikipedia/commons/3/34/Sound_Effect_-_Mushroom_Laser_Ping.ogg"
-    st.markdown(
-        f'<audio autoplay style="display:none;"><source src="{audio_url}" type="audio/ogg"></audio>',
-        unsafe_allow_html=True,
-    )
-    
-    # 2. Standard Push Notification Logic
+    # Completely escapes the iframe to play audio on the parent window directly
     js_html = f"""
     <script>
     (function() {{
         try {{
+            // 1. Push Notification
             var nTitle = "🎯 PULLBACK HIT: {ticker}";
             var nBody = "Trade executed at ₹{buy_price:,.2f}. Moved to Portfolio.";
             var nIcon = "https://cdn-icons-png.flaticon.com/512/190/190411.png";
+            var notif = window.parent.Notification || window.Notification;
             
-            if (window.Notification) {{
-                if (Notification.permission === "granted") {{
-                    new Notification(nTitle, {{body: nBody, icon: nIcon}});
-                }} else {{
-                    Notification.requestPermission().then(function(p) {{
-                        if (p === "granted") new Notification(nTitle, {{body: nBody, icon: nIcon}});
+            if (notif && notif.permission === "granted") {{
+                new notif(nTitle, {{body: nBody, icon: nIcon}});
+            }}
+
+            // 2. Bypassing iframe restrictions by executing audio directly on the parent window
+            window.parent.eval(`
+                var audio = new Audio("https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg");
+                var playPromise = audio.play();
+                
+                if (playPromise !== undefined) {{
+                    playPromise.catch(function(e) {{
+                        console.log("Audio file blocked, attempting Web Audio API beep fallback...", e);
+                        var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                        if(AudioCtx) {{
+                            var ctx = new AudioCtx();
+                            ctx.resume();
+                            var osc = ctx.createOscillator();
+                            var gain = ctx.createGain();
+                            osc.connect(gain);
+                            gain.connect(ctx.destination);
+                            osc.frequency.value = 880; // Beep pitch
+                            gain.gain.setValueAtTime(0.4, ctx.currentTime);
+                            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1);
+                            osc.start();
+                            osc.stop(ctx.currentTime + 1);
+                        }}
                     }});
                 }}
-            }}
-        }} catch(e) {{ console.log(e); }}
+            `);
+        }} catch(e) {{ 
+            console.log("Alert script error:", e); 
+        }}
     }})();
     </script>
     """

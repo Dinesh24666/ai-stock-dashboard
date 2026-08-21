@@ -225,50 +225,79 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
+    # Fix: Uses a unique window key so the alert ONLY flashes and beeps exactly once per trade
     js_html = f"""
     <script>
     (function() {{
-        try {{
-            var AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if(AudioCtx) {{
-                var ctx = new AudioCtx();
-                ctx.resume();
-                
-                function playLoudBeep(freq, startTime, duration) {{
+        var lockKey = "alert_fired_{ticker}_{buy_price}";
+        if (!window.parent[lockKey]) {{
+            window.parent[lockKey] = true; // Lock it so it never fires again
+            
+            try {{
+                var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if(AudioCtx) {{
+                    var ctx = new AudioCtx();
+                    ctx.resume();
                     var osc = ctx.createOscillator();
                     var gain = ctx.createGain();
                     
                     osc.type = "square";
-                    osc.frequency.value = freq;
+                    osc.frequency.value = 900;
                     
                     osc.connect(gain);
                     gain.connect(ctx.destination);
                     
-                    gain.gain.setValueAtTime(1.0, startTime);
-                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+                    gain.gain.setValueAtTime(1.0, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
                     
-                    osc.start(startTime);
-                    osc.stop(startTime + duration);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.4);
                 }}
-                
-                var now = ctx.currentTime;
-                // Schedule all 3 beeps to play
-                playLoudBeep(900, now, 0.25);
-                playLoudBeep(900, now + 0.35, 0.25);
-                playLoudBeep(1200, now + 0.70, 0.5);
+            }} catch(err) {{
+                console.log("Audio failed:", err);
             }}
-        }} catch(err) {{
-            console.log("Audio failed:", err);
-        }}
 
-        // Delay the alert popup for 1.5 seconds to guarantee the audio finishes playing before the screen freezes
-        setTimeout(function() {{
-            alert("🚨 PULLBACK ALERT: {ticker}\\n\\nTarget hit at ₹{buy_price:,.2f}. Trade successfully executed and moved to your Paper Trading Portfolio!");
-        }}, 1500);
+            setTimeout(function() {{
+                alert("🚨 PULLBACK ALERT: {ticker}\\n\\nTarget hit at ₹{buy_price:,.2f}. Trade successfully executed and moved to your Paper Trading Portfolio!");
+            }}, 200);
+        }}
     }})();
     </script>
     """
     components.html(js_html, height=0, width=0)
+
+
+# --- HELPER FUNCTIONS ---
+def stream_gemini_analysis(prompt):
+    candidate_models = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-2.0-flash"]
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+            return
+        except Exception:
+            continue
+    yield "Error: Failed to connect to Gemini API. Please check your key or verify your API permissions in Google AI Studio."
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_live_ltp_bulk(ticker_list):
+    """Fetches real-time market prices instantly bypassing heavy downloads."""
+    if not ticker_list:
+        return {}
+    try:
+        results = {}
+        for sym in ticker_list:
+            try:
+                results[sym] = float(yf.Ticker(sym).fast_info.last_price)
+            except:
+                pass
+        return results
+    except Exception:
+        return {}
 
 
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
@@ -386,38 +415,6 @@ if "ai_analysis_cache" not in st.session_state:
 
 if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
-
-# --- HELPER FUNCTIONS ---
-def stream_gemini_analysis(prompt):
-    candidate_models = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-2.0-flash"]
-    for model_name in candidate_models:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt, stream=True)
-            for chunk in response:
-                if chunk.text:
-                    yield chunk.text
-            return
-        except Exception:
-            continue
-    yield "Error: Failed to connect to Gemini API. Please check your key or verify your API permissions in Google AI Studio."
-
-
-@st.cache_data(ttl=30, show_spinner=False)
-def fetch_live_ltp_bulk(ticker_list):
-    """Fetches real-time market prices instantly bypassing heavy downloads."""
-    if not ticker_list:
-        return {}
-    try:
-        results = {}
-        for sym in ticker_list:
-            try:
-                results[sym] = float(yf.Ticker(sym).fast_info.last_price)
-            except:
-                pass
-        return results
-    except Exception:
-        return {}
 
 
 # ==========================================
@@ -825,85 +822,303 @@ UNIVERSE_PRESETS = {
 }
 
 
-@st.cache_data(ttl=86400)
-def get_all_nse_symbols():
-    unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
-    return [f"{s}.NS" for s in unique_list]
+# AUTO-RUN SCAN ON STARTUP IF EMPTY
+if st.session_state["screener_data"].empty:
+    with st.spinner("Initializing market scan..."):
+        st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
 
-selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
-
-is_single_search = selected_universe == "🔍 Single Stock Search"
-
-if is_single_search:
-    raw_sym_input = st.sidebar.text_input("Enter NSE Symbol", value="ACE")
-    clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
-    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
-elif selected_universe == "Nifty 50 Core":
-    all_symbols = get_all_nse_symbols()
-    tickers_to_scan = all_symbols[:50]
-elif selected_universe == "All NSE Stocks (Full Listed)":
-    all_symbols = get_all_nse_symbols()
-    total_found = len(all_symbols)
-    scan_limit = st.sidebar.slider(
-        "Number of Stocks to Scan",
-        min_value=25,
-        max_value=total_found,
-        step=25,
-        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
-        key="scan_limit"
-    )
-    tickers_to_scan = all_symbols[:scan_limit]
+if scan_button or is_single_search:
+    with st.spinner("Analyzing market data..."):
+        df_raw = fetch_screener_universe(tickers_to_scan)
+        st.session_state["screener_data"] = df_raw
 else:
-    tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
+    df_raw = st.session_state.get("screener_data", pd.DataFrame())
 
-st.sidebar.markdown("### Fundamental Filters")
-apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", key="strict_fund")
-pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", key="pat_growth")
-order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", key="ob_mcap")
+filtered_df = pd.DataFrame()
 
-roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, key="roce_rng")
-mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, step=500, key="mcap_rng")
-max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, step=0.1, key="max_de")
+if not df_raw.empty:
+    filtered_df = df_raw.copy()
 
-price_range = st.sidebar.slider("Stock Price (₹)", 0, 10000, step=10, key="price_rng")
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, key="rsi_rng")
-min_adx = st.sidebar.slider("Min ADX", 0, 50, key="min_adx")
-max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, key="dist_52w")
+    filtered_df = filtered_df[
+        (filtered_df["_roce_num"] >= roce_range[0])
+        & (filtered_df["_roce_num"] <= roce_range[1])
+        & (filtered_df["_mcap_num"] >= mcap_range_cr[0])
+        & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
+        & (filtered_df["_de_num"] <= max_de)
+    ]
 
-sma_trend_filter = st.sidebar.selectbox(
-    "Moving Average Alignment",
+    if order_book_gt_mcap_filter:
+        filtered_df = filtered_df[filtered_df["_ob_gt_mcap"] == True]
+
+    if not is_single_search:
+        filtered_df = filtered_df[
+            (filtered_df["Price (₹)"] >= price_range[0])
+            & (filtered_df["Price (₹)"] <= price_range[1])
+            & (filtered_df["RSI (14)"] >= rsi_range[0])
+            & (filtered_df["RSI (14)"] <= rsi_range[1])
+            & (filtered_df["_adx_num"] >= min_adx)
+            & (filtered_df["From 52W High (%)"] <= max_dist_52w_high)
+        ]
+
+        if sma_trend_filter == "🌀 EMA Cluster Squeeze & Breakout":
+            filtered_df = filtered_df[filtered_df["_cluster_squeeze_match"] == True]
+        elif sma_trend_filter == "⚡ 9/20/44 Triple EMA Bullish Cross":
+            filtered_df = filtered_df[filtered_df["_triple_ema_match"] == True]
+        elif sma_trend_filter == "🔥 Multi-Timeframe 20D Breakout":
+            filtered_df = filtered_df[filtered_df["_mtf_match"] == True]
+        elif sma_trend_filter == "Relative strength":
+            filtered_df = filtered_df[filtered_df["_rs_match"] == True]
+        elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
+            filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
+        elif sma_trend_filter == "⚡ Weekly MACD Crossover, Stochastics & RSI(7)":
+            filtered_df = filtered_df[filtered_df["_weekly_setup_match"] == True]
+
+        if enable_vol_multiplier_10d:
+            filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_10"] * vol_multiplier_10d)]
+
+        if enable_vol_multiplier_20d:
+            filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
+
+    # --- DYNAMIC AI THESIS SYNC TO SIGNAL & SCORE NUMBERS ---
+    ai_cache = st.session_state.get("ai_analysis_cache", {})
+    if not filtered_df.empty:
+        for idx, row in filtered_df.iterrows():
+            raw_t = row["Raw_Ticker"]
+            cached_text = ai_cache.get(raw_t, "")
+            if cached_text:
+                upper_txt = cached_text.upper()
+                if "STRONG BUY" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟢 STRONG BUY (Breakout)"
+                    filtered_df.at[idx, "Composite Score"] = 100.0
+                elif "BUY" in upper_txt or "PULLBACK" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟡 BUY / PULLBACK"
+                    filtered_df.at[idx, "Composite Score"] = 80.0
+                elif "AVOID" in upper_txt or "WEAK" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🔴 AVOID / WEAK"
+                    filtered_df.at[idx, "Composite Score"] = 10.0
+                elif "WAIT" in upper_txt or "CONSOLIDATING" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟠 CONSOLIDATING"
+                    filtered_df.at[idx, "Composite Score"] = 40.0
+
+    if not filtered_df.empty:
+        filtered_df = filtered_df.copy()
+        with st.spinner("Fetching real-time earnings data (PAT YoY) for matched stocks..."):
+            valid_indices = []
+            for idx, row in filtered_df.iterrows():
+                try:
+                    t_info = yf.Ticker(row["Raw_Ticker"]).info
+                    gr = t_info.get("earningsQuarterlyGrowth")
+                    if gr is None:
+                        gr = t_info.get("earningsGrowth")
+                    
+                    if gr is not None:
+                        pat_pct = float(gr) * 100
+                        filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
+                        filtered_df.at[idx, "_pat_num"] = pat_pct
+                    else:
+                        pat_pct = 0.0
+                        filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
+                        filtered_df.at[idx, "_pat_num"] = 0.0
+                    
+                    if pat_growth_filter:
+                        if gr is not None and pat_pct >= 20.0:
+                            valid_indices.append(idx)
+                    else:
+                        valid_indices.append(idx)
+                except Exception:
+                    filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
+                    filtered_df.at[idx, "_pat_num"] = -999.0
+                    if not pat_growth_filter:
+                        valid_indices.append(idx)
+            
+            filtered_df = filtered_df.loc[valid_indices]
+
+
+tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
     [
-        "Any Trend",
-        "🌀 EMA Cluster Squeeze & Breakout",
-        "⚡ 9/20/44 Triple EMA Bullish Cross",
-        "🔥 Multi-Timeframe 20D Breakout",
-        "Relative strength",
-        "Golden Cross (50 SMA > 200 SMA)",
-        "⚡ Weekly MACD Crossover, Stochastics & RSI(7)",
-    ],
-    key="ma_align"
+        "📊 Screener & Momentum Signals",
+        "🔬 Single Stock Chart & AI Thesis",
+        "🎯 Pullback Watchlist & Order Trigger",
+        "💼 Paper Trading Portfolio",
+    ]
 )
 
-enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", key="vol_10d_en")
-vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_10d_en, key="vol_10d_mult")
+with tab_screener:
+    if df_raw.empty:
+        st.warning("⚠️ No stocks were fetched. Yahoo Finance might be blocking the connection, or the network timed out. Try reducing the 'Number of Stocks to Scan' slider or scan again.")
+    elif filtered_df.empty:
+        st.info("ℹ️ 0 matching stocks found. Your strict filters filtered out the entire list.")
+    else:
+        col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
+        with col_title:
+            st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)})")
+        with col_sort_by:
+            sort_metric = st.selectbox(
+                "Sort Results By:",
+                ["Volume", "Composite Score", "Change (%)", "Price (₹)", "ADX (14)", "ROCE (%)", "PAT YoY (%)", "RSI (14)", "From 52W High (%)", "Market Cap (₹ Cr)"],
+                index=0,
+            )
+        with col_sort_dir:
+            sort_order = st.radio("Order:", ["High to Low (Desc)", "Low to High (Asc)"], horizontal=True)
 
-enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", key="vol_20d_en")
-vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_20d_en, key="vol_20d_mult")
+        sort_col_map = {
+            "Volume": "_raw_vol",
+            "Composite Score": "Composite Score",
+            "Change (%)": "_change_num",
+            "Price (₹)": "Price (₹)",
+            "ADX (14)": "_adx_num",
+            "ROCE (%)": "_roce_num",
+            "PAT YoY (%)": "_pat_num",
+            "RSI (14)": "RSI (14)",
+            "From 52W High (%)": "From 52W High (%)",
+            "Market Cap (₹ Cr)": "_mcap_num",
+        }
+        sorted_results_df = filtered_df.sort_values(
+            by=sort_col_map.get(sort_metric, "_raw_vol"),
+            ascending=(sort_order == "Low to High (Asc)"),
+            na_position="last"
+        )
 
-st.sidebar.button("🔓 Restore Open Defaults", on_click=reset_to_open_filters, use_container_width=True)
-st.sidebar.button("🎯 Apply Strict Strategy", on_click=apply_strict_filters, use_container_width=True)
+        display_cols = [
+            "Ticker", "Signal", "Price (₹)", "Change (%)", "Volume",
+            "Composite Score", "ROCE (%)", "PAT YoY (%)", "ADX (14)", "RSI (14)",
+            "From 52W High (%)", "Vol Surge", "Market Cap (₹ Cr)",
+            "Order Book (₹ Cr)", "OB / MCap"
+        ]
+        table_data = sorted_results_df[display_cols].copy()
+        
+        # --- UI FORMATTING FOR COMPOSITE SCORE ---
+        def format_comp(val, raw_ticker):
+            cached_text = ai_cache.get(raw_ticker, "")
+            if cached_text:
+                upper_txt = cached_text.upper()
+                if "STRONG BUY" in upper_txt: return "STRONG BUY (Breakout)"
+                if "BUY" in upper_txt or "PULLBACK" in upper_txt: return "BUY / PULLBACK"
+                if "AVOID" in upper_txt or "WEAK" in upper_txt: return "AVOID / WEAK"
+                if "WAIT" in upper_txt or "CONSOLIDATING" in upper_txt: return "CONSOLIDATING"
+            
+            if pd.notna(val) and val >= 100: return "STRONG BUY (Breakout)"
+            return f"{int(val)}" if pd.notna(val) else "-"
 
-scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
-if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
-    st.cache_data.clear()
-    st.session_state["ai_analysis_cache"] = {}
-    st.session_state["screener_data"] = pd.DataFrame()
-    gc.collect()
-    st.rerun()
+        table_data["Composite Score"] = table_data.apply(lambda r: format_comp(r["Composite Score"], r["Ticker"]+".NS"), axis=1)
 
-# ==========================================
-# --- TAB RENDER FRAGMENTS (TOP LOADED) ----
-# ==========================================
+        table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
+        table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["RSI (14)"] = table_data["RSI (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["From 52W High (%)"] = table_data["From 52W High (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
+        table_data["Market Cap (₹ Cr)"] = table_data["Market Cap (₹ Cr)"].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+        table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
+
+        styled_table = table_data.style.set_properties(**{
+            "text-align": "center",
+            "font-weight": "500"
+        }).set_table_styles([
+            {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+        ])
+
+        selection_event = st.dataframe(
+            styled_table,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+        )
+
+        if selection_event and selection_event.selection and selection_event.selection.rows:
+            selected_row_idx = selection_event.selection.rows[0]
+            clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
+            st.session_state["selected_ticker"] = f"{clicked_ticker_sym}.NS"
+
+with tab_deepdive:
+    if df_raw.empty:
+        st.write("No data available.")
+    else:
+        stock_options = filtered_df["Raw_Ticker"].tolist() if not filtered_df.empty else df_raw["Raw_Ticker"].tolist()
+        current_choice = st.session_state.get("selected_ticker", stock_options[0] if stock_options else "ACE.NS")
+        default_index = stock_options.index(current_choice) if current_choice in stock_options else 0
+        selected_stock = st.selectbox("Selected Stock:", stock_options, index=default_index)
+        st.session_state["selected_ticker"] = selected_stock
+
+        if selected_stock:
+            hist = get_single_stock_history(selected_stock)
+            stock_match = df_raw[df_raw["Raw_Ticker"] == selected_stock]
+            stock_row = stock_match.iloc[0] if not stock_match.empty else None
+
+            if hist is not None and not hist.empty:
+                hist["EMA_9"] = hist["Close"].ewm(span=9, adjust=False).mean()
+                hist["EMA_20"] = hist["Close"].ewm(span=20, adjust=False).mean()
+                hist["EMA_44"] = hist["Close"].ewm(span=44, adjust=False).mean()
+                hist["SMA_50"] = hist["Close"].rolling(50).mean()
+                hist["SMA_200"] = hist["Close"].rolling(200).mean()
+
+                curr_p = float(hist["Close"].iloc[-1])
+                ema9_val = float(hist["EMA_9"].iloc[-1])
+                ema20_val = float(hist["EMA_20"].iloc[-1])
+                ema44_val = float(hist["EMA_44"].iloc[-1])
+                curr_signal = stock_row["Signal"] if stock_row is not None else "N/A"
+                curr_score = stock_row["Composite Score"] if stock_row is not None else 0
+                curr_adx = stock_row["ADX (14)"] if stock_row is not None else 25.0
+                curr_change = stock_row["Change (%)"] if stock_row is not None else "0.00%"
+                curr_volume = stock_row["Volume"] if stock_row is not None else "N/A"
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Current Price", f"₹{curr_p:,.2f}", delta=curr_change)
+                c2.metric("9 / 20 / 44 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f} / ₹{ema44_val:.1f}")
+                c3.metric("Volume / ADX", f"{curr_volume} | ADX: {curr_adx}")
+                c4.metric("Action Signal", curr_signal)
+
+                fig = go.Figure(
+                    data=[
+                        go.Candlestick(x=hist.index, open=hist["Open"], high=hist["High"], low=hist["Low"], close=hist["Close"], name="Price"),
+                        go.Scatter(x=hist.index, y=hist["EMA_9"], line=dict(color="#00f2ff", width=1.5), name="9 EMA (Fast)"),
+                        go.Scatter(x=hist.index, y=hist["EMA_20"], line=dict(color="#ffd700", width=1.5), name="20 EMA (Momentum)"),
+                        go.Scatter(x=hist.index, y=hist["EMA_44"], line=dict(color="#a855f7", width=1.5), name="44 EMA (Baseline)"),
+                        go.Scatter(x=hist.index, y=hist["SMA_50"], line=dict(color="#ff9900", width=1.5), name="50 SMA"),
+                        go.Scatter(x=hist.index, y=hist["SMA_200"], line=dict(color="#4d79ff", width=1.5), name="200 SMA"),
+                    ]
+                )
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=480,
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    xaxis_rangeslider_visible=False,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.subheader("🤖 AI Short-Term Swing Thesis & Trade Setup")
+                cached_thesis = st.session_state.get("ai_analysis_cache", {}).get(selected_stock)
+                
+                if cached_thesis:
+                    st.markdown(cached_thesis)
+
+                if st.button("Generate Short-Term Swing Setup for " + selected_stock):
+                    if not GEMINI_API_KEY:
+                        st.warning("Please provide your Gemini API Key in the left sidebar.")
+                    else:
+                        prompt = f"""
+                        You are a Professional Swing Trader & Technical Analyst specializing in Indian Equities (NSE).
+                        Evaluate this pure Short-Term Swing / Momentum Breakout trade setup:
+                        - Stock: {selected_stock}
+                        - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
+                        - Traded Volume: {curr_volume}
+                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} | 44 EMA: ₹{ema44_val:.2f}
+                        - ADX (14): {curr_adx}, RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}
+                        - Breakout Composite Score: {curr_score}/100 | System Signal: {curr_signal}
+
+                        Provide a structured swing trade plan:
+                        1. **Breakout Setup Assessment**: Is momentum active, in a healthy base pullback, or exhausted?
+                        2. **Exact Actionable Verdict**: Choose one strictly: [STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID].
+                        3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
+                        4. **Exit Trigger**: Invalidation condition for swing trades.
+                        """
+                        try:
+                            st.session_state["ai_analysis_cache"][selected_stock] = st.write_stream(stream_gemini_analysis(prompt))
+                        except Exception as e:
+                            st.error(f"Failed to generate: {e}")
+
 
 @st.fragment
 def render_pullback_watchlist_tab(screener_data_df):
@@ -1336,7 +1551,7 @@ def render_portfolio_tab(screener_data_df):
                 "Entry (₹)": f"₹{buy_p:,.2f}",
                 "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "-",
                 "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
-                "Current Price (₹)": f"Current Price (₹){effective_curr_p:,.2f}",
+                "Current Price (₹)": f"₹{effective_curr_p:,.2f}",
                 "Qty": qty,
                 "Invested (₹)": f"₹{invested:,.2f}",
                 "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
@@ -1472,202 +1687,6 @@ def render_portfolio_tab(screener_data_df):
             st.session_state["paper_portfolio"] = []
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
-
-# ==========================================
-# --- AI SYNC & TAB RENDERING ---
-# ==========================================
-
-# --- DYNAMIC AI THESIS SYNC TO SIGNAL ---
-ai_cache = st.session_state.get("ai_analysis_cache", {})
-if not filtered_df.empty:
-    for idx, row in filtered_df.iterrows():
-        raw_t = row["Raw_Ticker"]
-        cached_text = ai_cache.get(raw_t, "")
-        if cached_text:
-            upper_txt = cached_text.upper()
-            if "STRONG BUY" in upper_txt:
-                filtered_df.at[idx, "Signal"] = "🟢 STRONG BUY (Breakout)"
-                filtered_df.at[idx, "Composite Score"] = "STRONG BUY (Breakout)"
-            elif "BUY" in upper_txt or "PULLBACK" in upper_txt:
-                filtered_df.at[idx, "Signal"] = "🟡 BUY / PULLBACK"
-                filtered_df.at[idx, "Composite Score"] = "BUY / PULLBACK"
-            elif "AVOID" in upper_txt or "WEAK" in upper_txt:
-                filtered_df.at[idx, "Signal"] = "🔴 AVOID / WEAK"
-                filtered_df.at[idx, "Composite Score"] = "AVOID / WEAK"
-            elif "WAIT" in upper_txt or "CONSOLIDATING" in upper_txt:
-                filtered_df.at[idx, "Signal"] = "🟠 CONSOLIDATING"
-                filtered_df.at[idx, "Composite Score"] = "CONSOLIDATING"
-
-tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
-    [
-        "📊 Screener & Momentum Signals",
-        "🔬 Single Stock Chart & AI Thesis",
-        "🎯 Pullback Watchlist & Order Trigger",
-        "💼 Paper Trading Portfolio",
-    ]
-)
-
-with tab_screener:
-    if df_raw.empty:
-        st.warning("⚠️ No stocks were fetched. Yahoo Finance might be blocking the connection, or the network timed out. Try reducing the 'Number of Stocks to Scan' slider or scan again.")
-    elif filtered_df.empty:
-        st.info("ℹ️ 0 matching stocks found. Your strict filters filtered out the entire list.")
-    else:
-        col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
-        with col_title:
-            st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)})")
-        with col_sort_by:
-            sort_metric = st.selectbox(
-                "Sort Results By:",
-                ["Volume", "Composite Score", "Change (%)", "Price (₹)", "ADX (14)", "ROCE (%)", "PAT YoY (%)", "RSI (14)", "From 52W High (%)", "Market Cap (₹ Cr)"],
-                index=0,
-            )
-        with col_sort_dir:
-            sort_order = st.radio("Order:", ["High to Low (Desc)", "Low to High (Asc)"], horizontal=True)
-
-        sort_col_map = {
-            "Volume": "_raw_vol",
-            "Composite Score": "Composite Score",
-            "Change (%)": "_change_num",
-            "Price (₹)": "Price (₹)",
-            "ADX (14)": "_adx_num",
-            "ROCE (%)": "_roce_num",
-            "PAT YoY (%)": "_pat_num",
-            "RSI (14)": "RSI (14)",
-            "From 52W High (%)": "From 52W High (%)",
-            "Market Cap (₹ Cr)": "_mcap_num",
-        }
-        sorted_results_df = filtered_df.sort_values(
-            by=sort_col_map.get(sort_metric, "_raw_vol"),
-            ascending=(sort_order == "Low to High (Asc)"),
-            na_position="last"
-        )
-
-        display_cols = [
-            "Ticker", "Signal", "Price (₹)", "Change (%)", "Volume",
-            "Composite Score", "ROCE (%)", "PAT YoY (%)", "ADX (14)", "RSI (14)",
-            "From 52W High (%)", "Vol Surge", "Market Cap (₹ Cr)",
-            "Order Book (₹ Cr)", "OB / MCap"
-        ]
-        table_data = sorted_results_df[display_cols].copy()
-        table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
-        # Ensure string composite scores (like AI thesis text) display properly without crashing int() formatter
-        table_data["Composite Score"] = table_data["Composite Score"].apply(lambda x: x if isinstance(x, str) else (f"{int(x)}" if pd.notna(x) else "-"))
-        table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
-        table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
-        table_data["RSI (14)"] = table_data["RSI (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
-        table_data["From 52W High (%)"] = table_data["From 52W High (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
-        table_data["Market Cap (₹ Cr)"] = table_data["Market Cap (₹ Cr)"].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
-        table_data["Vol Surge"] = table_data["Vol Surge"].apply(lambda x: "✅" if x else "⬜")
-
-        styled_table = table_data.style.set_properties(**{
-            "text-align": "center",
-            "font-weight": "500"
-        }).set_table_styles([
-            {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-            {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-        ])
-
-        selection_event = st.dataframe(
-            styled_table,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-        )
-
-        if selection_event and selection_event.selection and selection_event.selection.rows:
-            selected_row_idx = selection_event.selection.rows[0]
-            clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
-            st.session_state["selected_ticker"] = f"{clicked_ticker_sym}.NS"
-
-with tab_deepdive:
-    if df_raw.empty:
-        st.write("No data available.")
-    else:
-        stock_options = filtered_df["Raw_Ticker"].tolist() if not filtered_df.empty else df_raw["Raw_Ticker"].tolist()
-        current_choice = st.session_state.get("selected_ticker", stock_options[0] if stock_options else "ACE.NS")
-        default_index = stock_options.index(current_choice) if current_choice in stock_options else 0
-        selected_stock = st.selectbox("Selected Stock:", stock_options, index=default_index)
-        st.session_state["selected_ticker"] = selected_stock
-
-        if selected_stock:
-            hist = get_single_stock_history(selected_stock)
-            stock_match = df_raw[df_raw["Raw_Ticker"] == selected_stock]
-            stock_row = stock_match.iloc[0] if not stock_match.empty else None
-
-            if hist is not None and not hist.empty:
-                hist["EMA_9"] = hist["Close"].ewm(span=9, adjust=False).mean()
-                hist["EMA_20"] = hist["Close"].ewm(span=20, adjust=False).mean()
-                hist["EMA_44"] = hist["Close"].ewm(span=44, adjust=False).mean()
-                hist["SMA_50"] = hist["Close"].rolling(50).mean()
-                hist["SMA_200"] = hist["Close"].rolling(200).mean()
-
-                curr_p = float(hist["Close"].iloc[-1])
-                ema9_val = float(hist["EMA_9"].iloc[-1])
-                ema20_val = float(hist["EMA_20"].iloc[-1])
-                ema44_val = float(hist["EMA_44"].iloc[-1])
-                curr_signal = stock_row["Signal"] if stock_row is not None else "N/A"
-                curr_score = stock_row["Composite Score"] if stock_row is not None else 0
-                curr_adx = stock_row["ADX (14)"] if stock_row is not None else 25.0
-                curr_change = stock_row["Change (%)"] if stock_row is not None else "0.00%"
-                curr_volume = stock_row["Volume"] if stock_row is not None else "N/A"
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Current Price", f"₹{curr_p:,.2f}", delta=curr_change)
-                c2.metric("9 / 20 / 44 EMA", f"₹{ema9_val:.1f} / ₹{ema20_val:.1f} / ₹{ema44_val:.1f}")
-                c3.metric("Volume / ADX", f"{curr_volume} | ADX: {curr_adx}")
-                c4.metric("Action Signal", curr_signal)
-
-                fig = go.Figure(
-                    data=[
-                        go.Candlestick(x=hist.index, open=hist["Open"], high=hist["High"], low=hist["Low"], close=hist["Close"], name="Price"),
-                        go.Scatter(x=hist.index, y=hist["EMA_9"], line=dict(color="#00f2ff", width=1.5), name="9 EMA (Fast)"),
-                        go.Scatter(x=hist.index, y=hist["EMA_20"], line=dict(color="#ffd700", width=1.5), name="20 EMA (Momentum)"),
-                        go.Scatter(x=hist.index, y=hist["EMA_44"], line=dict(color="#a855f7", width=1.5), name="44 EMA (Baseline)"),
-                        go.Scatter(x=hist.index, y=hist["SMA_50"], line=dict(color="#ff9900", width=1.5), name="50 SMA"),
-                        go.Scatter(x=hist.index, y=hist["SMA_200"], line=dict(color="#4d79ff", width=1.5), name="200 SMA"),
-                    ]
-                )
-                fig.update_layout(
-                    template="plotly_dark",
-                    height=480,
-                    margin=dict(l=20, r=20, t=30, b=20),
-                    xaxis_rangeslider_visible=False,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                st.subheader("🤖 AI Short-Term Swing Thesis & Trade Setup")
-                cached_thesis = st.session_state.get("ai_analysis_cache", {}).get(selected_stock)
-                
-                if cached_thesis:
-                    st.markdown(cached_thesis)
-
-                if st.button("Generate Short-Term Swing Setup for " + selected_stock):
-                    if not GEMINI_API_KEY:
-                        st.warning("Please provide your Gemini API Key in the left sidebar.")
-                    else:
-                        prompt = f"""
-                        You are a Professional Swing Trader & Technical Analyst specializing in Indian Equities (NSE).
-                        Evaluate this pure Short-Term Swing / Momentum Breakout trade setup:
-                        - Stock: {selected_stock}
-                        - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
-                        - Traded Volume: {curr_volume}
-                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} | 44 EMA: ₹{ema44_val:.2f}
-                        - ADX (14): {curr_adx}, RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}
-                        - Breakout Composite Score: {curr_score}/100 | System Signal: {curr_signal}
-
-                        Provide a structured swing trade plan:
-                        1. **Breakout Setup Assessment**: Is momentum active, in a healthy base pullback, or exhausted?
-                        2. **Exact Actionable Verdict**: Choose one strictly: [STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID].
-                        3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
-                        4. **Exit Trigger**: Invalidation condition for swing trades.
-                        """
-                        try:
-                            st.session_state["ai_analysis_cache"][selected_stock] = st.write_stream(stream_gemini_analysis(prompt))
-                        except Exception as e:
-                            st.error(f"Failed to generate: {e}")
 
 with tab_pullback_watchlist:
     render_pullback_watchlist_tab(filtered_df)

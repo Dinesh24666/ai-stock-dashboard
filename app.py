@@ -873,8 +873,10 @@ if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     st.rerun()
 
 # --- OPTIMIZATION 3 HELPER: Fast Streamed AI ---
+# --- OPTIMIZATION 3 HELPER: Fast Streamed AI ---
 def stream_gemini_analysis(prompt):
-    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-pro"]
+    # Updated list using the latest stable Gemini model endpoints
+    candidate_models = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     for model_name in candidate_models:
         try:
             model = genai.GenerativeModel(model_name)
@@ -885,7 +887,7 @@ def stream_gemini_analysis(prompt):
             return
         except Exception:
             continue
-    yield "Error: Failed to connect to Gemini API. Please check your key or try again later."
+    yield "Error: Failed to connect to Gemini API. Please check your key or verify your API permissions in Google AI Studio."
 
 
 # --- OPTIMIZATION 2 HELPER: Fast Live Price Bulk Polling ---

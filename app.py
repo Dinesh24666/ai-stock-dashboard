@@ -768,8 +768,11 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
+st.sidebar.markdown("### Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False)
+pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", value=False)
 order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
+
 roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (-20, 100))
 mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (0, 2000000), 500)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 5.0, 0.1)
@@ -1040,12 +1043,13 @@ def fetch_screener_universe(ticker_list):
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
-                candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
-                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
-                score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
+                score = 0
+                if is_20d_high_breakout: score += 25
+                if vol_surge_2x: score += 25
+                if curr_price > ema_9 > ema_20: score += 25
+                if adx_val >= 25: score += 25
                 
-                is_overextended = price_change_pct > 8.0
-                if is_overextended:
+                if price_change_pct > 8.0:
                     score -= 30
 
                 swing_composite = float(np.clip(score, 10, 100))
@@ -1069,6 +1073,7 @@ def fetch_screener_universe(ticker_list):
                     "Volume": f"{curr_vol:,}",
                     "Composite Score": round(swing_composite, 1),
                     "ROCE (%)": roce,
+                    "PAT YoY (%)": "N/A",  # Default placeholder for exact fundamental matching
                     "ADX (14)": adx_val,
                     "RSI (14)": round(rsi_val, 1),
                     "From 52W High (%)": round(dist_52w_high, 1),
@@ -1087,6 +1092,7 @@ def fetch_screener_universe(ticker_list):
                     "_avg_vol_20": avg_vol_20,
                     "_change_num": price_change_pct,
                     "_roce_num": roce,
+                    "_pat_num": 0.0,
                     "_de_num": 0.5,
                     "_mcap_num": mcap_cr,
                     "_adx_num": adx_val,
@@ -1193,11 +1199,33 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # GUARANTEED FALLBACK: NEVER SHOW BLANK SCREEN
-    if filtered_df.empty and df_raw.empty:
-        pass  # Both are empty, it will show the warning below
-    elif filtered_df.empty:
-        filtered_df = df_raw.copy()
+    # --- FUNDAMENTAL FETCH: ONLY FOR SURVIVING STOCKS ---
+    # This prevents the app from hanging while checking earnings for 2000 stocks
+    if pat_growth_filter and not filtered_df.empty:
+        filtered_df = filtered_df.copy()
+        with st.spinner("Fetching real-time earnings data (PAT YoY)..."):
+            valid_indices = []
+            for idx, row in filtered_df.iterrows():
+                try:
+                    t_info = yf.Ticker(row["Raw_Ticker"]).info
+                    gr = t_info.get("earningsQuarterlyGrowth")
+                    if gr is None:
+                        gr = t_info.get("earningsGrowth")
+                    if gr is None:
+                        gr = 0
+                    
+                    pat_pct = float(gr) * 100
+                    filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
+                    filtered_df.at[idx, "_pat_num"] = pat_pct
+                    
+                    if pat_pct >= 20.0:
+                        valid_indices.append(idx)
+                except Exception:
+                    filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
+                    filtered_df.at[idx, "_pat_num"] = 0.0
+            
+            filtered_df = filtered_df.loc[valid_indices]
+
 
 tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
     [
@@ -1220,7 +1248,7 @@ with tab_screener:
         with col_sort_by:
             sort_metric = st.selectbox(
                 "Sort Results By:",
-                ["Volume", "Composite Score", "Change (%)", "Price (₹)", "ADX (14)", "ROCE (%)", "RSI (14)", "From 52W High (%)", "Market Cap (₹ Cr)"],
+                ["Volume", "Composite Score", "Change (%)", "Price (₹)", "ADX (14)", "ROCE (%)", "PAT YoY (%)", "RSI (14)", "From 52W High (%)", "Market Cap (₹ Cr)"],
                 index=0,
             )
         with col_sort_dir:
@@ -1233,6 +1261,7 @@ with tab_screener:
             "Price (₹)": "Price (₹)",
             "ADX (14)": "_adx_num",
             "ROCE (%)": "_roce_num",
+            "PAT YoY (%)": "_pat_num",
             "RSI (14)": "RSI (14)",
             "From 52W High (%)": "From 52W High (%)",
             "Market Cap (₹ Cr)": "_mcap_num",
@@ -1245,7 +1274,7 @@ with tab_screener:
 
         display_cols = [
             "Ticker", "Signal", "Price (₹)", "Change (%)", "Volume",
-            "Composite Score", "ROCE (%)", "ADX (14)", "RSI (14)",
+            "Composite Score", "ROCE (%)", "PAT YoY (%)", "ADX (14)", "RSI (14)",
             "From 52W High (%)", "Vol Surge", "Market Cap (₹ Cr)",
             "Order Book (₹ Cr)", "OB / MCap"
         ]

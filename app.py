@@ -466,7 +466,6 @@ def fetch_screener_universe(ticker_list):
         
         for attempt in range(3):
             try:
-                # Disabled threads to prevent Streamlit threading crash
                 batch_data = yf.download(
                     tickers=" ".join(chunk), 
                     period="1y", 
@@ -1149,6 +1148,86 @@ UNIVERSE_PRESETS = {
 }
 
 
+@st.cache_data(ttl=86400)
+def get_all_nse_symbols():
+    unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
+    return [f"{s}.NS" for s in unique_list]
+
+selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
+
+is_single_search = selected_universe == "🔍 Single Stock Search"
+
+if is_single_search:
+    raw_sym_input = st.sidebar.text_input("Enter NSE Symbol", value="ACE")
+    clean_sym = raw_sym_input.strip().upper().replace(".NS", "").replace(".BO", "")
+    tickers_to_scan = [f"{clean_sym}.NS"] if clean_sym else ["ACE.NS"]
+elif selected_universe == "Nifty 50 Core":
+    all_symbols = get_all_nse_symbols()
+    tickers_to_scan = all_symbols[:50]
+elif selected_universe == "All NSE Stocks (Full Listed)":
+    all_symbols = get_all_nse_symbols()
+    total_found = len(all_symbols)
+    scan_limit = st.sidebar.slider(
+        "Number of Stocks to Scan",
+        min_value=25,
+        max_value=total_found,
+        step=25,
+        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
+        key="scan_limit"
+    )
+    tickers_to_scan = all_symbols[:scan_limit]
+else:
+    tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
+
+st.sidebar.markdown("### Fundamental Filters")
+apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", key="strict_fund")
+pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", key="pat_growth")
+order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", key="ob_mcap")
+
+roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, key="roce_rng")
+mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, step=500, key="mcap_rng")
+max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, step=0.1, key="max_de")
+
+price_range = st.sidebar.slider("Stock Price (₹)", 0, 10000, step=10, key="price_rng")
+rsi_range = st.sidebar.slider("RSI (14)", 0, 100, key="rsi_rng")
+min_adx = st.sidebar.slider("Min ADX", 0, 50, key="min_adx")
+max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, key="dist_52w")
+
+sma_trend_filter = st.sidebar.selectbox(
+    "Moving Average Alignment",
+    [
+        "Any Trend",
+        "🌀 EMA Cluster Squeeze & Breakout",
+        "⚡ 9/20/44 Triple EMA Bullish Cross",
+        "🔥 Multi-Timeframe 20D Breakout",
+        "Relative strength",
+        "Golden Cross (50 SMA > 200 SMA)",
+        "⚡ Weekly MACD Crossover, Stochastics & RSI(7)",
+    ],
+    key="ma_align"
+)
+
+enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", key="vol_10d_en")
+vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_10d_en, key="vol_10d_mult")
+
+enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", key="vol_20d_en")
+vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_20d_en, key="vol_20d_mult")
+
+st.sidebar.button("🔓 Restore Open Defaults", on_click=reset_to_open_filters, use_container_width=True)
+st.sidebar.button("🎯 Apply Strict Strategy", on_click=apply_strict_filters, use_container_width=True)
+
+scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
+if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
+    st.cache_data.clear()
+    st.session_state["ai_analysis_cache"] = {}
+    st.session_state["screener_data"] = pd.DataFrame()
+    gc.collect()
+    st.rerun()
+
+# ==========================================
+# --- EXECUTION BLOCK: NOW CORRECTLY PLACED ---
+# ==========================================
+
 # AUTO-RUN SCAN ON STARTUP IF EMPTY
 if st.session_state["screener_data"].empty:
     scan_msg = st.info("⏳ Initializing market scan...")
@@ -1264,6 +1343,10 @@ if not df_raw.empty:
         pat_msg.empty()
 
 
+# ==========================================
+# --- TAB RENDERING LOGIC ---
+# ==========================================
+
 tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
     [
         "📊 Screener & Momentum Signals",
@@ -1317,7 +1400,7 @@ with tab_screener:
         ]
         table_data = sorted_results_df[display_cols].copy()
         
-        # --- UI FORMATTING FOR COMPOSITE SCORE ---
+        # --- UI FORMATTING FOR COMPOSITE SCORE TEXT ---
         def format_comp(val, raw_ticker):
             cached_text = ai_cache.get(raw_ticker, "")
             if cached_text:

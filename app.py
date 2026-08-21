@@ -174,8 +174,6 @@ def render_alert_permission_banner():
         
         var timeVal = hours * 100 + minutes;
         var isWeekday = (day >= 1 && day <= 5);
-        
-        // TEMPORARY BYPASS: Forces system "ON" regardless of time/day for testing
         var isMarketHours = true; 
         
         if ("Notification" in window && Notification.permission === "granted") {
@@ -227,47 +225,37 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # Runs safely inside Streamlit's iframe without triggering cross-origin security blocks
+    # Fires EXACTLY ONCE: 1 single beep and 1 single popup alert
     js_html = f"""
     <script>
     (function() {{
-        // 1. Loud Multi-Tone Alarm
         try {{
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
             if(AudioCtx) {{
                 var ctx = new AudioCtx();
-                ctx.resume(); // Force audio context to wake up
+                ctx.resume();
+                var osc = ctx.createOscillator();
+                var gain = ctx.createGain();
                 
-                function playLoudBeep(freq, startTime, duration) {{
-                    var osc = ctx.createOscillator();
-                    var gain = ctx.createGain();
-                    
-                    osc.type = "square"; // Piercing digital alarm tone
-                    osc.frequency.value = freq;
-                    
-                    osc.connect(gain);
-                    gain.connect(ctx.destination);
-                    
-                    gain.gain.setValueAtTime(1.0, startTime);
-                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
-                    
-                    osc.start(startTime);
-                    osc.stop(startTime + duration);
-                }}
+                osc.type = "square";
+                osc.frequency.value = 900;
                 
-                var now = ctx.currentTime;
-                playLoudBeep(900, now, 0.25);
-                playLoudBeep(900, now + 0.35, 0.25);
-                playLoudBeep(1200, now + 0.70, 0.5);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                
+                gain.gain.setValueAtTime(1.0, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+                
+                osc.start();
+                osc.stop(ctx.currentTime + 0.4);
             }}
         }} catch(err) {{
             console.log("Audio failed:", err);
         }}
 
-        // 2. Hard Browser Popup (Freezes screen until user clicks OK)
         setTimeout(function() {{
             alert("🚨 PULLBACK ALERT: {ticker}\\n\\nTarget hit at ₹{buy_price:,.2f}. Trade successfully executed and moved to your Paper Trading Portfolio!");
-        }}, 400); // Waits a split second so the audio starts before the alert freezes the screen
+        }}, 200);
     }})();
     </script>
     """
@@ -433,7 +421,6 @@ STRICT_STRATEGY_FILTERS = {
     "vol_20d_mult": 1.2
 }
 
-# Ensure defaults are initialized in session state
 for key, val in WIDE_OPEN_FILTERS.items():
     if key not in st.session_state:
         st.session_state[key] = val
@@ -872,43 +859,6 @@ if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     gc.collect()
     st.rerun()
 
-# --- OPTIMIZATION 3 HELPER: Fast Streamed AI ---
-# --- OPTIMIZATION 3 HELPER: Fast Streamed AI ---
-# --- OPTIMIZATION 3 HELPER: Fast Streamed AI ---
-def stream_gemini_analysis(prompt):
-    # Updated list using the latest stable Gemini model endpoints
-    candidate_models = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
-    for model_name in candidate_models:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt, stream=True)
-            for chunk in response:
-                if chunk.text:
-                    yield chunk.text
-            return
-        except Exception:
-            continue
-    yield "Error: Failed to connect to Gemini API. Please check your key or verify your API permissions in Google AI Studio."
-
-
-# --- OPTIMIZATION 2 HELPER: Fast Live Price Bulk Polling ---
-@st.cache_data(ttl=30, show_spinner=False)
-def fetch_live_ltp_bulk(ticker_list):
-    """Fetches real-time market prices instantly bypassing heavy downloads."""
-    if not ticker_list:
-        return {}
-    try:
-        # Use simple fast_info looping for ultimate speed on small lists
-        results = {}
-        for sym in ticker_list:
-            try:
-                results[sym] = float(yf.Ticker(sym).fast_info.last_price)
-            except:
-                pass
-        return results
-    except Exception:
-        return {}
-
 
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
@@ -1144,11 +1094,10 @@ def fetch_screener_universe(ticker_list):
                     score -= 30
 
                 swing_composite = float(np.clip(score, 10, 100))
-                
-                # Check for overextended
                 is_overextended = bool(curr_price > ema_9 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
 
-                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
+                # UPDATED: Score of 100 is explicitly Strong Buy / Breakout
+                if swing_composite >= 100 or (swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended):
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -1206,7 +1155,6 @@ def fetch_screener_universe(ticker_list):
 
     progress_bar.empty()
     
-    # --- OPTIMIZATION 4: Downcast Memory for large DataFrames ---
     final_df = pd.DataFrame(rows)
     if not final_df.empty:
         float_cols = final_df.select_dtypes(include=['float64']).columns
@@ -1260,7 +1208,6 @@ filtered_df = pd.DataFrame()
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
-    # Apply strict numerical filters exactly matching the sidebar
     filtered_df = filtered_df[
         (filtered_df["_roce_num"] >= roce_range[0])
         & (filtered_df["_roce_num"] <= roce_range[1])
@@ -1301,7 +1248,6 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # --- FUNDAMENTAL FETCH: ALWAYS FETCH FOR MATCHED STOCKS ---
     if not filtered_df.empty:
         filtered_df = filtered_df.copy()
         with st.spinner("Fetching real-time earnings data (PAT YoY) for matched stocks..."):
@@ -1501,15 +1447,11 @@ with tab_deepdive:
                         3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
                         4. **Exit Trigger**: Invalidation condition for swing trades.
                         """
-                        # OPTIMIZATION 3: Stream generated response instantly
                         try:
                             st.session_state["ai_analysis_cache"][selected_stock] = st.write_stream(stream_gemini_analysis(prompt))
                         except Exception as e:
                             st.error(f"Failed to generate: {e}")
 
-# ==========================================
-# OPTIMIZATION 1: ISOLATED FRAGMENTS FOR TABS
-# ==========================================
 @st.fragment
 def render_pullback_watchlist_tab(screener_data_df):
     st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
@@ -1529,8 +1471,6 @@ def render_pullback_watchlist_tab(screener_data_df):
                         save_json_file(WATCHLIST_FILE, valid_items)
                         st.success("Pullback watchlist successfully restored!")
                         st.rerun()
-                    else:
-                        st.error("Uploaded file does not contain valid pullback watchlist entries.")
             except Exception as e:
                 st.error(f"Failed to restore watchlist backup: {e}")
 
@@ -1597,7 +1537,6 @@ def render_pullback_watchlist_tab(screener_data_df):
 
     active_watchlist = st.session_state.get("pullback_watchlist", [])
     if active_watchlist:
-        # OPTIMIZATION 2: Fast isolated price check for watchlist
         wb_tickers = [item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS" for item in active_watchlist]
         live_price_dict = fetch_live_ltp_bulk(wb_tickers)
         
@@ -1728,7 +1667,7 @@ def render_pullback_watchlist_tab(screener_data_df):
                 ]
                 save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
                 st.success(f"Re-armed {rearm_sym} and synchronized trades!")
-                st.rerun() # Full rerun to sync tabs
+                st.rerun()
         with m_col3:
             st.write("")
             st.write("")
@@ -1745,10 +1684,10 @@ def render_pullback_watchlist_tab(screener_data_df):
                 ]
                 save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
                 st.success(f"Deleted {removed_sym} from watchlist!")
-                st.rerun() # Full rerun to sync tabs
+                st.rerun()
                 
         if trade_executed:
-            st.rerun() # Force full app refresh so portfolio tab updates automatically
+            st.rerun()
     else:
         st.info("Watchlist is empty. Add a pullback setup above.")
 
@@ -1854,7 +1793,6 @@ def render_portfolio_tab(screener_data_df):
             )
 
     if active_portfolio:
-        # OPTIMIZATION 2: Fast isolated price check for active portfolio
         port_tickers = [pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS") for pos in active_portfolio if "Open" in pos.get("Status", "")]
         live_price_dict = fetch_live_ltp_bulk(port_tickers)
         
@@ -1885,7 +1823,6 @@ def render_portfolio_tab(screener_data_df):
             pos_status = str(pos.get("Status", "🟢 Open"))
             saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
 
-            # Get price from fast fetch, fallback to cached raw data
             if pos_status == "🟢 Open":
                 curr_p = live_price_dict.get(sym)
             else:
@@ -2083,7 +2020,6 @@ def render_portfolio_tab(screener_data_df):
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
 
-# Call the fragments to render them in their respective tabs
 with tab_pullback_watchlist:
     render_pullback_watchlist_tab(filtered_df)
 

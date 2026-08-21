@@ -837,7 +837,7 @@ roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, key="roce_rng")
 mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, step=500, key="mcap_rng")
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, step=0.1, key="max_de")
 
-price_range = st.sidebar.slider("Stock Price (₹)", 30, 5000, step=10, key="price_rng")
+price_range = st.sidebar.slider("Stock Price (₹)", 0, 10000, step=10, key="price_rng")
 rsi_range = st.sidebar.slider("RSI (14)", 0, 100, key="rsi_rng")
 min_adx = st.sidebar.slider("Min ADX", 0, 50, key="min_adx")
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, key="dist_52w")

@@ -225,7 +225,6 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # Fires EXACTLY ONCE: 1 single beep and 1 single popup alert
     js_html = f"""
     <script>
     (function() {{
@@ -377,6 +376,39 @@ if "ai_analysis_cache" not in st.session_state:
 
 if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
+
+# --- OPTIMIZATION HELPER FUNCTIONS (DEFINED BEFORE USE) ---
+def stream_gemini_analysis(prompt):
+    candidate_models = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-2.0-flash"]
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+            return
+        except Exception:
+            continue
+    yield "Error: Failed to connect to Gemini API. Please check your key or verify your API permissions in Google AI Studio."
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_live_ltp_bulk(ticker_list):
+    """Fetches real-time market prices instantly bypassing heavy downloads."""
+    if not ticker_list:
+        return {}
+    try:
+        results = {}
+        for sym in ticker_list:
+            try:
+                results[sym] = float(yf.Ticker(sym).fast_info.last_price)
+            except:
+                pass
+        return results
+    except Exception:
+        return {}
+
 
 # ==========================================
 # --- FILTER DICTIONARIES FOR STATE MGMT ---
@@ -1096,7 +1128,7 @@ def fetch_screener_universe(ticker_list):
                 swing_composite = float(np.clip(score, 10, 100))
                 is_overextended = bool(curr_price > ema_9 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
 
-                # UPDATED: Score of 100 is explicitly Strong Buy / Breakout
+                # Default base signal
                 if swing_composite >= 100 or (swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended):
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
@@ -1247,6 +1279,23 @@ if not df_raw.empty:
 
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
+
+    # --- DYNAMIC AI THESIS SYNC TO SIGNAL ---
+    ai_cache = st.session_state.get("ai_analysis_cache", {})
+    if not filtered_df.empty:
+        for idx, row in filtered_df.iterrows():
+            raw_t = row["Raw_Ticker"]
+            cached_text = ai_cache.get(raw_t, "")
+            if cached_text:
+                upper_txt = cached_text.upper()
+                if "STRONG BUY" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟢 STRONG BUY (Breakout)"
+                elif "BUY" in upper_txt or "PULLBACK" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟡 BUY / PULLBACK"
+                elif "AVOID" in upper_txt or "WEAK" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🔴 AVOID / WEAK"
+                elif "WAIT" in upper_txt or "CONSOLIDATING" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟠 CONSOLIDATING"
 
     if not filtered_df.empty:
         filtered_df = filtered_df.copy()

@@ -200,23 +200,26 @@ def render_alert_permission_banner():
                 }
             });
         }
+        
+        // Play a LOUD test sound
         try {
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) {
                 var ctx = new AudioCtx();
-                if (ctx.state === "suspended") ctx.resume();
+                ctx.resume();
                 var osc = ctx.createOscillator();
                 var gain = ctx.createGain();
+                osc.type = "square"; // Harsh, loud alarm sound
+                osc.frequency.value = 900;
                 osc.connect(gain);
                 gain.connect(ctx.destination);
-                osc.type = "sine";
-                osc.frequency.setValueAtTime(880, ctx.currentTime);
-                gain.gain.setValueAtTime(0.3, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+                gain.gain.setValueAtTime(1.0, ctx.currentTime); // 100% volume
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
                 osc.start();
-                osc.stop(ctx.currentTime + 0.25);
+                osc.stop(ctx.currentTime + 0.5);
             }
-        } catch(e) {}
+        } catch(e) { console.log(e); }
+    }
     }
 
     window.onload = checkMarketHoursAndPermissions;

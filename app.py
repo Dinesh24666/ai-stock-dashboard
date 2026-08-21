@@ -21,7 +21,6 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Center alignment for all tables and headers */
     [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th,
     [data-testid="stDataEditor"] td, [data-testid="stDataEditor"] th {
         text-align: center !important;
@@ -38,7 +37,6 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
         flex-wrap: nowrap;
@@ -85,7 +83,6 @@ st.markdown(
         color: #cbd5e1;
     }
 
-    /* KPI Summary Cards */
     .trade-summary-card {
         display: flex;
         justify-content: space-around;
@@ -760,9 +757,9 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         "Number of Stocks to Scan",
         min_value=25,
         max_value=total_found,
-        value=min(100, total_found),
+        value=total_found,
         step=25,
-        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
+        help="Full 1,960+ NSE Listed Equities Universe.",
     )
     tickers_to_scan = all_symbols[:scan_limit]
 else:
@@ -774,8 +771,8 @@ roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (-20, 100))
 mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (0, 2000000), 500)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 5.0, 0.1)
 
-price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (30, 5000), 30)
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (10, 95))
+price_range = st.sidebar.slider("Stock Price (₹)", 30, 5000, (30, 5000), 30)
+rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (20, 95))
 min_adx = st.sidebar.slider("Min ADX", 0, 50, 0)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
 
@@ -788,9 +785,15 @@ sma_trend_filter = st.sidebar.selectbox(
         "🔥 Multi-Timeframe 20D Breakout",
         "Relative strength",
         "Golden Cross (50 SMA > 200 SMA)",
-        "⚡ Weekly MACD Crossover, Stochastics & RSI(7)",
+        "⚡ Weekly MACD, Stochastics & RSI(7) Breakout",
     ],
 )
+
+enable_vol_multiplier_10d = st.sidebar.checkbox("Volume > 10D SMA Multiplier", value=False)
+vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_10d)
+
+enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", value=False)
+vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, 1.5, 0.1, disabled=not enable_vol_multiplier_20d)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
@@ -850,13 +853,14 @@ def fetch_screener_universe(ticker_list):
         progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
         
         batch_data = None
-        for attempt in range(3):
+        for attempt in range(2):
             try:
-                batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False, timeout=10)
+                batch_data = yf.download(tickers=" ".join(chunk), period="1y", interval="1d", group_by="ticker", threads=False, auto_adjust=True, progress=False)
                 if batch_data is not None and not batch_data.empty:
                     break
             except Exception:
                 time.sleep(1)
+                continue
 
         if batch_data is None or batch_data.empty:
             continue
@@ -868,19 +872,19 @@ def fetch_screener_universe(ticker_list):
 
             try:
                 hist = pd.DataFrame()
-                if len(chunk) == 1:
-                    if isinstance(batch_data.columns, pd.MultiIndex):
-                        if ticker in batch_data.columns.levels[0]:
-                            hist = batch_data[ticker].dropna(how="all")
-                        else:
-                            hist = batch_data.droplevel(0, axis=1).dropna(how="all")
-                    else:
-                        hist = batch_data.dropna(how="all")
+                if isinstance(batch_data.columns, pd.MultiIndex):
+                    if ticker in batch_data.columns.levels[0]:
+                        hist = batch_data[ticker]
+                    elif ticker in batch_data.columns.levels[1]:
+                        hist = batch_data.xs(ticker, axis=1, level=1)
                 else:
-                    if hasattr(batch_data.columns, "levels") and ticker in batch_data.columns.levels[0]:
-                        hist = batch_data[ticker].dropna(how="all")
+                    if len(chunk) == 1:
+                        hist = batch_data
+                    else:
+                        continue
 
-                if hist.empty or len(hist) < 15:
+                hist = hist.dropna(how="all")
+                if hist.empty or len(hist) < 20:
                     continue
 
                 hist = hist[~hist.index.duplicated(keep="last")]
@@ -903,42 +907,59 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # Weekly Setup Evaluation
-                weekly_df = hist.resample("W").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
+                # --- WEEKLY MACD, STOCHASTICS, RSI(7) SETUP LOGIC ---
                 is_weekly_setup_match = False
-                if len(weekly_df) >= 25:
+                weekly_df = hist.resample("W").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
+                
+                if len(weekly_df) >= 26:
                     w_close = weekly_df["Close"]
                     w_high = weekly_df["High"]
                     w_low = weekly_df["Low"]
 
-                    w_exp1 = w_close.ewm(span=13, adjust=False).mean()
-                    w_exp2 = w_close.ewm(span=21, adjust=False).mean()
-                    w_macd_line = w_exp1 - w_exp2
-                    w_macd_signal = w_macd_line.ewm(span=9, adjust=False).mean()
-                    w_macd_cross = (w_macd_line.iloc[-1] > w_macd_signal.iloc[-1])
+                    # 1. Weekly MACD (21, 13, 9) Crossover
+                    exp1 = w_close.ewm(span=13, adjust=False).mean()
+                    exp2 = w_close.ewm(span=21, adjust=False).mean()
+                    macd_line = exp1 - exp2
+                    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+                    
+                    macd_cross = False
+                    if len(macd_line) >= 2 and pd.notna(macd_line.iloc[-1]) and pd.notna(macd_signal.iloc[-1]):
+                        macd_cross = (macd_line.iloc[-1] > macd_signal.iloc[-1]) and (macd_line.iloc[-2] <= macd_signal.iloc[-2])
 
+                    # 2. Weekly Fast Stochastic %K (4, 1) Crossover > 80
                     lowest_low = w_low.rolling(window=4).min()
                     highest_high = w_high.rolling(window=4).max()
                     stoch_k = 100 * ((w_close - lowest_low) / (highest_high - lowest_low + 1e-9))
-                    w_stoch = float(stoch_k.iloc[-1]) >= 80
+                    
+                    stoch_cross = False
+                    if len(stoch_k) >= 2 and pd.notna(stoch_k.iloc[-1]):
+                        stoch_cross = (stoch_k.iloc[-1] > 80) and (stoch_k.iloc[-2] <= 80)
 
-                    w_delta = w_close.diff()
-                    w_gain = w_delta.where(w_delta > 0, 0.0)
-                    w_loss = -w_delta.where(w_delta < 0, 0.0)
-                    w_avg_g = w_gain.ewm(alpha=1.0 / 7, min_periods=7, adjust=False).mean()
-                    w_avg_l = w_loss.ewm(alpha=1.0 / 7, min_periods=7, adjust=False).mean()
-                    w_rs = w_avg_g / (w_avg_l + 1e-9)
-                    w_rsi7 = 100.0 - (100.0 / (1.0 + w_rs))
-                    w_rsi_cond = float(w_rsi7.iloc[-1]) >= 70
+                    # 3. Weekly RSI (7) Crossover > 70
+                    delta = w_close.diff()
+                    gain = delta.where(delta > 0, 0.0)
+                    loss = -delta.where(delta < 0, 0.0)
+                    avg_gain = gain.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
+                    avg_loss = loss.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
+                    rs = avg_gain / (avg_loss + 1e-9)
+                    w_rsi = 100.0 - (100.0 / (1.0 + rs))
+                    
+                    rsi_cross = False
+                    if len(w_rsi) >= 2 and pd.notna(w_rsi.iloc[-1]):
+                        rsi_cross = (w_rsi.iloc[-1] > 70) and (w_rsi.iloc[-2] <= 70)
 
-                    w_tr = pd.concat([w_high - w_low, (w_high - w_close.shift(1)).abs(), (w_low - w_close.shift(1)).abs()], axis=1).max(axis=1)
-                    w_atr7 = w_tr.ewm(alpha=1.0 / 7, min_periods=7, adjust=False).mean().iloc[-1]
-                    w_atr_cond = bool(w_atr7 > 0)
+                    # 4. Weekly ATR (7) > 0
+                    tr = pd.concat([w_high - w_low, (w_high - w_close.shift(1)).abs(), (w_low - w_close.shift(1)).abs()], axis=1).max(axis=1)
+                    w_atr = tr.ewm(alpha=1.0/7, min_periods=7, adjust=False).mean()
+                    atr_cond = False
+                    if len(w_atr) >= 1 and pd.notna(w_atr.iloc[-1]):
+                        atr_cond = w_atr.iloc[-1] > 0
 
-                    is_weekly_setup_match = bool(w_macd_cross and w_stoch and w_rsi_cond and w_atr_cond)
+                    is_weekly_setup_match = bool(macd_cross and stoch_cross and rsi_cross and atr_cond)
 
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
+                avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
                 avg_vol_20 = float(vol_series.rolling(20).mean().iloc[-1]) if len(vol_series) >= 20 else float(curr_vol)
                 vol_surge = bool(curr_vol >= (avg_vol_20 * 0.95))
                 vol_surge_2x = bool(curr_vol > (avg_vol_20 * 2.0))
@@ -965,17 +986,16 @@ def fetch_screener_universe(ticker_list):
 
                 is_triple_cross = bool(ema_9 > ema_20 > ema_44 and 30 <= curr_price <= 3000 and mcap_cr >= 1000)
 
-                weekly_df_hist = hist.resample("W").agg({"High": "max", "Low": "min", "Close": "last"}).dropna()
-                if len(weekly_df_hist) >= 5:
-                    w_close_h = float(weekly_df_hist["Close"].iloc[-1])
-                    w_ema20_h = float(weekly_df_hist["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
-                    w_rsi_h = compute_rsi(weekly_df_hist["Close"], 14)
-                    w_52h = float(weekly_df_hist["High"].tail(52).max())
+                if len(weekly_df) >= 5:
+                    w_close_mtf = float(weekly_df["Close"].iloc[-1])
+                    w_ema20_mtf = float(weekly_df["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                    w_rsi_mtf = compute_rsi(weekly_df["Close"], 14)
+                    w_52h_mtf = float(weekly_df["High"].tail(52).max())
                 else:
-                    w_close_h, w_ema20_h, w_rsi_h, w_52h = curr_price, ema_20, rsi_val, high_52w
+                    w_close_mtf, w_ema20_mtf, w_rsi_mtf, w_52h_mtf = curr_price, ema_20, rsi_val, high_52w
 
                 passes_mtf_breakout = bool(
-                    w_close_h > w_ema20_h and w_rsi_h >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_2x and curr_price >= (w_52h * 0.80)
+                    w_close_mtf > w_ema20_mtf and w_rsi_mtf >= 55.0 and curr_price > ema_20 and is_20d_high_breakout and vol_surge_2x and curr_price >= (w_52h_mtf * 0.80)
                 )
 
                 c_20d = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else float(hist["Close"].iloc[0])
@@ -983,17 +1003,16 @@ def fetch_screener_universe(ticker_list):
                 is_relative_strength = bool(
                     ((curr_price - ema_200) / ema_200 * 100.0 > 30.0)
                     and ((curr_price - c_125d) / c_125d * 100.0 > 20.0)
-                    and ((curr_price - ema_50) / ema_50 * 100.0 > 20.0)
+                    and ((curr_price - sma_50) / sma_50 * 100.0 > 20.0)
                     and ((curr_price - c_20d) / c_20d * 100.0 > 20.0)
                 )
 
-                score = 0
-                if is_20d_high_breakout: score += 25
-                if vol_surge_2x: score += 25
-                if curr_price > ema_9 > ema_20: score += 25
-                if adx_val >= 25: score += 25
+                candle_range = max(0.01, hist["High"].iloc[-1] - hist["Low"].iloc[-1])
+                close_pos = (curr_price - hist["Low"].iloc[-1]) / candle_range
+                score = (25 if close_pos >= 0.75 else 15) + (25 if curr_price > ema_20 > sma_50 else 10) + (15 if 55 <= rsi_val <= 75 else 5) + (15 if vol_surge else 5)
                 
-                if price_change_pct > 8.0:
+                is_overextended = price_change_pct > 8.0
+                if is_overextended:
                     score -= 30
 
                 swing_composite = float(np.clip(score, 10, 100))
@@ -1031,6 +1050,8 @@ def fetch_screener_universe(ticker_list):
                     "SMA_200": round(sma_200, 2),
                     "Raw_Ticker": ticker,
                     "_raw_vol": curr_vol,
+                    "_avg_vol_10": avg_vol_10,
+                    "_avg_vol_20": avg_vol_20,
                     "_change_num": price_change_pct,
                     "_roce_num": roce,
                     "_de_num": 0.5,
@@ -1094,10 +1115,7 @@ if scan_button or is_single_search:
 else:
     df_raw = st.session_state["screener_data"]
 
-if "selected_ticker" not in st.session_state:
-    st.session_state["selected_ticker"] = (
-        df_raw["Raw_Ticker"].iloc[0] if not df_raw.empty else "ACE.NS"
-    )
+filtered_df = pd.DataFrame()
 
 if not df_raw.empty:
     filtered_df = df_raw.copy()
@@ -1133,23 +1151,30 @@ if not df_raw.empty:
             filtered_df = filtered_df[filtered_df["_rs_match"] == True]
         elif sma_trend_filter == "Golden Cross (50 SMA > 200 SMA)":
             filtered_df = filtered_df[filtered_df["SMA_50"] >= filtered_df["SMA_200"]]
-        elif sma_trend_filter == "⚡ Weekly MACD, Stochastic & RSI(7) Setup":
+        elif sma_trend_filter == "⚡ Weekly MACD, Stochastics & RSI(7) Breakout":
             filtered_df = filtered_df[filtered_df["_weekly_setup_match"] == True]
 
-    # GUARANTEED SAFETY FALLBACK: NEVER SHOW BLANK SCREEN
-    if filtered_df.empty:
-        filtered_df = df_raw.copy()
+        if enable_vol_multiplier_10d:
+            filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_10"] * vol_multiplier_10d)]
 
-    tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
-        [
-            "📊 Screener & Momentum Signals",
-            "🔬 Single Stock Chart & AI Thesis",
-            "🎯 Pullback Watchlist & Order Trigger",
-            "💼 Paper Trading Portfolio",
-        ]
-    )
+        if enable_vol_multiplier_20d:
+            filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    with tab_screener:
+tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
+    [
+        "📊 Screener & Momentum Signals",
+        "🔬 Single Stock Chart & AI Thesis",
+        "🎯 Pullback Watchlist & Order Trigger",
+        "💼 Paper Trading Portfolio",
+    ]
+)
+
+with tab_screener:
+    if df_raw.empty:
+        st.warning("⚠️ No stocks were fetched. Yahoo Finance might be blocking the connection, or the network timed out. Try reducing the 'Number of Stocks to Scan' slider or scan again.")
+    elif filtered_df.empty:
+        st.info("ℹ️ No stocks matched the exact filters you selected. Try relaxing the sliders or changing the Moving Average Alignment.")
+    else:
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
         with col_title:
             st.subheader(f"Matching Stocks ({len(filtered_df)} of {len(df_raw)})")
@@ -1216,8 +1241,11 @@ if not df_raw.empty:
             clicked_ticker_sym = table_data.iloc[selected_row_idx]["Ticker"]
             st.session_state["selected_ticker"] = f"{clicked_ticker_sym}.NS"
 
-    with tab_deepdive:
-        stock_options = sorted_results_df["Raw_Ticker"].tolist() if not sorted_results_df.empty else df_raw["Raw_Ticker"].tolist()
+with tab_deepdive:
+    if df_raw.empty:
+        st.write("No data available.")
+    else:
+        stock_options = filtered_df["Raw_Ticker"].tolist() if not filtered_df.empty else df_raw["Raw_Ticker"].tolist()
         current_choice = st.session_state.get("selected_ticker", stock_options[0] if stock_options else "ACE.NS")
         default_index = stock_options.index(current_choice) if current_choice in stock_options else 0
         selected_stock = st.selectbox("Selected Stock:", stock_options, index=default_index)
@@ -1334,42 +1362,43 @@ if not df_raw.empty:
                                     for err in error_logs:
                                         st.code(err)
 
-    with tab_pullback_watchlist:
-        st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
-        
-        render_alert_permission_banner()
-        
-        st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
+with tab_pullback_watchlist:
+    st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
+    
+    render_alert_permission_banner()
+    
+    st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 
-        col_w_dl, col_w_up = st.columns([1, 1])
-        with col_w_up:
-            uploaded_watchlist = st.file_uploader("📥 Restore Watchlist from Backup (.json)", type=["json"], key="watchlist_uploader")
-            if uploaded_watchlist is not None:
-                try:
-                    restored_wb_data = json.load(uploaded_watchlist)
-                    if isinstance(restored_wb_data, list):
-                        valid_items = [item for item in restored_wb_data if isinstance(item, dict) and "Target Buy (₹)" in item]
-                        if valid_items:
-                            st.session_state["pullback_watchlist"] = valid_items
-                            save_json_file(WATCHLIST_FILE, valid_items)
-                            st.success("Pullback watchlist successfully restored!")
-                            st.rerun()
-                        else:
-                            st.error("Uploaded file does not contain valid pullback watchlist entries.")
-                except Exception as e:
-                    st.error(f"Failed to restore watchlist backup: {e}")
+    col_w_dl, col_w_up = st.columns([1, 1])
+    with col_w_up:
+        uploaded_watchlist = st.file_uploader("📥 Restore Watchlist from Backup (.json)", type=["json"], key="watchlist_uploader")
+        if uploaded_watchlist is not None:
+            try:
+                restored_wb_data = json.load(uploaded_watchlist)
+                if isinstance(restored_wb_data, list):
+                    valid_items = [item for item in restored_wb_data if isinstance(item, dict) and "Target Buy (₹)" in item]
+                    if valid_items:
+                        st.session_state["pullback_watchlist"] = valid_items
+                        save_json_file(WATCHLIST_FILE, valid_items)
+                        st.success("Pullback watchlist successfully restored!")
+                        st.rerun()
+                    else:
+                        st.error("Uploaded file does not contain valid pullback watchlist entries.")
+            except Exception as e:
+                st.error(f"Failed to restore watchlist backup: {e}")
 
-        with col_w_dl:
-            active_watchlist_data = st.session_state.get("pullback_watchlist", [])
-            if active_watchlist_data:
-                st.download_button(
-                    label="💾 Download Watchlist Backup (.json)",
-                    data=json.dumps(active_watchlist_data, indent=4),
-                    file_name="watchlist_backup.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
+    with col_w_dl:
+        active_watchlist_data = st.session_state.get("pullback_watchlist", [])
+        if active_watchlist_data:
+            st.download_button(
+                label="💾 Download Watchlist Backup (.json)",
+                data=json.dumps(active_watchlist_data, indent=4),
+                file_name="watchlist_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
 
+    if not df_raw.empty:
         pullback_candidates = df_raw["Raw_Ticker"].tolist()
         curr_selected = st.session_state.get("selected_ticker", pullback_candidates[0] if pullback_candidates else "ACE.NS")
         default_wb_idx = pullback_candidates.index(curr_selected) if curr_selected in pullback_candidates else 0
@@ -1419,127 +1448,128 @@ if not df_raw.empty:
                     st.success(f"Added {clean_sym} to Watchlist (Target Entry: ₹{target_entry_price:.2f})!")
                     st.rerun()
 
-        active_watchlist = st.session_state.get("pullback_watchlist", [])
-        if active_watchlist:
-            live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"]))
-            updated_watchlist = []
-            display_rows = []
+    active_watchlist = st.session_state.get("pullback_watchlist", [])
+    if active_watchlist:
+        live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        updated_watchlist = []
+        display_rows = []
 
-            for item in active_watchlist:
-                if not isinstance(item, dict) or "Target Buy (₹)" not in item:
-                    continue
+        for item in active_watchlist:
+            if not isinstance(item, dict) or "Target Buy (₹)" not in item:
+                continue
 
-                sym = item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS"
-                clean_sym = item.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
-                target_buy = float(item.get("Target Buy (₹)", 0.0))
-                sl_price = float(item.get("SL (₹)", 0.0))
-                tgt_price = float(item.get("TGT (₹)", 0.0))
-                qty = int(item.get("Qty", 1))
-                status_str = item.get("Status", "⏳ Waiting for Pullback")
+            sym = item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS"
+            clean_sym = item.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
+            target_buy = float(item.get("Target Buy (₹)", 0.0))
+            sl_price = float(item.get("SL (₹)", 0.0))
+            tgt_price = float(item.get("TGT (₹)", 0.0))
+            qty = int(item.get("Qty", 1))
+            status_str = item.get("Status", "⏳ Waiting for Pullback")
 
-                curr_ltp = live_price_dict.get(sym)
-                if curr_ltp is None:
-                    try:
-                        curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
-                    except Exception:
-                        curr_ltp = None
+            curr_ltp = live_price_dict.get(sym)
+            if curr_ltp is None:
+                try:
+                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
+                except Exception:
+                    curr_ltp = None
 
-                if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
-                    status_str = "⚡ Triggered / Bought"
-                    item["Status"] = status_str
-                    
-                    play_trigger_alert(clean_sym, target_buy)
-                    st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="⚡")
-                    st.success(f"🔔 **Pullback Triggered:** {clean_sym} reached buy level ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
-
-                    trade_record = {
-                        "id": f"{sym}_{int(time.time())}",
-                        "Date": str(date.today()),
-                        "Exit_Date": "",
-                        "Ticker": clean_sym,
-                        "Buy Price (₹)": curr_ltp,
-                        "SL (₹)": sl_price,
-                        "TGT (₹)": tgt_price,
-                        "Exit Price (₹)": 0.0,
-                        "Qty": qty,
-                        "Remarks": f"Pullback Auto-Entry ({item.get('Strategy', sma_trend_filter)})",
-                        "Status": "🟢 Open",
-                        "Invested (₹)": round(curr_ltp * qty, 2),
-                        "Raw_Ticker": sym,
-                    }
-                    if not any(p.get("id") == trade_record["id"] for p in st.session_state["paper_portfolio"]):
-                        st.session_state["paper_portfolio"].append(trade_record)
-                        save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-
+            if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
+                status_str = "⚡ Triggered / Bought"
                 item["Status"] = status_str
-                updated_watchlist.append(item)
+                
+                play_trigger_alert(clean_sym, target_buy)
+                st.toast(f"🎯 PULLBACK HIT! {clean_sym} bought at ₹{curr_ltp:.2f}!", icon="⚡")
+                st.success(f"🔔 **Pullback Triggered:** {clean_sym} reached buy level ₹{target_buy:,.2f} (LTP: ₹{curr_ltp:,.2f}). Auto-executed into Paper Trading Portfolio!")
 
-                dist_str = f"{((curr_ltp - target_buy) / target_buy * 100.0):+.2f}% away" if (curr_ltp and target_buy > 0 and "Waiting" in status_str) else ("Executed ✅" if "Triggered" in status_str else "Fetching...")
-
-                display_rows.append({
-                    "Date Added": item.get("Date Added", str(date.today())),
+                trade_record = {
+                    "id": f"{sym}_{int(time.time())}",
+                    "Date": str(date.today()),
+                    "Exit_Date": "",
                     "Ticker": clean_sym,
-                    "Current LTP (₹)": f"₹{curr_ltp:,.2f}" if curr_ltp else "-",
-                    "Target Buy (₹)": f"₹{target_buy:,.2f}",
-                    "Distance to Entry": dist_str,
-                    "SL (₹)": f"₹{sl_price:,.2f}",
-                    "TGT (₹)": f"₹{tgt_price:,.2f}",
+                    "Buy Price (₹)": curr_ltp,
+                    "SL (₹)": sl_price,
+                    "TGT (₹)": tgt_price,
+                    "Exit Price (₹)": 0.0,
                     "Qty": qty,
-                    "Status": status_str,
-                    "Strategy": item.get("Strategy", sma_trend_filter),
-                })
-
-            st.session_state["pullback_watchlist"] = updated_watchlist
-            save_json_file(WATCHLIST_FILE, updated_watchlist)
-            if display_rows:
-                st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
-
-            m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
-            with m_col1:
-                del_choices = {f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
-                if del_choices:
-                    sel_del = st.selectbox("Select Watchlist Item:", list(del_choices.keys()), key="del_wb_select")
-            with m_col2:
-                st.write("")
-                st.write("")
-                if del_choices and st.button("🔄 Re-Arm / Reset to Waiting", use_container_width=True):
-                    d_idx = del_choices[sel_del]
-                    rearm_sym = updated_watchlist[d_idx].get("Ticker")
-                    updated_watchlist[d_idx]["Status"] = "⏳ Waiting for Pullback"
-                    st.session_state["pullback_watchlist"] = updated_watchlist
-                    save_json_file(WATCHLIST_FILE, updated_watchlist)
-
-                    st.session_state["paper_portfolio"] = [
-                        p for p in st.session_state["paper_portfolio"]
-                        if not (p.get("Ticker") == rearm_sym and "Pullback" in p.get("Remarks", ""))
-                    ]
+                    "Remarks": f"Pullback Auto-Entry ({item.get('Strategy', sma_trend_filter)})",
+                    "Status": "🟢 Open",
+                    "Invested (₹)": round(curr_ltp * qty, 2),
+                    "Raw_Ticker": sym,
+                }
+                if not any(p.get("id") == trade_record["id"] for p in st.session_state["paper_portfolio"]):
+                    st.session_state["paper_portfolio"].append(trade_record)
                     save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-                    st.success(f"Re-armed {rearm_sym} and synchronized trades!")
-                    st.rerun()
-            with m_col3:
-                st.write("")
-                st.write("")
-                if del_choices and st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
-                    d_idx = del_choices[sel_del]
-                    removed_sym = updated_watchlist[d_idx].get("Ticker")
-                    updated_watchlist.pop(d_idx)
-                    st.session_state["pullback_watchlist"] = updated_watchlist
-                    save_json_file(WATCHLIST_FILE, updated_watchlist)
 
-                    st.session_state["paper_portfolio"] = [
-                        p for p in st.session_state["paper_portfolio"]
-                        if not (p.get("Ticker") == removed_sym and "Pullback" in p.get("Remarks", ""))
-                    ]
-                    save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-                    st.success(f"Deleted {removed_sym} from watchlist!")
-                    st.rerun()
-        else:
-            st.info("Watchlist is empty. Add a pullback setup above.")
+            item["Status"] = status_str
+            updated_watchlist.append(item)
 
-    with tab_watchlist:
-        st.subheader("💼 Paper Trading Portfolio & Risk Manager")
-        active_portfolio = st.session_state.get("paper_portfolio", [])
+            dist_str = f"{((curr_ltp - target_buy) / target_buy * 100.0):+.2f}% away" if (curr_ltp and target_buy > 0 and "Waiting" in status_str) else ("Executed ✅" if "Triggered" in status_str else "Fetching...")
 
+            display_rows.append({
+                "Date Added": item.get("Date Added", str(date.today())),
+                "Ticker": clean_sym,
+                "Current LTP (₹)": f"₹{curr_ltp:,.2f}" if curr_ltp else "-",
+                "Target Buy (₹)": f"₹{target_buy:,.2f}",
+                "Distance to Entry": dist_str,
+                "SL (₹)": f"₹{sl_price:,.2f}",
+                "TGT (₹)": f"₹{tgt_price:,.2f}",
+                "Qty": qty,
+                "Status": status_str,
+                "Strategy": item.get("Strategy", sma_trend_filter),
+            })
+
+        st.session_state["pullback_watchlist"] = updated_watchlist
+        save_json_file(WATCHLIST_FILE, updated_watchlist)
+        if display_rows:
+            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+
+        m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
+        with m_col1:
+            del_choices = {f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx for idx, it in enumerate(updated_watchlist)}
+            if del_choices:
+                sel_del = st.selectbox("Select Watchlist Item:", list(del_choices.keys()), key="del_wb_select")
+        with m_col2:
+            st.write("")
+            st.write("")
+            if del_choices and st.button("🔄 Re-Arm / Reset to Waiting", use_container_width=True):
+                d_idx = del_choices[sel_del]
+                rearm_sym = updated_watchlist[d_idx].get("Ticker")
+                updated_watchlist[d_idx]["Status"] = "⏳ Waiting for Pullback"
+                st.session_state["pullback_watchlist"] = updated_watchlist
+                save_json_file(WATCHLIST_FILE, updated_watchlist)
+
+                st.session_state["paper_portfolio"] = [
+                    p for p in st.session_state["paper_portfolio"]
+                    if not (p.get("Ticker") == rearm_sym and "Pullback" in p.get("Remarks", ""))
+                ]
+                save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+                st.success(f"Re-armed {rearm_sym} and synchronized trades!")
+                st.rerun()
+        with m_col3:
+            st.write("")
+            st.write("")
+            if del_choices and st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
+                d_idx = del_choices[sel_del]
+                removed_sym = updated_watchlist[d_idx].get("Ticker")
+                updated_watchlist.pop(d_idx)
+                st.session_state["pullback_watchlist"] = updated_watchlist
+                save_json_file(WATCHLIST_FILE, updated_watchlist)
+
+                st.session_state["paper_portfolio"] = [
+                    p for p in st.session_state["paper_portfolio"]
+                    if not (p.get("Ticker") == removed_sym and "Pullback" in p.get("Remarks", ""))
+                ]
+                save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+                st.success(f"Deleted {removed_sym} from watchlist!")
+                st.rerun()
+    else:
+        st.info("Watchlist is empty. Add a pullback setup above.")
+
+with tab_watchlist:
+    st.subheader("💼 Paper Trading Portfolio & Risk Manager")
+    active_portfolio = st.session_state.get("paper_portfolio", [])
+
+    if not df_raw.empty:
         with st.expander("➕ Execute New Paper Trade (Custom SL, Target & Remarks)", expanded=False):
             col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
             with col_add1:
@@ -1589,273 +1619,273 @@ if not df_raw.empty:
                     st.success(f"Executed trade for {quantity} shares of {new_trade['Ticker']}!")
                     st.rerun()
 
-        if active_portfolio:
-            with st.expander("🗑️ Delete a Trade / Row Added by Mistake", expanded=False):
-                col_del_sel, col_del_btn = st.columns([3, 1])
-                with col_del_sel:
-                    delete_trade_choices = {
-                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) [{pos.get('Status', '🟢 Open')}] - [ID: {pos.get('id', idx)}]": idx
-                        for idx, pos in enumerate(active_portfolio)
-                    }
-                    selected_trade_to_delete = st.selectbox("Select Position to Delete:", list(delete_trade_choices.keys()), key="delete_row_selector")
-                with col_del_btn:
-                    st.write("")
-                    st.write("")
-                    if st.button("🗑️ Delete Selected Trade", type="primary", use_container_width=True):
-                        del_idx = delete_trade_choices[selected_trade_to_delete]
-                        deleted_ticker = active_portfolio[del_idx].get("Ticker", "Trade")
-                        active_portfolio.pop(del_idx)
-                        st.session_state["paper_portfolio"] = active_portfolio
-                        save_json_file(PORTFOLIO_FILE, active_portfolio)
-                        st.success(f"Successfully deleted {deleted_ticker} position!")
-                        st.rerun()
-
-        col_dl, col_up = st.columns([1, 1])
-        with col_up:
-            uploaded_portfolio = st.file_uploader("📥 Restore Trades from Backup (.json)", type=["json"], key="portfolio_uploader")
-            if uploaded_portfolio is not None:
-                try:
-                    restored_data = json.load(uploaded_portfolio)
-                    if isinstance(restored_data, list) and len(restored_data) > 0:
-                        st.session_state["paper_portfolio"] = restored_data
-                        save_json_file(PORTFOLIO_FILE, restored_data)
-                        st.success("Portfolio successfully restored!")
-                except Exception as e:
-                    st.error(f"Failed to restore backup: {e}")
-
-        with col_dl:
-            if active_portfolio:
-                st.download_button(
-                    label="💾 Download Portfolio Backup (.json)",
-                    data=json.dumps(active_portfolio, indent=4),
-                    file_name="portfolio_backup.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
-
-        if active_portfolio:
-            live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"]))
-            open_invested = 0.0
-            open_current_val = 0.0
-            unrealised_pnl_total = 0.0
-            realised_pnl_total = 0.0
-            winning_trades_count = 0
-            losing_trades_count = 0
-            open_trades_count = 0
-            total_trades_count = len(active_portfolio)
-
-            portfolio_rows = []
-            updated_portfolio_data = []
-
-            for idx, pos in enumerate(active_portfolio):
-                sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
-                clean_t = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
-                buy_p = float(pos.get("Buy Price (₹)", 0.0))
-                
-                curr_p = live_price_dict.get(sym)
-                if curr_p is None:
-                    try:
-                        curr_p = float(yf.Ticker(sym).fast_info.last_price)
-                    except Exception:
-                        curr_p = buy_p
-
-                qty = int(pos.get("Qty", 1))
-                invested = float(pos.get("Invested (₹)", buy_p * qty))
-                sl = float(pos.get("SL (₹)", 0.0))
-                tgt = float(pos.get("TGT (₹)", 0.0))
-                pos_date_str = str(pos.get("Date", date.today()))
-                pos_exit_date_str = str(pos.get("Exit_Date", "") or "")
-                pos_remarks = str(pos.get("Remarks", sma_trend_filter))
-                pos_status = str(pos.get("Status", "🟢 Open"))
-                saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
-
-                if pos_status == "🟢 Open":
-                    if sl > 0 and curr_p <= sl:
-                        pos_status = "🔴 SL Hit (Closed)"
-                        pos_exit_date_str = str(date.today())
-                        saved_exit_price = sl
-                    elif tgt > 0 and curr_p >= tgt:
-                        pos_status = "🎯 TGT Hit (Closed)"
-                        pos_exit_date_str = str(date.today())
-                        saved_exit_price = tgt
-
-                pos["Status"] = pos_status
-                pos["Exit_Date"] = pos_exit_date_str
-                pos["Exit Price (₹)"] = saved_exit_price
-                updated_portfolio_data.append(pos)
-
-                try:
-                    d_entry = datetime.strptime(pos_date_str, "%Y-%m-%d").date()
-                    d_exit = datetime.strptime(pos_exit_date_str.strip(), "%Y-%m-%d").date() if (pos_exit_date_str and pos_exit_date_str.strip() and pos_exit_date_str != "-") else date.today()
-                    holding_days = max(0, (d_exit - d_entry).days)
-                except Exception:
-                    holding_days = 0
-
-                if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
-                    exit_val = saved_exit_price if saved_exit_price > 0 else curr_p
-                    pnl = round((exit_val - buy_p) * qty, 2)
-                    pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
-                    realised_pnl_total += pnl
-                    effective_curr_p = exit_val
-                else:
-                    open_trades_count += 1
-                    pnl = round((curr_p - buy_p) * qty, 2)
-                    pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
-                    open_invested += invested
-                    open_current_val += round(curr_p * qty, 2)
-                    unrealised_pnl_total += pnl
-                    effective_curr_p = curr_p
-
-                if pnl > 0:
-                    winning_trades_count += 1
-                elif pnl < 0:
-                    losing_trades_count += 1
-
-                portfolio_rows.append({
-                    "Entry Date": pos_date_str,
-                    "Sold Date": pos_exit_date_str if pos_exit_date_str else "-",
-                    "Holding": f"{holding_days} d",
-                    "Ticker": clean_t,
-                    "Status": pos_status,
-                    "Remarks / Strategy": pos_remarks,
-                    "Entry (₹)": f"₹{buy_p:,.2f}",
-                    "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "-",
-                    "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
-                    "Current Price (₹)": f"₹{effective_curr_p:,.2f}",
-                    "Qty": qty,
-                    "Invested (₹)": f"₹{invested:,.2f}",
-                    "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
-                    "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
-                    "_raw_pnl": pnl,
-                })
-
-            win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
-            loss_rate_pct = (losing_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
-
-            trade_summary_html = f"""
-            <div class="trade-summary-card">
-                <div class="trade-stat-box">
-                    <div class="trade-stat-label">Total Trades</div>
-                    <div class="trade-stat-val">{total_trades_count}</div>
-                </div>
-                <div class="trade-stat-box">
-                    <div class="trade-stat-label">Winning Trades</div>
-                    <div class="trade-stat-val" style="color: #16a34a;">{winning_trades_count}</div>
-                </div>
-                <div class="trade-stat-box">
-                    <div class="trade-stat-label">Losing Trades</div>
-                    <div class="trade-stat-val" style="color: #dc2626;">{losing_trades_count}</div>
-                </div>
-                <div class="trade-stat-box">
-                    <div class="trade-stat-label">Open Trade</div>
-                    <div class="trade-stat-val" style="color: #0284c7;">{open_trades_count}</div>
-                </div>
-            </div>
-            """
-            st.markdown(trade_summary_html, unsafe_allow_html=True)
-
-            p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
-            p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
-            p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")
-            p_col3.metric(
-                "Unrealised P&L (Open)",
-                f"₹{unrealised_pnl_total:,.2f}",
-                delta=f"{(unrealised_pnl_total / open_invested * 100.0):.2f}%" if open_invested > 0 else "0.00%",
-            )
-            p_col4.metric(
-                "Realised P&L (Closed)",
-                f"₹{realised_pnl_total:,.2f}",
-                delta_color="normal" if realised_pnl_total >= 0 else "inverse",
-            )
-            p_col5.metric(
-                "Win / Loss Rate (%)",
-                f"{win_rate_pct:.1f}% Win",
-                delta=f"{loss_rate_pct:.1f}% Loss",
-                delta_color="inverse",
-            )
-
-            with st.expander("✏️ Edit Position Parameters (Modify SL, TGT, Sold Date, Status & Exit Price)", expanded=False):
-                col_sel_edit, _ = st.columns([2, 1])
-                with col_sel_edit:
-                    trade_edit_options = {
-                        f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}] [ID: {pos.get('id', idx)}]": idx
-                        for idx, pos in enumerate(active_portfolio)
-                    }
-                    selected_edit_label = st.selectbox("Select Position to Edit:", list(trade_edit_options.keys()))
-                
-                edit_idx = trade_edit_options[selected_edit_label]
-                curr_item = active_portfolio[edit_idx]
-
-                ec1, ec2, ec3, ec4, ec5 = st.columns(5)
-                with ec1:
-                    new_sl_val = st.number_input("Edit SL (₹)", value=float(curr_item.get("SL (₹)") or 0.0), step=0.5, key=f"edit_sl_{edit_idx}")
-                with ec2:
-                    new_tgt_val = st.number_input("Edit TGT (₹)", value=float(curr_item.get("TGT (₹)") or 0.0), step=0.5, key=f"edit_tgt_{edit_idx}")
-                with ec3:
-                    current_status_opts = ["🟢 Open", "🔴 SL Hit (Closed)", "🎯 TGT Hit (Closed)", "⚪ Sold Manually"]
-                    existing_status = curr_item.get("Status", "🟢 Open")
-                    status_idx = current_status_opts.index(existing_status) if existing_status in current_status_opts else 0
-                    new_status_val = st.selectbox("Status", current_status_opts, index=status_idx, key=f"edit_status_{edit_idx}")
-                with ec4:
-                    existing_exit_date_str = curr_item.get("Exit_Date")
-                    try:
-                        parsed_exit_date = datetime.strptime(str(existing_exit_date_str), "%Y-%m-%d").date() if existing_exit_date_str and existing_exit_date_str != "-" else date.today()
-                    except Exception:
-                        parsed_exit_date = date.today()
-                    new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
-                with ec5:
-                    new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
-
-                if st.button("💾 Save Position Updates", key=f"save_btn_{edit_idx}"):
-                    active_portfolio[edit_idx]["SL (₹)"] = new_sl_val
-                    active_portfolio[edit_idx]["TGT (₹)"] = new_tgt_val
-                    active_portfolio[edit_idx]["Status"] = new_status_val
-                    if new_status_val != "🟢 Open":
-                        active_portfolio[edit_idx]["Exit_Date"] = str(new_exit_date)
-                        active_portfolio[edit_idx]["Exit Price (₹)"] = new_exit_price
-                    else:
-                        active_portfolio[edit_idx]["Exit_Date"] = ""
-                        active_portfolio[edit_idx]["Exit Price (₹)"] = 0.0
+    if active_portfolio:
+        with st.expander("🗑️ Delete a Trade / Row Added by Mistake", expanded=False):
+            col_del_sel, col_del_btn = st.columns([3, 1])
+            with col_del_sel:
+                delete_trade_choices = {
+                    f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) [{pos.get('Status', '🟢 Open')}] - [ID: {pos.get('id', idx)}]": idx
+                    for idx, pos in enumerate(active_portfolio)
+                }
+                selected_trade_to_delete = st.selectbox("Select Position to Delete:", list(delete_trade_choices.keys()), key="delete_row_selector")
+            with col_del_btn:
+                st.write("")
+                st.write("")
+                if st.button("🗑️ Delete Selected Trade", type="primary", use_container_width=True):
+                    del_idx = delete_trade_choices[selected_trade_to_delete]
+                    deleted_ticker = active_portfolio[del_idx].get("Ticker", "Trade")
+                    active_portfolio.pop(del_idx)
+                    st.session_state["paper_portfolio"] = active_portfolio
                     save_json_file(PORTFOLIO_FILE, active_portfolio)
-                    st.success("Position successfully updated!")
+                    st.success(f"Successfully deleted {deleted_ticker} position!")
                     st.rerun()
 
-            port_df = pd.DataFrame(portfolio_rows)
-            display_port_cols = [
-                "Entry Date", "Sold Date", "Holding", "Ticker", "Status",
-                "Remarks / Strategy", "Entry (₹)", "SL (₹)", "TGT (₹)",
-                "Current Price (₹)", "Qty", "Invested (₹)", "P&L (₹)", "P&L (%)"
-            ]
-            final_port_display = port_df[display_port_cols].copy()
+    col_dl, col_up = st.columns([1, 1])
+    with col_up:
+        uploaded_portfolio = st.file_uploader("📥 Restore Trades from Backup (.json)", type=["json"], key="portfolio_uploader")
+        if uploaded_portfolio is not None:
+            try:
+                restored_data = json.load(uploaded_portfolio)
+                if isinstance(restored_data, list) and len(restored_data) > 0:
+                    st.session_state["paper_portfolio"] = restored_data
+                    save_json_file(PORTFOLIO_FILE, restored_data)
+                    st.success("Portfolio successfully restored!")
+            except Exception as e:
+                st.error(f"Failed to restore backup: {e}")
 
-            def highlight_pnl_dark_green_red(val):
+    with col_dl:
+        if active_portfolio:
+            st.download_button(
+                label="💾 Download Portfolio Backup (.json)",
+                data=json.dumps(active_portfolio, indent=4),
+                file_name="portfolio_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
+    if active_portfolio:
+        live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        open_invested = 0.0
+        open_current_val = 0.0
+        unrealised_pnl_total = 0.0
+        realised_pnl_total = 0.0
+        winning_trades_count = 0
+        losing_trades_count = 0
+        open_trades_count = 0
+        total_trades_count = len(active_portfolio)
+
+        portfolio_rows = []
+        updated_portfolio_data = []
+
+        for idx, pos in enumerate(active_portfolio):
+            sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
+            clean_t = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
+            buy_p = float(pos.get("Buy Price (₹)", 0.0))
+            
+            curr_p = live_price_dict.get(sym)
+            if curr_p is None:
                 try:
-                    clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
-                    num = float(clean_str)
-                    if num > 0:
-                        return "color: #15803d; font-weight: 700;"
-                    elif num < 0:
-                        return "color: #dc2626; font-weight: 700;"
-                    else:
-                        return "color: #64748b; font-weight: normal;"
+                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
-                    return ""
+                    curr_p = buy_p
 
-            styled_port = final_port_display.style.map(
-                highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
-            ).set_properties(**{
-                "text-align": "center",
-                "font-weight": "500"
-            }).set_table_styles([
-                {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-                {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
-            ])
+            qty = int(pos.get("Qty", 1))
+            invested = float(pos.get("Invested (₹)", buy_p * qty))
+            sl = float(pos.get("SL (₹)", 0.0))
+            tgt = float(pos.get("TGT (₹)", 0.0))
+            pos_date_str = str(pos.get("Date", date.today()))
+            pos_exit_date_str = str(pos.get("Exit_Date", "") or "")
+            pos_remarks = str(pos.get("Remarks", sma_trend_filter))
+            pos_status = str(pos.get("Status", "🟢 Open"))
+            saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
 
-            st.dataframe(styled_port, use_container_width=True, hide_index=True)
+            if pos_status == "🟢 Open":
+                if sl > 0 and curr_p <= sl:
+                    pos_status = "🔴 SL Hit (Closed)"
+                    pos_exit_date_str = str(date.today())
+                    saved_exit_price = sl
+                elif tgt > 0 and curr_p >= tgt:
+                    pos_status = "🎯 TGT Hit (Closed)"
+                    pos_exit_date_str = str(date.today())
+                    saved_exit_price = tgt
 
-            if st.button("🗑️ Reset / Clear All Trades"):
-                st.session_state["paper_portfolio"] = []
-                save_json_file(PORTFOLIO_FILE, [])
+            pos["Status"] = pos_status
+            pos["Exit_Date"] = pos_exit_date_str
+            pos["Exit Price (₹)"] = saved_exit_price
+            updated_portfolio_data.append(pos)
+
+            try:
+                d_entry = datetime.strptime(pos_date_str, "%Y-%m-%d").date()
+                d_exit = datetime.strptime(pos_exit_date_str.strip(), "%Y-%m-%d").date() if (pos_exit_date_str and pos_exit_date_str.strip() and pos_exit_date_str != "-") else date.today()
+                holding_days = max(0, (d_exit - d_entry).days)
+            except Exception:
+                holding_days = 0
+
+            if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
+                exit_val = saved_exit_price if saved_exit_price > 0 else curr_p
+                pnl = round((exit_val - buy_p) * qty, 2)
+                pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
+                realised_pnl_total += pnl
+                effective_curr_p = exit_val
+            else:
+                open_trades_count += 1
+                pnl = round((curr_p - buy_p) * qty, 2)
+                pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
+                open_invested += invested
+                open_current_val += round(curr_p * qty, 2)
+                unrealised_pnl_total += pnl
+                effective_curr_p = curr_p
+
+            if pnl > 0:
+                winning_trades_count += 1
+            elif pnl < 0:
+                losing_trades_count += 1
+
+            portfolio_rows.append({
+                "Entry Date": pos_date_str,
+                "Sold Date": pos_exit_date_str if pos_exit_date_str else "-",
+                "Holding": f"{holding_days} d",
+                "Ticker": clean_t,
+                "Status": pos_status,
+                "Remarks / Strategy": pos_remarks,
+                "Entry (₹)": f"₹{buy_p:,.2f}",
+                "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "-",
+                "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
+                "Current Price (₹)": f"₹{effective_curr_p:,.2f}",
+                "Qty": qty,
+                "Invested (₹)": f"₹{invested:,.2f}",
+                "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
+                "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
+                "_raw_pnl": pnl,
+            })
+
+        win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
+        loss_rate_pct = (losing_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
+
+        trade_summary_html = f"""
+        <div class="trade-summary-card">
+            <div class="trade-stat-box">
+                <div class="trade-stat-label">Total Trades</div>
+                <div class="trade-stat-val">{total_trades_count}</div>
+            </div>
+            <div class="trade-stat-box">
+                <div class="trade-stat-label">Winning Trades</div>
+                <div class="trade-stat-val" style="color: #16a34a;">{winning_trades_count}</div>
+            </div>
+            <div class="trade-stat-box">
+                <div class="trade-stat-label">Losing Trades</div>
+                <div class="trade-stat-val" style="color: #dc2626;">{losing_trades_count}</div>
+            </div>
+            <div class="trade-stat-box">
+                <div class="trade-stat-label">Open Trade</div>
+                <div class="trade-stat-val" style="color: #0284c7;">{open_trades_count}</div>
+            </div>
+        </div>
+        """
+        st.markdown(trade_summary_html, unsafe_allow_html=True)
+
+        p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
+        p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
+        p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")
+        p_col3.metric(
+            "Unrealised P&L (Open)",
+            f"₹{unrealised_pnl_total:,.2f}",
+            delta=f"{(unrealised_pnl_total / open_invested * 100.0):.2f}%" if open_invested > 0 else "0.00%",
+        )
+        p_col4.metric(
+            "Realised P&L (Closed)",
+            f"₹{realised_pnl_total:,.2f}",
+            delta_color="normal" if realised_pnl_total >= 0 else "inverse",
+        )
+        p_col5.metric(
+            "Win / Loss Rate (%)",
+            f"{win_rate_pct:.1f}% Win",
+            delta=f"{loss_rate_pct:.1f}% Loss",
+            delta_color="inverse",
+        )
+
+        with st.expander("✏️ Edit Position Parameters (Modify SL, TGT, Sold Date, Status & Exit Price)", expanded=False):
+            col_sel_edit, _ = st.columns([2, 1])
+            with col_sel_edit:
+                trade_edit_options = {
+                    f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}] [ID: {pos.get('id', idx)}]": idx
+                    for idx, pos in enumerate(active_portfolio)
+                }
+                selected_edit_label = st.selectbox("Select Position to Edit:", list(trade_edit_options.keys()))
+            
+            edit_idx = trade_edit_options[selected_edit_label]
+            curr_item = active_portfolio[edit_idx]
+
+            ec1, ec2, ec3, ec4, ec5 = st.columns(5)
+            with ec1:
+                new_sl_val = st.number_input("Edit SL (₹)", value=float(curr_item.get("SL (₹)") or 0.0), step=0.5, key=f"edit_sl_{edit_idx}")
+            with ec2:
+                new_tgt_val = st.number_input("Edit TGT (₹)", value=float(curr_item.get("TGT (₹)") or 0.0), step=0.5, key=f"edit_tgt_{edit_idx}")
+            with ec3:
+                current_status_opts = ["🟢 Open", "🔴 SL Hit (Closed)", "🎯 TGT Hit (Closed)", "⚪ Sold Manually"]
+                existing_status = curr_item.get("Status", "🟢 Open")
+                status_idx = current_status_opts.index(existing_status) if existing_status in current_status_opts else 0
+                new_status_val = st.selectbox("Status", current_status_opts, index=status_idx, key=f"edit_status_{edit_idx}")
+            with ec4:
+                existing_exit_date_str = curr_item.get("Exit_Date")
+                try:
+                    parsed_exit_date = datetime.strptime(str(existing_exit_date_str), "%Y-%m-%d").date() if existing_exit_date_str and existing_exit_date_str != "-" else date.today()
+                except Exception:
+                    parsed_exit_date = date.today()
+                new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
+            with ec5:
+                new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
+
+            if st.button("💾 Save Position Updates", key=f"save_btn_{edit_idx}"):
+                active_portfolio[edit_idx]["SL (₹)"] = new_sl_val
+                active_portfolio[edit_idx]["TGT (₹)"] = new_tgt_val
+                active_portfolio[edit_idx]["Status"] = new_status_val
+                if new_status_val != "🟢 Open":
+                    active_portfolio[edit_idx]["Exit_Date"] = str(new_exit_date)
+                    active_portfolio[edit_idx]["Exit Price (₹)"] = new_exit_price
+                else:
+                    active_portfolio[edit_idx]["Exit_Date"] = ""
+                    active_portfolio[edit_idx]["Exit Price (₹)"] = 0.0
+                save_json_file(PORTFOLIO_FILE, active_portfolio)
+                st.success("Position successfully updated!")
                 st.rerun()
-        else:
-            st.info("No active paper trades. Execute a trade above.")
+
+        port_df = pd.DataFrame(portfolio_rows)
+        display_port_cols = [
+            "Entry Date", "Sold Date", "Holding", "Ticker", "Status",
+            "Remarks / Strategy", "Entry (₹)", "SL (₹)", "TGT (₹)",
+            "Current Price (₹)", "Qty", "Invested (₹)", "P&L (₹)", "P&L (%)"
+        ]
+        final_port_display = port_df[display_port_cols].copy()
+
+        def highlight_pnl_dark_green_red(val):
+            try:
+                clean_str = str(val).replace("₹", "").replace("%", "").replace("+", "").replace(",", "").strip()
+                num = float(clean_str)
+                if num > 0:
+                    return "color: #15803d; font-weight: 700;"
+                elif num < 0:
+                    return "color: #dc2626; font-weight: 700;"
+                else:
+                    return "color: #64748b; font-weight: normal;"
+            except Exception:
+                return ""
+
+        styled_port = final_port_display.style.map(
+            highlight_pnl_dark_green_red, subset=["P&L (₹)", "P&L (%)"]
+        ).set_properties(**{
+            "text-align": "center",
+            "font-weight": "500"
+        }).set_table_styles([
+            {"selector": "th", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+            {"selector": "td", "props": [("text-align", "center !important"), ("justify-content", "center !important")]},
+        ])
+
+        st.dataframe(styled_port, use_container_width=True, hide_index=True)
+
+        if st.button("🗑️ Reset / Clear All Trades"):
+            st.session_state["paper_portfolio"] = []
+            save_json_file(PORTFOLIO_FILE, [])
+            st.rerun()
+    else:
+        st.info("No active paper trades. Execute a trade above.")

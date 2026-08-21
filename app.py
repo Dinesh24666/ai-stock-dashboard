@@ -235,14 +235,18 @@ def play_trigger_alert(ticker, buy_price):
     <script>
     (function() {{
         try {{
-            // 1. Push Notification
+            // 1. Sticky Push Notification
             var nTitle = "🎯 PULLBACK HIT: {ticker}";
             var nBody = "Trade executed at ₹{buy_price:,.2f}. Moved to Portfolio.";
             var nIcon = "https://cdn-icons-png.flaticon.com/512/190/190411.png";
             var notif = window.parent.Notification || window.Notification;
             
             if (notif && notif.permission === "granted") {{
-                new notif(nTitle, {{body: nBody, icon: nIcon}});
+                new notif(nTitle, {{
+                    body: nBody, 
+                    icon: nIcon,
+                    requireInteraction: true  // <--- This forces it to stay on screen until you close it
+                }});
             }}
 
             // 2. Loud Multi-Tone Alarm using Web Audio API (Bypasses file blocks)
@@ -257,7 +261,7 @@ def play_trigger_alert(ticker, buy_price):
                             var osc = ctx.createOscillator();
                             var gain = ctx.createGain();
                             
-                            osc.type = "square"; // 'square' is a piercing digital alarm tone
+                            osc.type = "square"; // Piercing digital alarm tone
                             osc.frequency.value = freq;
                             
                             osc.connect(gain);

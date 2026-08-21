@@ -38,17 +38,17 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* Live Market Index Ribbon - UPDATED FOR COMPLETE VIEW (WRAPPING) */
+    /* Live Market Index Ribbon */
     .index-ticker-container {
         display: flex;
-        flex-wrap: wrap; /* Allows items to wrap onto the next line */
-        justify-content: center; /* Centers the items nicely */
+        flex-wrap: wrap;
+        justify-content: center;
         background-color: #f8fafc;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
         padding: 12px 14px;
         margin-bottom: 18px;
-        gap: 12px 16px; /* Row and column gap */
+        gap: 12px 16px;
         align-items: center;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
@@ -174,7 +174,7 @@ def render_alert_permission_banner():
         
         var timeVal = hours * 100 + minutes;
         var isWeekday = (day >= 1 && day <= 5);
-        var isMarketHours = true; // Temporarily force ON for testing
+        var isMarketHours = isWeekday && (timeVal >= 915 && timeVal <= 1530);
         
         if ("Notification" in window && Notification.permission === "granted") {
             btnEl.style.display = "none";
@@ -391,7 +391,7 @@ if "screener_data" not in st.session_state:
 # ==========================================
 WIDE_OPEN_FILTERS = {
     "sel_universe": "All NSE Stocks (Full Listed)",
-    "scan_limit": 100,  # Fast default so it doesn't freeze on initial load
+    "scan_limit": 100,  
     "strict_fund": False,
     "pat_growth": False,
     "ob_mcap": False,
@@ -411,7 +411,7 @@ WIDE_OPEN_FILTERS = {
 
 STRICT_STRATEGY_FILTERS = {
     "sel_universe": "All NSE Stocks (Full Listed)",
-    "scan_limit": 1950, # High limit for thorough strict screening
+    "scan_limit": 1950, 
     "strict_fund": True, 
     "pat_growth": False,
     "ob_mcap": False,
@@ -1657,6 +1657,43 @@ with tab_pullback_watchlist:
         save_json_file(WATCHLIST_FILE, updated_watchlist)
         if display_rows:
             st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+
+        with st.expander("✏️ Edit Watchlist Position (Modify Entry, SL, TGT & Qty)", expanded=False):
+            col_sel_edit, _ = st.columns([2, 1])
+            with col_sel_edit:
+                wb_edit_options = {
+                    f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx 
+                    for idx, it in enumerate(updated_watchlist)
+                }
+                selected_wb_edit_label = st.selectbox("Select Watchlist Item to Edit:", list(wb_edit_options.keys()), key="edit_wb_selector")
+            
+            if wb_edit_options:
+                wb_edit_idx = wb_edit_options[selected_wb_edit_label]
+                curr_wb_item = updated_watchlist[wb_edit_idx]
+
+                ec1, ec2, ec3, ec4, ec5 = st.columns(5)
+                with ec1:
+                    new_target_buy = st.number_input("Target Entry (₹)", value=float(curr_wb_item.get("Target Buy (₹)") or 0.0), step=0.5, key=f"wb_edit_tgtbuy_{wb_edit_idx}")
+                with ec2:
+                    new_wb_sl = st.number_input("Stop Loss (₹)", value=float(curr_wb_item.get("SL (₹)") or 0.0), step=0.5, key=f"wb_edit_sl_{wb_edit_idx}")
+                with ec3:
+                    new_wb_tgt = st.number_input("Target (₹)", value=float(curr_wb_item.get("TGT (₹)") or 0.0), step=0.5, key=f"wb_edit_tgt_{wb_edit_idx}")
+                with ec4:
+                    new_wb_qty = st.number_input("Quantity", value=int(curr_wb_item.get("Qty", 50)), min_value=1, step=1, key=f"wb_edit_qty_{wb_edit_idx}")
+                with ec5:
+                    new_wb_strat = st.text_input("Strategy Note", value=curr_wb_item.get("Strategy", ""), key=f"wb_edit_strat_{wb_edit_idx}")
+
+                if st.button("💾 Save Watchlist Updates", key=f"save_wb_btn_{wb_edit_idx}"):
+                    updated_watchlist[wb_edit_idx]["Target Buy (₹)"] = new_target_buy
+                    updated_watchlist[wb_edit_idx]["SL (₹)"] = new_wb_sl
+                    updated_watchlist[wb_edit_idx]["TGT (₹)"] = new_wb_tgt
+                    updated_watchlist[wb_edit_idx]["Qty"] = new_wb_qty
+                    updated_watchlist[wb_edit_idx]["Strategy"] = new_wb_strat.strip()
+                    
+                    st.session_state["pullback_watchlist"] = updated_watchlist
+                    save_json_file(WATCHLIST_FILE, updated_watchlist)
+                    st.success("Watchlist item successfully updated!")
+                    st.rerun()
 
         m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
         with m_col1:

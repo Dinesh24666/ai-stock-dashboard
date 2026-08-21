@@ -387,12 +387,32 @@ if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
 # ==========================================
-# --- STRICT EXACT DEFAULTS ---
+# --- FILTER DICTIONARIES FOR STATE MGMT ---
 # ==========================================
-DEFAULT_FILTERS = {
+WIDE_OPEN_FILTERS = {
     "sel_universe": "All NSE Stocks (Full Listed)",
-    "scan_limit": 1950,
+    "scan_limit": 100,  # Fast default so it doesn't freeze on initial load
     "strict_fund": False,
+    "pat_growth": False,
+    "ob_mcap": False,
+    "roce_rng": (-20, 100),
+    "mcap_rng": (0, 2000000),
+    "max_de": 5.0,
+    "price_rng": (10, 10000),
+    "rsi_rng": (10, 95),
+    "min_adx": 0,
+    "dist_52w": 100,
+    "ma_align": "Any Trend",
+    "vol_10d_en": False,
+    "vol_10d_mult": 1.1,
+    "vol_20d_en": False,
+    "vol_20d_mult": 1.2
+}
+
+STRICT_STRATEGY_FILTERS = {
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 1950, # High limit for thorough strict screening
+    "strict_fund": True, 
     "pat_growth": False,
     "ob_mcap": False,
     "roce_rng": (20, 100),
@@ -410,12 +430,16 @@ DEFAULT_FILTERS = {
 }
 
 # Ensure defaults are initialized in session state
-for key, val in DEFAULT_FILTERS.items():
+for key, val in WIDE_OPEN_FILTERS.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
-def reset_sidebar_filters():
-    for key, val in DEFAULT_FILTERS.items():
+def reset_to_open_filters():
+    for key, val in WIDE_OPEN_FILTERS.items():
+        st.session_state[key] = val
+
+def apply_strict_filters():
+    for key, val in STRICT_STRATEGY_FILTERS.items():
         st.session_state[key] = val
 
 st.sidebar.header("🔑 API Setup")
@@ -792,7 +816,7 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         min_value=25,
         max_value=total_found,
         step=25,
-        help="Increase this slider to scan more stocks. Default is 1950 for full scan.",
+        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
         key="scan_limit"
     )
     tickers_to_scan = all_symbols[:scan_limit]
@@ -833,7 +857,8 @@ vol_multiplier_10d = st.sidebar.slider("10D Volume Surge Multiplier", 0.5, 5.0, 
 enable_vol_multiplier_20d = st.sidebar.checkbox("Volume > 20D SMA Multiplier", key="vol_20d_en")
 vol_multiplier = st.sidebar.slider("20D Volume Surge Multiplier", 0.5, 5.0, step=0.1, disabled=not st.session_state.vol_20d_en, key="vol_20d_mult")
 
-st.sidebar.button("🔄 Restore Default Settings", on_click=reset_sidebar_filters, use_container_width=True)
+st.sidebar.button("🔓 Restore Open Defaults", on_click=reset_to_open_filters, use_container_width=True)
+st.sidebar.button("🎯 Apply Strict Strategy", on_click=apply_strict_filters, use_container_width=True)
 
 scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_container_width=True)
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):

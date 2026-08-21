@@ -1113,6 +1113,10 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
+    # Fallback safety so screen is never blank if filters are too strict
+    if filtered_df.empty:
+        filtered_df = df_raw.copy()
+
     tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
         [
             "📊 Screener & Momentum Signals",

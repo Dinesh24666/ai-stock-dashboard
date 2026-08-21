@@ -768,14 +768,14 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
-apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False if is_single_search else True)
+apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", value=False)
 order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", value=False)
 roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (-20, 100))
 mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (0, 2000000), 500)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 5.0, 0.1)
 
 price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (10, 10000), 10)
-rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (30, 90))
+rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (20, 95))
 min_adx = st.sidebar.slider("Min ADX", 0, 50, 0)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
 

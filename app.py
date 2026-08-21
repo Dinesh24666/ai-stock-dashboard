@@ -387,7 +387,7 @@ if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
 # ==========================================
-# --- STRICT EXACT DEFAULTS (FROM IMAGE) ---
+# --- STRICT EXACT DEFAULTS ---
 # ==========================================
 DEFAULT_FILTERS = {
     "sel_universe": "All NSE Stocks (Full Listed)",
@@ -1234,10 +1234,10 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # --- FUNDAMENTAL FETCH: ONLY FOR SURVIVING STOCKS ---
-    if pat_growth_filter and not filtered_df.empty:
+    # --- FUNDAMENTAL FETCH: ALWAYS FETCH FOR MATCHED STOCKS ---
+    if not filtered_df.empty:
         filtered_df = filtered_df.copy()
-        with st.spinner("Fetching real-time earnings data (PAT YoY)..."):
+        with st.spinner("Fetching real-time earnings data (PAT YoY) for matched stocks..."):
             valid_indices = []
             for idx, row in filtered_df.iterrows():
                 try:
@@ -1245,18 +1245,26 @@ if not df_raw.empty:
                     gr = t_info.get("earningsQuarterlyGrowth")
                     if gr is None:
                         gr = t_info.get("earningsGrowth")
-                    if gr is None:
-                        gr = 0
                     
-                    pat_pct = float(gr) * 100
-                    filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
-                    filtered_df.at[idx, "_pat_num"] = pat_pct
+                    if gr is not None:
+                        pat_pct = float(gr) * 100
+                        filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
+                        filtered_df.at[idx, "_pat_num"] = pat_pct
+                    else:
+                        pat_pct = 0.0
+                        filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
+                        filtered_df.at[idx, "_pat_num"] = 0.0
                     
-                    if pat_pct >= 20.0:
+                    if pat_growth_filter:
+                        if gr is not None and pat_pct >= 20.0:
+                            valid_indices.append(idx)
+                    else:
                         valid_indices.append(idx)
                 except Exception:
                     filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
-                    filtered_df.at[idx, "_pat_num"] = 0.0
+                    filtered_df.at[idx, "_pat_num"] = -999.0
+                    if not pat_growth_filter:
+                        valid_indices.append(idx)
             
             filtered_df = filtered_df.loc[valid_indices]
 
@@ -1274,7 +1282,7 @@ with tab_screener:
     if df_raw.empty:
         st.warning("⚠️ No stocks were fetched. Yahoo Finance might be blocking the connection, or the network timed out. Try reducing the 'Number of Stocks to Scan' slider or scan again.")
     elif filtered_df.empty:
-        st.info("ℹ️ No stocks matched the exact filters you selected. Try relaxing the sliders or changing the Moving Average Alignment.")
+        st.info("ℹ️ 0 matching stocks found. Your strict filters filtered out the entire list.")
     else:
         col_title, col_sort_by, col_sort_dir = st.columns([2, 1.2, 1])
         with col_title:

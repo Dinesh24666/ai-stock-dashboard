@@ -387,7 +387,7 @@ if "screener_data" not in st.session_state:
     st.session_state["screener_data"] = pd.DataFrame()
 
 # ==========================================
-# --- STRICT EXACT DEFAULTS (FROM IMAGE 2) --
+# --- STRICT EXACT DEFAULTS (FROM IMAGE) ---
 # ==========================================
 DEFAULT_FILTERS = {
     "sel_universe": "All NSE Stocks (Full Listed)",
@@ -773,7 +773,6 @@ def get_all_nse_symbols():
     unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
     return [f"{s}.NS" for s in unique_list]
 
-
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
 
 is_single_search = selected_universe == "🔍 Single Stock Search"
@@ -793,7 +792,7 @@ elif selected_universe == "All NSE Stocks (Full Listed)":
         min_value=25,
         max_value=total_found,
         step=25,
-        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
+        help="Increase this slider to scan more stocks. Default is 1950 for full scan.",
         key="scan_limit"
     )
     tickers_to_scan = all_symbols[:scan_limit]
@@ -1089,11 +1088,11 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(np.clip(score, 10, 100))
 
-                if swing_composite >= 80 and is_20d_high_breakout and vol_surge_2x and adx_val >= 25 and price_change_pct <= 8.0:
+                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
                     action_signal = "🟢 STRONG BUY (Breakout)"
-                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout) and curr_price >= ema_20:
+                elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
-                elif swing_composite >= 30:
+                elif swing_composite >= 40:
                     action_signal = "🟠 CONSOLIDATING"
                 else:
                     action_signal = "🔴 AVOID / WEAK"
@@ -1194,13 +1193,14 @@ filtered_df = pd.DataFrame()
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
-    if apply_fund_filter:
-        filtered_df = filtered_df[
-            (filtered_df["_roce_num"] >= roce_range[0])
-            & (filtered_df["_roce_num"] <= roce_range[1])
-            & (filtered_df["_mcap_num"] >= mcap_range_cr[0])
-            & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
-        ]
+    # Apply strict numerical filters exactly matching the sidebar
+    filtered_df = filtered_df[
+        (filtered_df["_roce_num"] >= roce_range[0])
+        & (filtered_df["_roce_num"] <= roce_range[1])
+        & (filtered_df["_mcap_num"] >= mcap_range_cr[0])
+        & (filtered_df["_mcap_num"] <= mcap_range_cr[1])
+        & (filtered_df["_de_num"] <= max_de)
+    ]
 
     if order_book_gt_mcap_filter:
         filtered_df = filtered_df[filtered_df["_ob_gt_mcap"] == True]

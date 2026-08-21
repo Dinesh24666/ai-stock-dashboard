@@ -774,7 +774,7 @@ roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, (-20, 100))
 mcap_range_cr = st.sidebar.slider("Market Cap (₹ Cr)", 0, 2000000, (0, 2000000), 500)
 max_de = st.sidebar.slider("Max Debt-to-Equity", 0.0, 5.0, 5.0, 0.1)
 
-price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (10, 10000), 10)
+price_range = st.sidebar.slider("Stock Price (₹)", 0, 5000, (10, 5000), 10)
 rsi_range = st.sidebar.slider("RSI (14)", 0, 100, (20, 95))
 min_adx = st.sidebar.slider("Min ADX", 0, 50, 0)
 max_dist_52w_high = st.sidebar.slider("Within % of 52W High", 0, 100, 100)
@@ -1112,6 +1112,10 @@ if not df_raw.empty:
 
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
+
+    # Guaranteed fallback so the screen is never blank
+    if filtered_df.empty:
+        filtered_df = df_raw.copy()
 
     tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
         [

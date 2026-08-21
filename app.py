@@ -230,27 +230,39 @@ def render_alert_permission_banner():
 
 
 def play_trigger_alert(ticker, buy_price):
-    # Completely escapes the iframe to play a loud synthetic alarm on the parent window
+    # Completely escapes the iframe to force notifications and audio on the parent window
     js_html = f"""
     <script>
     (function() {{
         try {{
-            // 1. Sticky Push Notification
-            var nTitle = "🎯 PULLBACK HIT: {ticker}";
-            var nBody = "Trade executed at ₹{buy_price:,.2f}. Moved to Portfolio.";
-            var nIcon = "https://cdn-icons-png.flaticon.com/512/190/190411.png";
-            var notif = window.parent.Notification || window.Notification;
-            
-            if (notif && notif.permission === "granted") {{
-                new notif(nTitle, {{
-                    body: nBody, 
-                    icon: nIcon,
-                    requireInteraction: true  // <--- This forces it to stay on screen until you close it
-                }});
-            }}
-
-            // 2. Loud Multi-Tone Alarm using Web Audio API (Bypasses file blocks)
             window.parent.eval(`
+                var nTitle = "🎯 PULLBACK HIT: {ticker}";
+                var nBody = "Trade executed at ₹{buy_price:,.2f}. Moved to Portfolio.";
+                var nIcon = "https://cdn-icons-png.flaticon.com/512/190/190411.png";
+                
+                // 1. Sticky Push Notification
+                var notifFired = false;
+                try {{
+                    if (window.Notification && Notification.permission === "granted") {{
+                        var n = new Notification(nTitle, {{
+                            body: nBody, 
+                            icon: nIcon,
+                            requireInteraction: true // Forces it to stay on screen until manually closed
+                        }});
+                        notifFired = true;
+                    }}
+                }} catch(err) {{
+                    console.log("Push notification failed:", err);
+                }}
+                
+                // 2. Hard Popup Fallback (If OS blocks Push Notifications)
+                if (!notifFired) {{
+                    setTimeout(function() {{
+                        alert("🔔 " + nTitle + "\\n\\n" + nBody);
+                    }}, 200);
+                }}
+
+                // 3. Loud Multi-Tone Alarm
                 try {{
                     var AudioCtx = window.AudioContext || window.webkitAudioContext;
                     if(AudioCtx) {{
@@ -267,7 +279,6 @@ def play_trigger_alert(ticker, buy_price):
                             osc.connect(gain);
                             gain.connect(ctx.destination);
                             
-                            // Max Volume (1.0)
                             gain.gain.setValueAtTime(1.0, startTime);
                             gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
                             
@@ -276,7 +287,6 @@ def play_trigger_alert(ticker, buy_price):
                         }}
                         
                         var now = ctx.currentTime;
-                        // Play 3 loud piercing alarm beeps
                         playLoudBeep(900, now, 0.25);
                         playLoudBeep(900, now + 0.35, 0.25);
                         playLoudBeep(1200, now + 0.70, 0.5);
@@ -292,7 +302,6 @@ def play_trigger_alert(ticker, buy_price):
     </script>
     """
     components.html(js_html, height=0, width=0)
-
 # --- TOP LIVE MARKET INDEX TICKER RIBBON ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():

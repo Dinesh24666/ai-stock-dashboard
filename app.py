@@ -869,9 +869,39 @@ scan_button = st.sidebar.button("🚀 Run Screener Scan", type="primary", use_co
 if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     st.cache_data.clear()
     st.session_state["ai_analysis_cache"] = {}
+    st.session_state["ai_score_map"] = {}
     st.session_state["screener_data"] = pd.DataFrame()
     gc.collect()
     st.rerun()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_cached_ltp(ticker: str) -> float:
+    """Fast cached last price – avoids repeated yfinance hits while editing forms."""
+    try:
+        t = yf.Ticker(ticker)
+        p = getattr(t.fast_info, "last_price", None)
+        if p and float(p) > 0:
+            return float(p)
+        hist = t.history(period="1d")
+        if hist is not None and not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    return 0.0
+
+
+def _parse_ai_verdict_to_score(thesis_text: str):
+    text = (thesis_text or "").upper()
+    if "STRONG BUY" in text:
+        return 92, "🟢 STRONG BUY (AI)"
+    if "BUY (ON PULLBACK)" in text or "BUY ON PULLBACK" in text:
+        return 72, "🟡 BUY / PULLBACK (AI)"
+    if "WAIT" in text:
+        return 45, "🟠 WAIT (AI)"
+    if "AVOID" in text or "SELL" in text:
+        return 18, "🔴 AVOID (AI)"
+    return 50, "🟠 CONSOLIDATING (AI)"
 
 
 def compute_rsi(series: pd.Series, period: int = 14) -> float:
@@ -1118,6 +1148,7 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(np.clip(score, 10, 100))
 
+                is_overextended = bool(price_change_pct > 8.0 or rsi_val > 78)
                 if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
@@ -1264,39 +1295,31 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # --- FUNDAMENTAL FETCH: ALWAYS FETCH FOR MATCHED STOCKS ---
-    if not filtered_df.empty:
+    # --- FUNDAMENTAL FETCH: only when PAT filter is ON (avoids lag) ---
+    if not filtered_df.empty and pat_growth_filter:
         filtered_df = filtered_df.copy()
-        with st.spinner("Fetching real-time earnings data (PAT YoY) for matched stocks..."):
+        # Cap to top 20 by volume to keep UI snappy
+        if len(filtered_df) > 20:
+            filtered_df = filtered_df.nlargest(20, "_raw_vol")
+        with st.spinner("Fetching PAT YoY for top matches..."):
             valid_indices = []
             for idx, row in filtered_df.iterrows():
                 try:
                     t_info = yf.Ticker(row["Raw_Ticker"]).info
-                    gr = t_info.get("earningsQuarterlyGrowth")
-                    if gr is None:
-                        gr = t_info.get("earningsGrowth")
-                    
+                    gr = t_info.get("earningsQuarterlyGrowth") or t_info.get("earningsGrowth")
                     if gr is not None:
                         pat_pct = float(gr) * 100
                         filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
                         filtered_df.at[idx, "_pat_num"] = pat_pct
-                    else:
-                        pat_pct = 0.0
-                        filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
-                        filtered_df.at[idx, "_pat_num"] = 0.0
-                    
-                    if pat_growth_filter:
-                        if gr is not None and pat_pct >= 20.0:
+                        if pat_pct >= 20.0:
                             valid_indices.append(idx)
                     else:
-                        valid_indices.append(idx)
+                        filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
+                        filtered_df.at[idx, "_pat_num"] = 0.0
                 except Exception:
                     filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
                     filtered_df.at[idx, "_pat_num"] = -999.0
-                    if not pat_growth_filter:
-                        valid_indices.append(idx)
-            
-            filtered_df = filtered_df.loc[valid_indices]
+            filtered_df = filtered_df.loc[valid_indices] if valid_indices else filtered_df.iloc[0:0]
 
 
 tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
@@ -1447,58 +1470,57 @@ with tab_deepdive:
                     if not GEMINI_API_KEY:
                         st.warning("Please provide your Gemini API Key in the left sidebar.")
                     else:
-                        prompt = f"""
-                        You are a Professional Swing Trader & Technical Analyst specializing in Indian Equities (NSE).
-                        Evaluate this pure Short-Term Swing / Momentum Breakout trade setup:
-                        - Stock: {selected_stock}
-                        - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
-                        - Traded Volume: {curr_volume}
-                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} | 44 EMA: ₹{ema44_val:.2f}
-                        - ADX (14): {curr_adx}, RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}
-                        - Breakout Composite Score: {curr_score}/100 | System Signal: {curr_signal}
+                        # Short prompt = faster response; verdict options unchanged
+                        prompt = f"""NSE swing trader. Be concise (max 120 words).
+Stock: {selected_stock} | Price: ₹{curr_p:.2f} ({curr_change}) | Vol: {curr_volume}
+EMA 9/20/44: {ema9_val:.1f}/{ema20_val:.1f}/{ema44_val:.1f} | ADX: {curr_adx} | RSI: {stock_row['RSI (14)'] if stock_row is not None else 'N/A'} | Score: {curr_score}
 
-                        Provide a structured swing trade plan:
-                        1. **Breakout Setup Assessment**: Is momentum active, in a healthy base pullback, or exhausted?
-                        2. **Exact Actionable Verdict**: Choose one strictly: [STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID].
-                        3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
-                        4. **Exit Trigger**: Invalidation condition for swing trades.
-                        """
-                        with st.spinner("Analyzing momentum setup with Gemini..."):
+Reply in this exact format:
+VERDICT: <STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID>
+Setup: <1 line>
+Entry: ₹x–y | SL: ₹z | T1: ₹a | T2: ₹b
+Exit: <1 line invalidation>"""
+                        with st.spinner("AI analyzing (fast)..."):
                             success = False
                             error_logs = []
-                            candidate_models = []
-                            try:
-                                for m in genai.list_models():
-                                    if "generateContent" in m.supported_generation_methods:
-                                        candidate_models.append(m.name.replace("models/", ""))
-                            except Exception as e:
-                                error_logs.append(f"Model listing error: {e}")
-
-                            if not candidate_models:
-                                candidate_models = [
-                                    "gemini-1.5-flash",
-                                    "gemini-2.0-flash",
-                                    "gemini-1.5-flash-8b",
-                                    "gemini-1.5-pro",
-                                    "gemini-pro",
-                                ]
-
+                            # Prefer fastest models first – skip slow list_models call
+                            candidate_models = [
+                                "gemini-2.0-flash",
+                                "gemini-1.5-flash",
+                                "gemini-1.5-flash-8b",
+                                "gemini-2.0-flash-lite",
+                                "gemini-pro",
+                            ]
                             for model_name in candidate_models:
                                 try:
                                     model = genai.GenerativeModel(model_name)
-                                    res = model.generate_content(prompt)
+                                    res = model.generate_content(
+                                        prompt,
+                                        generation_config={"max_output_tokens": 220, "temperature": 0.3},
+                                    )
                                     if res and res.text:
-                                        st.session_state["ai_analysis_cache"][selected_stock] = res.text
-                                        st.markdown(res.text)
+                                        thesis_text = res.text.strip()
+                                        st.session_state["ai_analysis_cache"][selected_stock] = thesis_text
+                                        st.markdown(thesis_text)
+                                        # Align Composite Score to AI verdict
+                                        v_score, v_sig = _parse_ai_verdict_to_score(thesis_text)
+                                        if "ai_score_map" not in st.session_state:
+                                            st.session_state["ai_score_map"] = {}
+                                        st.session_state["ai_score_map"][selected_stock] = (v_score, v_sig)
+                                        if not st.session_state["screener_data"].empty:
+                                            mask = st.session_state["screener_data"]["Raw_Ticker"] == selected_stock
+                                            if mask.any():
+                                                st.session_state["screener_data"].loc[mask, "Composite Score"] = v_score
+                                                st.session_state["screener_data"].loc[mask, "Signal"] = v_sig
+                                        st.success(f"AI Score: {v_score}/100 → {v_sig}")
                                         success = True
                                         break
                                 except Exception as err:
                                     error_logs.append(f"{model_name}: {str(err)}")
                                     continue
-
                             if not success:
                                 st.error("Failed to generate AI thesis.")
-                                with st.expander("🔍 View Error Details"):
+                                with st.expander("Error details"):
                                     for err in error_logs:
                                         st.code(err)
 
@@ -1608,10 +1630,7 @@ with tab_pullback_watchlist:
 
             curr_ltp = live_price_dict.get(sym)
             if curr_ltp is None:
-                try:
-                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
-                except Exception:
-                    curr_ltp = None
+                curr_ltp = get_cached_ltp(sym) or None
 
             if "Waiting" in status_str and curr_ltp is not None and curr_ltp > 0 and curr_ltp <= target_buy:
                 status_str = "⚡ Triggered / Bought"
@@ -1658,47 +1677,47 @@ with tab_pullback_watchlist:
                 "Strategy": item.get("Strategy", sma_trend_filter),
             })
 
-        st.session_state["pullback_watchlist"] = updated_watchlist
-        save_json_file(WATCHLIST_FILE, updated_watchlist)
+        # Only write disk when status actually changed (avoids lag on every rerun)
+        if updated_watchlist != st.session_state.get("pullback_watchlist"):
+            st.session_state["pullback_watchlist"] = updated_watchlist
+            save_json_file(WATCHLIST_FILE, updated_watchlist)
+        else:
+            st.session_state["pullback_watchlist"] = updated_watchlist
         if display_rows:
             st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
 
         with st.expander("✏️ Edit Watchlist Position (Modify Entry, SL, TGT & Qty)", expanded=False):
-            col_sel_edit, _ = st.columns([2, 1])
-            with col_sel_edit:
-                wb_edit_options = {
-                    f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx 
-                    for idx, it in enumerate(updated_watchlist)
-                }
-                selected_wb_edit_label = st.selectbox("Select Watchlist Item to Edit:", list(wb_edit_options.keys()), key="edit_wb_selector")
-            
+            wb_edit_options = {
+                f"{it.get('Ticker')} (Target: ₹{it.get('Target Buy (₹)')}) [{it.get('Status')}]": idx
+                for idx, it in enumerate(updated_watchlist)
+            }
             if wb_edit_options:
-                wb_edit_idx = wb_edit_options[selected_wb_edit_label]
-                curr_wb_item = updated_watchlist[wb_edit_idx]
-
-                ec1, ec2, ec3, ec4, ec5 = st.columns(5)
-                with ec1:
-                    new_target_buy = st.number_input("Target Entry (₹)", value=float(curr_wb_item.get("Target Buy (₹)") or 0.0), step=0.5, key=f"wb_edit_tgtbuy_{wb_edit_idx}")
-                with ec2:
-                    new_wb_sl = st.number_input("Stop Loss (₹)", value=float(curr_wb_item.get("SL (₹)") or 0.0), step=0.5, key=f"wb_edit_sl_{wb_edit_idx}")
-                with ec3:
-                    new_wb_tgt = st.number_input("Target (₹)", value=float(curr_wb_item.get("TGT (₹)") or 0.0), step=0.5, key=f"wb_edit_tgt_{wb_edit_idx}")
-                with ec4:
-                    new_wb_qty = st.number_input("Quantity", value=int(curr_wb_item.get("Qty", 50)), min_value=1, step=1, key=f"wb_edit_qty_{wb_edit_idx}")
-                with ec5:
-                    new_wb_strat = st.text_input("Strategy Note", value=curr_wb_item.get("Strategy", ""), key=f"wb_edit_strat_{wb_edit_idx}")
-
-                if st.button("💾 Save Watchlist Updates", key=f"save_wb_btn_{wb_edit_idx}"):
-                    updated_watchlist[wb_edit_idx]["Target Buy (₹)"] = new_target_buy
-                    updated_watchlist[wb_edit_idx]["SL (₹)"] = new_wb_sl
-                    updated_watchlist[wb_edit_idx]["TGT (₹)"] = new_wb_tgt
-                    updated_watchlist[wb_edit_idx]["Qty"] = new_wb_qty
-                    updated_watchlist[wb_edit_idx]["Strategy"] = new_wb_strat.strip()
-                    
-                    st.session_state["pullback_watchlist"] = updated_watchlist
-                    save_json_file(WATCHLIST_FILE, updated_watchlist)
-                    st.success("Watchlist item successfully updated!")
-                    st.rerun()
+                # st.form prevents lag – widgets only submit on Save, not on every keystroke
+                with st.form("edit_watchlist_form", clear_on_submit=False):
+                    selected_wb_edit_label = st.selectbox("Select Watchlist Item to Edit:", list(wb_edit_options.keys()))
+                    wb_edit_idx = wb_edit_options[selected_wb_edit_label]
+                    curr_wb_item = updated_watchlist[wb_edit_idx]
+                    ec1, ec2, ec3, ec4, ec5 = st.columns(5)
+                    with ec1:
+                        new_target_buy = st.number_input("Target Entry (₹)", value=float(curr_wb_item.get("Target Buy (₹)") or 0.0), step=0.5)
+                    with ec2:
+                        new_wb_sl = st.number_input("Stop Loss (₹)", value=float(curr_wb_item.get("SL (₹)") or 0.0), step=0.5)
+                    with ec3:
+                        new_wb_tgt = st.number_input("Target (₹)", value=float(curr_wb_item.get("TGT (₹)") or 0.0), step=0.5)
+                    with ec4:
+                        new_wb_qty = st.number_input("Quantity", value=int(curr_wb_item.get("Qty", 50)), min_value=1, step=1)
+                    with ec5:
+                        new_wb_strat = st.text_input("Strategy Note", value=curr_wb_item.get("Strategy", ""))
+                    if st.form_submit_button("💾 Save Watchlist Updates", use_container_width=True):
+                        updated_watchlist[wb_edit_idx]["Target Buy (₹)"] = new_target_buy
+                        updated_watchlist[wb_edit_idx]["SL (₹)"] = new_wb_sl
+                        updated_watchlist[wb_edit_idx]["TGT (₹)"] = new_wb_tgt
+                        updated_watchlist[wb_edit_idx]["Qty"] = new_wb_qty
+                        updated_watchlist[wb_edit_idx]["Strategy"] = new_wb_strat.strip()
+                        st.session_state["pullback_watchlist"] = updated_watchlist
+                        save_json_file(WATCHLIST_FILE, updated_watchlist)
+                        st.success("Watchlist updated!")
+                        st.rerun()
 
         m_col1, m_col2, m_col3 = st.columns([2, 1, 1])
         with m_col1:
@@ -1857,65 +1876,24 @@ with tab_watchlist:
         for idx, pos in enumerate(active_portfolio):
             sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
             clean_t = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
-            try:
-                buy_p = float(pos.get("Buy Price (₹)", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                buy_p = 0.0
-            if buy_p <= 0 or (isinstance(buy_p, float) and (np.isnan(buy_p) or np.isinf(buy_p))):
-                buy_p = 0.0
-
-            # Safe live price: screener cache → yfinance → fallback to buy price (never NaN)
+            buy_p = float(pos.get("Buy Price (₹)", 0.0))
+            
             curr_p = live_price_dict.get(sym)
-            try:
-                curr_p = float(curr_p) if curr_p is not None else None
-                if curr_p is not None and (np.isnan(curr_p) or np.isinf(curr_p) or curr_p <= 0):
-                    curr_p = None
-            except (TypeError, ValueError):
-                curr_p = None
             if curr_p is None:
-                try:
-                    raw = yf.Ticker(sym).fast_info.last_price
-                    curr_p = float(raw) if raw is not None else buy_p
-                    if np.isnan(curr_p) or np.isinf(curr_p) or curr_p <= 0:
-                        curr_p = buy_p
-                except Exception:
-                    curr_p = buy_p if buy_p > 0 else 0.0
+                cached = get_cached_ltp(sym)
+                curr_p = cached if cached > 0 else buy_p
 
-            try:
-                qty = int(pos.get("Qty", 1) or 1)
-            except (TypeError, ValueError):
-                qty = 1
-            if qty < 1:
-                qty = 1
-
-            try:
-                invested = float(pos.get("Invested (₹)", buy_p * qty) or (buy_p * qty))
-            except (TypeError, ValueError):
-                invested = buy_p * qty
-            if invested <= 0 or (isinstance(invested, float) and (np.isnan(invested) or np.isinf(invested))):
-                invested = max(buy_p * qty, 0.0)
-
-            try:
-                sl = float(pos.get("SL (₹)", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                sl = 0.0
-            try:
-                tgt = float(pos.get("TGT (₹)", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                tgt = 0.0
-
+            qty = int(pos.get("Qty", 1))
+            invested = float(pos.get("Invested (₹)", buy_p * qty))
+            sl = float(pos.get("SL (₹)", 0.0))
+            tgt = float(pos.get("TGT (₹)", 0.0))
             pos_date_str = str(pos.get("Date", date.today()))
             pos_exit_date_str = str(pos.get("Exit_Date", "") or "")
             pos_remarks = str(pos.get("Remarks", sma_trend_filter))
             pos_status = str(pos.get("Status", "🟢 Open"))
-            try:
-                saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
-            except (TypeError, ValueError):
-                saved_exit_price = 0.0
-            if np.isnan(saved_exit_price) or np.isinf(saved_exit_price):
-                saved_exit_price = 0.0
+            saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
 
-            if pos_status == "🟢 Open" and curr_p > 0:
+            if pos_status == "🟢 Open":
                 if sl > 0 and curr_p <= sl:
                     pos_status = "🔴 SL Hit (Closed)"
                     pos_exit_date_str = str(date.today())
@@ -1938,24 +1916,19 @@ with tab_watchlist:
                 holding_days = 0
 
             if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
-                exit_val = saved_exit_price if saved_exit_price > 0 else (curr_p if curr_p > 0 else buy_p)
-                if exit_val <= 0 or np.isnan(exit_val):
-                    exit_val = buy_p
+                exit_val = saved_exit_price if saved_exit_price > 0 else curr_p
                 pnl = round((exit_val - buy_p) * qty, 2)
                 pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
-                realised_pnl_total += pnl if not (np.isnan(pnl) or np.isinf(pnl)) else 0.0
+                realised_pnl_total += pnl
                 effective_curr_p = exit_val
             else:
                 open_trades_count += 1
-                safe_price = curr_p if (curr_p > 0 and not np.isnan(curr_p)) else buy_p
-                pnl = round((safe_price - buy_p) * qty, 2)
-                if np.isnan(pnl) or np.isinf(pnl):
-                    pnl = 0.0
+                pnl = round((curr_p - buy_p) * qty, 2)
                 pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                 open_invested += invested
-                open_current_val += round(safe_price * qty, 2)
+                open_current_val += round(curr_p * qty, 2)
                 unrealised_pnl_total += pnl
-                effective_curr_p = safe_price
+                effective_curr_p = curr_p
 
             if pnl > 0:
                 winning_trades_count += 1
@@ -1972,12 +1945,12 @@ with tab_watchlist:
                 "Entry (₹)": f"₹{buy_p:,.2f}",
                 "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "-",
                 "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
-                "Current Price (₹)": f"₹{(effective_curr_p if (effective_curr_p and not np.isnan(effective_curr_p)) else buy_p):,.2f}",
+                "Current Price (₹)": f"₹{effective_curr_p:,.2f}",
                 "Qty": qty,
                 "Invested (₹)": f"₹{invested:,.2f}",
-                "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{(0.0 if np.isnan(pnl) else pnl):,.2f}",
-                "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{(0.0 if np.isnan(pnl_pct) else pnl_pct):.2f}%",
-                "_raw_pnl": 0.0 if (np.isnan(pnl) if isinstance(pnl, float) else False) else pnl,
+                "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
+                "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
+                "_raw_pnl": pnl,
             })
 
         win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
@@ -2006,25 +1979,12 @@ with tab_watchlist:
         st.markdown(trade_summary_html, unsafe_allow_html=True)
 
         p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
-        # Guard against any residual NaN before display
-        if np.isnan(open_invested) or np.isinf(open_invested):
-            open_invested = 0.0
-        if np.isnan(open_current_val) or np.isinf(open_current_val):
-            open_current_val = open_invested
-        if np.isnan(unrealised_pnl_total) or np.isinf(unrealised_pnl_total):
-            unrealised_pnl_total = 0.0
-        if np.isnan(realised_pnl_total) or np.isinf(realised_pnl_total):
-            realised_pnl_total = 0.0
-        unrealised_pct = (unrealised_pnl_total / open_invested * 100.0) if open_invested > 0 else 0.0
-        if np.isnan(unrealised_pct) or np.isinf(unrealised_pct):
-            unrealised_pct = 0.0
-
         p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
         p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")
         p_col3.metric(
             "Unrealised P&L (Open)",
             f"₹{unrealised_pnl_total:,.2f}",
-            delta=f"{unrealised_pct:.2f}%",
+            delta=f"{(unrealised_pnl_total / open_invested * 100.0):.2f}%" if open_invested > 0 else "0.00%",
         )
         p_col4.metric(
             "Realised P&L (Closed)",
@@ -2039,50 +1999,48 @@ with tab_watchlist:
         )
 
         with st.expander("✏️ Edit Position Parameters (Modify SL, TGT, Sold Date, Status & Exit Price)", expanded=False):
-            col_sel_edit, _ = st.columns([2, 1])
-            with col_sel_edit:
-                trade_edit_options = {
-                    f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}] [ID: {pos.get('id', idx)}]": idx
-                    for idx, pos in enumerate(active_portfolio)
-                }
-                selected_edit_label = st.selectbox("Select Position to Edit:", list(trade_edit_options.keys()))
-            
-            edit_idx = trade_edit_options[selected_edit_label]
-            curr_item = active_portfolio[edit_idx]
-
-            ec1, ec2, ec3, ec4, ec5 = st.columns(5)
-            with ec1:
-                new_sl_val = st.number_input("Edit SL (₹)", value=float(curr_item.get("SL (₹)") or 0.0), step=0.5, key=f"edit_sl_{edit_idx}")
-            with ec2:
-                new_tgt_val = st.number_input("Edit TGT (₹)", value=float(curr_item.get("TGT (₹)") or 0.0), step=0.5, key=f"edit_tgt_{edit_idx}")
-            with ec3:
-                current_status_opts = ["🟢 Open", "🔴 SL Hit (Closed)", "🎯 TGT Hit (Closed)", "⚪ Sold Manually"]
-                existing_status = curr_item.get("Status", "🟢 Open")
-                status_idx = current_status_opts.index(existing_status) if existing_status in current_status_opts else 0
-                new_status_val = st.selectbox("Status", current_status_opts, index=status_idx, key=f"edit_status_{edit_idx}")
-            with ec4:
-                existing_exit_date_str = curr_item.get("Exit_Date")
-                try:
-                    parsed_exit_date = datetime.strptime(str(existing_exit_date_str), "%Y-%m-%d").date() if existing_exit_date_str and existing_exit_date_str != "-" else date.today()
-                except Exception:
-                    parsed_exit_date = date.today()
-                new_exit_date = st.date_input("Sold Date", value=parsed_exit_date, key=f"edit_exit_date_{edit_idx}")
-            with ec5:
-                new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5, key=f"edit_exit_price_{edit_idx}")
-
-            if st.button("💾 Save Position Updates", key=f"save_btn_{edit_idx}"):
-                active_portfolio[edit_idx]["SL (₹)"] = new_sl_val
-                active_portfolio[edit_idx]["TGT (₹)"] = new_tgt_val
-                active_portfolio[edit_idx]["Status"] = new_status_val
-                if new_status_val != "🟢 Open":
-                    active_portfolio[edit_idx]["Exit_Date"] = str(new_exit_date)
-                    active_portfolio[edit_idx]["Exit Price (₹)"] = new_exit_price
-                else:
-                    active_portfolio[edit_idx]["Exit_Date"] = ""
-                    active_portfolio[edit_idx]["Exit Price (₹)"] = 0.0
-                save_json_file(PORTFOLIO_FILE, active_portfolio)
-                st.success("Position successfully updated!")
-                st.rerun()
+            trade_edit_options = {
+                f"{pos.get('Ticker')} (Entry: ₹{pos.get('Buy Price (₹)')} on {pos.get('Date')}) - [{pos.get('Status', '🟢 Open')}]": idx
+                for idx, pos in enumerate(active_portfolio)
+            }
+            if trade_edit_options:
+                # Form = no lag while typing; only reruns on Save
+                with st.form("edit_portfolio_form", clear_on_submit=False):
+                    selected_edit_label = st.selectbox("Select Position to Edit:", list(trade_edit_options.keys()))
+                    edit_idx = trade_edit_options[selected_edit_label]
+                    curr_item = active_portfolio[edit_idx]
+                    ec1, ec2, ec3, ec4, ec5 = st.columns(5)
+                    with ec1:
+                        new_sl_val = st.number_input("Edit SL (₹)", value=float(curr_item.get("SL (₹)") or 0.0), step=0.5)
+                    with ec2:
+                        new_tgt_val = st.number_input("Edit TGT (₹)", value=float(curr_item.get("TGT (₹)") or 0.0), step=0.5)
+                    with ec3:
+                        current_status_opts = ["🟢 Open", "🔴 SL Hit (Closed)", "🎯 TGT Hit (Closed)", "⚪ Sold Manually"]
+                        existing_status = curr_item.get("Status", "🟢 Open")
+                        status_idx = current_status_opts.index(existing_status) if existing_status in current_status_opts else 0
+                        new_status_val = st.selectbox("Status", current_status_opts, index=status_idx)
+                    with ec4:
+                        existing_exit_date_str = curr_item.get("Exit_Date")
+                        try:
+                            parsed_exit_date = datetime.strptime(str(existing_exit_date_str), "%Y-%m-%d").date() if existing_exit_date_str and existing_exit_date_str != "-" else date.today()
+                        except Exception:
+                            parsed_exit_date = date.today()
+                        new_exit_date = st.date_input("Sold Date", value=parsed_exit_date)
+                    with ec5:
+                        new_exit_price = st.number_input("Exit Price (₹)", value=float(curr_item.get("Exit Price (₹)") or curr_item.get("Buy Price (₹)") or 0.0), step=0.5)
+                    if st.form_submit_button("💾 Save Position Updates", use_container_width=True):
+                        active_portfolio[edit_idx]["SL (₹)"] = new_sl_val
+                        active_portfolio[edit_idx]["TGT (₹)"] = new_tgt_val
+                        active_portfolio[edit_idx]["Status"] = new_status_val
+                        if new_status_val != "🟢 Open":
+                            active_portfolio[edit_idx]["Exit_Date"] = str(new_exit_date)
+                            active_portfolio[edit_idx]["Exit Price (₹)"] = new_exit_price
+                        else:
+                            active_portfolio[edit_idx]["Exit_Date"] = ""
+                            active_portfolio[edit_idx]["Exit Price (₹)"] = 0.0
+                        save_json_file(PORTFOLIO_FILE, active_portfolio)
+                        st.success("Position updated!")
+                        st.rerun()
 
         port_df = pd.DataFrame(portfolio_rows)
         display_port_cols = [

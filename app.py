@@ -1,8 +1,10 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import gc
 import json
 import os
 import time
+from typing import Dict, Optional
+
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -10,6 +12,135 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+
+# ============================================================
+# DHAN API LAYER (kept + additive — yfinance remains fallback)
+# ============================================================
+DHAN_SCRIP_CSV = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+DHAN_SID_CACHE = "dhan_nse_sids.json"
+
+
+def _secret(name: str, default: str = "") -> str:
+    try:
+        v = st.secrets.get(name, default)
+        return str(v).strip() if v is not None else default
+    except Exception:
+        return default
+
+
+def get_dhan_client():
+    cid = _secret("DHAN_CLIENT_ID")
+    tok = _secret("DHAN_ACCESS_TOKEN")
+    if not cid or not tok:
+        return None
+    try:
+        from dhanhq import DhanContext, dhanhq
+        return dhanhq(DhanContext(cid, tok))
+    except Exception:
+        try:
+            from dhanhq import dhanhq as Dhan
+            return Dhan(cid, tok)
+        except Exception:
+            return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_dhan_nse_equity_map() -> Dict[str, str]:
+    try:
+        if os.path.exists(DHAN_SID_CACHE):
+            age = time.time() - os.path.getmtime(DHAN_SID_CACHE)
+            if age < 86400:
+                with open(DHAN_SID_CACHE) as f:
+                    data = json.load(f)
+                if data:
+                    return data
+    except Exception:
+        pass
+    mapping: Dict[str, str] = {}
+    try:
+        df = pd.read_csv(DHAN_SCRIP_CSV, low_memory=False)
+        sym_col = sid_col = seg_col = inst_col = None
+        for c in df.columns:
+            cl = c.upper()
+            if sym_col is None and ("TRADING_SYMBOL" in cl or cl == "SYMBOL"):
+                sym_col = c
+            if sid_col is None and "SECURITY_ID" in cl:
+                sid_col = c
+            if seg_col is None and ("SEGMENT" in cl or "EXCH_ID" in cl):
+                seg_col = c
+            if inst_col is None and "INSTRUMENT" in cl:
+                inst_col = c
+        if sym_col and sid_col:
+            for _, row in df.iterrows():
+                try:
+                    sym = str(row[sym_col]).strip().upper()
+                    sid = str(row[sid_col]).strip()
+                    if not sym or not sid or sid == "nan":
+                        continue
+                    seg = str(row[seg_col]).upper() if seg_col else "NSE"
+                    inst = str(row[inst_col]).upper() if inst_col else "ES"
+                    if "BSE" in seg and "NSE" not in seg:
+                        continue
+                    if any(x in inst for x in ("FUT", "OPT", "CE", "PE")):
+                        continue
+                    mapping[f"{sym}.NS"] = sid
+                    mapping[sym] = sid
+                except Exception:
+                    continue
+        if mapping:
+            try:
+                with open(DHAN_SID_CACHE, "w") as f:
+                    json.dump(mapping, f)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return mapping
+
+
+def dhan_security_id(symbol: str) -> Optional[str]:
+    m = load_dhan_nse_equity_map()
+    s = (symbol or "").strip().upper()
+    return m.get(s) or m.get(s.replace(".NS", "").replace(".BO", ""))
+
+
+def get_ltp_smart(symbol: str, fallback: float = 0.0) -> float:
+    """Dhan LTP first, yfinance fallback."""
+    dhan = get_dhan_client()
+    sid = dhan_security_id(symbol)
+    if dhan is not None and sid:
+        try:
+            payload = {"NSE_EQ": [int(sid)]}
+            resp = None
+            for meth in ("get_ltp", "ticker_data", "ohlc_data"):
+                if hasattr(dhan, meth):
+                    try:
+                        resp = getattr(dhan, meth)(payload)
+                        break
+                    except Exception:
+                        continue
+            data = resp.get("data", resp) if isinstance(resp, dict) else {}
+            nse = data.get("NSE_EQ", {}) if isinstance(data, dict) else {}
+            info = None
+            if isinstance(nse, dict):
+                info = nse.get(str(sid)) or (nse.get(int(sid)) if str(sid).isdigit() else None)
+            if isinstance(info, dict):
+                ltp = info.get("last_price") or info.get("LTP") or info.get("ltp")
+                if ltp and float(ltp) > 0:
+                    return float(ltp)
+            elif isinstance(info, (int, float)) and float(info) > 0:
+                return float(info)
+        except Exception:
+            pass
+    try:
+        t = symbol if str(symbol).endswith((".NS", ".BO")) else f"{symbol}.NS"
+        p = getattr(yf.Ticker(t).fast_info, "last_price", None)
+        if p and float(p) > 0:
+            return float(p)
+    except Exception:
+        pass
+    return fallback
+
 
 # 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
@@ -359,6 +490,7 @@ st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 
 PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
+REBALANCE_FILE = "rebalance.json"
 
 
 def load_json_file(filename):
@@ -381,6 +513,8 @@ def save_json_file(filename, data):
 
 if "paper_portfolio" not in st.session_state:
     st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
+if "rebalance_book" not in st.session_state:
+    st.session_state["rebalance_book"] = load_json_file(REBALANCE_FILE)
 
 if "pullback_watchlist" not in st.session_state:
     st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
@@ -448,10 +582,10 @@ def apply_strict_filters():
         st.session_state[key] = val
 
 st.sidebar.header("🔑 API Setup")
-api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
+api_key_from_secrets = _secret("GEMINI_API_KEY")
 
 if api_key_from_secrets:
-    GEMINI_API_KEY = str(api_key_from_secrets).strip()
+    GEMINI_API_KEY = api_key_from_secrets
     st.sidebar.success("✅ Gemini API Key connected")
 else:
     GEMINI_API_KEY = st.sidebar.text_input(
@@ -465,6 +599,17 @@ if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY.strip())
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
+
+# Dhan (from Streamlit Secrets) — kept for LTP + symbol map
+if _secret("DHAN_CLIENT_ID") and _secret("DHAN_ACCESS_TOKEN"):
+    st.sidebar.success("✅ Dhan API connected (secrets)")
+    try:
+        _nmap = load_dhan_nse_equity_map()
+        st.sidebar.caption(f"Dhan NSE map: {len({k for k in _nmap if str(k).endswith('.NS')})} symbols")
+    except Exception:
+        pass
+else:
+    st.sidebar.caption("Optional: set DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN in Secrets for live LTP")
 
 ORDER_BOOK_CR_MAP = {
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
@@ -806,7 +951,6 @@ def get_all_nse_symbols():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_nifty500_symbols():
-    """Official Nifty 500 constituents when available; else NSE list head as fallback."""
     urls = [
         "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
         "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
@@ -814,11 +958,7 @@ def get_nifty500_symbols():
     for url in urls:
         try:
             df = pd.read_csv(url)
-            col = None
-            for c in df.columns:
-                if str(c).strip().lower() in ("symbol", "symbols"):
-                    col = c
-                    break
+            col = next((c for c in df.columns if str(c).strip().lower() in ("symbol", "symbols")), None)
             if col is None:
                 col = df.columns[2] if len(df.columns) > 2 else df.columns[0]
             syms = []
@@ -831,7 +971,6 @@ def get_nifty500_symbols():
                 return syms
         except Exception:
             continue
-    # fallback: first 500 from full NSE equity list (approximate universe)
     return get_all_nse_symbols()[:500]
 
 
@@ -1242,23 +1381,13 @@ def get_single_stock_history(ticker):
         return pd.DataFrame()
 
 
-# Auto-scan only small baskets (not Nifty 500 / full NSE)
-_auto_ok = is_single_search or selected_universe in (
-    "Nifty 50 Core",
-    "Banking & Financial Services",
-    "IT & Technology",
-    "Automobile & EV",
-    "Pharma & Healthcare",
-    "Defence, Rail & PSUs",
-)
-if st.session_state["screener_data"].empty and _auto_ok:
+# AUTO-RUN SCAN ON STARTUP IF EMPTY
+if st.session_state["screener_data"].empty:
     with st.spinner("Initializing market scan..."):
         st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
-elif st.session_state["screener_data"].empty and selected_universe in ("Nifty 500", "All NSE Stocks (Full Listed)"):
-    st.info(f"**{selected_universe}**: {len(tickers_to_scan)} stocks. Click **🚀 Run Screener Scan** to start.")
 
 if scan_button or is_single_search:
-    with st.spinner(f"Scanning {len(tickers_to_scan)} stocks..."):
+    with st.spinner("Analyzing market data..."):
         df_raw = fetch_screener_universe(tickers_to_scan)
         st.session_state["screener_data"] = df_raw
 else:
@@ -1345,12 +1474,13 @@ if not df_raw.empty:
             filtered_df = filtered_df.loc[valid_indices]
 
 
-tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
+tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist, tab_rebalance = st.tabs(
     [
         "📊 Screener & Momentum Signals",
         "🔬 Single Stock Chart & AI Thesis",
         "🎯 Pullback Watchlist & Order Trigger",
         "💼 Paper Trading Portfolio",
+        "⚖️ Portfolio Rebalance",
     ]
 )
 
@@ -1493,57 +1623,81 @@ with tab_deepdive:
                     if not GEMINI_API_KEY:
                         st.warning("Please provide your Gemini API Key in the left sidebar.")
                     else:
-                        prompt = f"""
-                        You are a Professional Swing Trader & Technical Analyst specializing in Indian Equities (NSE).
-                        Evaluate this pure Short-Term Swing / Momentum Breakout trade setup:
-                        - Stock: {selected_stock}
-                        - Current Price: ₹{curr_p:.2f} (Day Change: {curr_change})
-                        - Traded Volume: {curr_volume}
-                        - 9 EMA: ₹{ema9_val:.2f} | 20 EMA: ₹{ema20_val:.2f} | 44 EMA: ₹{ema44_val:.2f}
-                        - ADX (14): {curr_adx}, RSI (14): {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}
-                        - Breakout Composite Score: {curr_score}/100 | System Signal: {curr_signal}
+                        prompt = f"""NSE swing trader. Output ONLY the final report. No thinking text.
 
-                        Provide a structured swing trade plan:
-                        1. **Breakout Setup Assessment**: Is momentum active, in a healthy base pullback, or exhausted?
-                        2. **Exact Actionable Verdict**: Choose one strictly: [STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID].
-                        3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
-                        4. **Exit Trigger**: Invalidation condition for swing trades.
-                        """
-                        with st.spinner("Analyzing momentum setup with Gemini..."):
+Stock: {selected_stock} | ₹{curr_p:.2f} ({curr_change}) | Vol: {curr_volume}
+EMA 9/20/44: {ema9_val:.1f}/{ema20_val:.1f}/{ema44_val:.1f} | ADX: {curr_adx} | RSI: {stock_row['RSI (14)'] if stock_row is not None else 'N/A'} | Score: {curr_score}
+
+## 1. Breakout Setup Assessment
+**Status:** <phrase>
+- **Trend Strength:** <1-2 sentences>
+- **Momentum Profile:** <1-2 sentences>
+- **Volatility/Volume:** <1-2 sentences>
+
+## 2. Exact Actionable Verdict
+**Verdict:** <STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID>
+**Reasoning:** <1-2 sentences>
+
+## 3. Trade Blueprint
+| Parameter | Value / Range | Logic |
+|-----------|---------------|-------|
+| Entry Range | ₹x – ₹y | <brief> |
+| Strict Stop-Loss | ₹z | <brief> |
+| Target 1 | ₹a | <brief> |
+| Target 2 | ₹b | <brief> |
+
+**Risk/Reward:** R:R ≥ 1:2
+
+## 4. Exit Trigger (Invalidation)
+<1-2 sentences>"""
+                        with st.spinner("AI analyzing (fast)..."):
                             success = False
                             error_logs = []
                             candidate_models = []
                             try:
                                 for m in genai.list_models():
-                                    if "generateContent" in m.supported_generation_methods:
+                                    if "generateContent" in getattr(m, "supported_generation_methods", []):
                                         candidate_models.append(m.name.replace("models/", ""))
                             except Exception as e:
-                                error_logs.append(f"Model listing error: {e}")
-
-                            if not candidate_models:
-                                candidate_models = [
-                                    "gemini-1.5-flash",
-                                    "gemini-2.0-flash",
-                                    "gemini-1.5-flash-8b",
-                                    "gemini-1.5-pro",
-                                    "gemini-pro",
-                                ]
-
-                            for model_name in candidate_models:
+                                error_logs.append(f"Model listing: {e}")
+                            preferred = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-pro"]
+                            ordered = [p for p in preferred if p in candidate_models]
+                            ordered += [m for m in candidate_models if m not in ordered and "flash" in m.lower()]
+                            ordered += [m for m in candidate_models if m not in ordered]
+                            if not ordered:
+                                ordered = preferred
+                            for model_name in ordered[:8]:
                                 try:
                                     model = genai.GenerativeModel(model_name)
-                                    res = model.generate_content(prompt)
-                                    if res and res.text:
-                                        st.session_state["ai_analysis_cache"][selected_stock] = res.text
-                                        st.markdown(res.text)
+                                    res = model.generate_content(prompt, generation_config={"max_output_tokens": 1024, "temperature": 0.2})
+                                    if res and res.text and len(res.text.strip()) >= 80:
+                                        thesis = res.text.strip()
+                                        st.session_state["ai_analysis_cache"][selected_stock] = thesis
+                                        st.markdown(thesis)
+                                        t_up = thesis.upper()
+                                        if "STRONG BUY" in t_up:
+                                            vs, vsig = 92, "🟢 STRONG BUY (AI)"
+                                        elif "BUY (ON PULLBACK)" in t_up or "BUY ON PULLBACK" in t_up or "PULLBACK" in t_up:
+                                            vs, vsig = 72, "🟡 BUY / PULLBACK (AI)"
+                                        elif "AVOID" in t_up:
+                                            vs, vsig = 18, "🔴 AVOID (AI)"
+                                        elif "WAIT" in t_up:
+                                            vs, vsig = 45, "🟠 WAIT (AI)"
+                                        else:
+                                            vs, vsig = 50, "🟠 CONSOLIDATING (AI)"
+                                        st.session_state.setdefault("ai_score_map", {})[selected_stock] = (vs, vsig)
+                                        if not st.session_state["screener_data"].empty:
+                                            mask = st.session_state["screener_data"]["Raw_Ticker"] == selected_stock
+                                            if mask.any():
+                                                st.session_state["screener_data"].loc[mask, "Composite Score"] = vs
+                                                st.session_state["screener_data"].loc[mask, "Signal"] = vsig
+                                        st.success(f"AI Score: {vs}/100 → {vsig} ({model_name})")
                                         success = True
                                         break
                                 except Exception as err:
-                                    error_logs.append(f"{model_name}: {str(err)}")
-                                    continue
-
+                                    error_logs.append(f"{model_name}: {err}")
                             if not success:
-                                st.error("Failed to generate AI thesis.")
+                                st.error("AI failed.")
                                 with st.expander("🔍 View Error Details"):
                                     for err in error_logs:
                                         st.code(err)
@@ -1655,7 +1809,9 @@ with tab_pullback_watchlist:
             curr_ltp = live_price_dict.get(sym)
             if curr_ltp is None:
                 try:
-                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_ltp = float(get_ltp_smart(sym, 0.0) or 0.0)
+                    if curr_ltp <= 0:
+                        curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_ltp = None
 
@@ -1760,13 +1916,7 @@ with tab_pullback_watchlist:
                 updated_watchlist[d_idx]["Status"] = "⏳ Waiting for Pullback"
                 st.session_state["pullback_watchlist"] = updated_watchlist
                 save_json_file(WATCHLIST_FILE, updated_watchlist)
-
-                st.session_state["paper_portfolio"] = [
-                    p for p in st.session_state["paper_portfolio"]
-                    if not (p.get("Ticker") == rearm_sym and "Pullback" in p.get("Remarks", ""))
-                ]
-                save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-                st.success(f"Re-armed {rearm_sym} and synchronized trades!")
+                st.success(f"Re-armed {rearm_sym}. Paper trades unchanged.")
                 st.rerun()
         with m_col3:
             st.write("")
@@ -1777,13 +1927,8 @@ with tab_pullback_watchlist:
                 updated_watchlist.pop(d_idx)
                 st.session_state["pullback_watchlist"] = updated_watchlist
                 save_json_file(WATCHLIST_FILE, updated_watchlist)
-
-                st.session_state["paper_portfolio"] = [
-                    p for p in st.session_state["paper_portfolio"]
-                    if not (p.get("Ticker") == removed_sym and "Pullback" in p.get("Remarks", ""))
-                ]
-                save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
-                st.success(f"Deleted {removed_sym} from watchlist!")
+                # Keep paper trades after execution
+                st.success(f"Deleted {removed_sym} from watchlist only. Paper trade kept.")
                 st.rerun()
     else:
         st.info("Watchlist is empty. Add a pullback setup above.")
@@ -1908,7 +2053,9 @@ with tab_watchlist:
             curr_p = live_price_dict.get(sym)
             if curr_p is None:
                 try:
-                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_p = float(get_ltp_smart(sym, 0.0) or 0.0)
+                    if curr_p <= 0:
+                        curr_p = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_p = buy_p
 
@@ -2110,3 +2257,176 @@ with tab_watchlist:
             st.session_state["paper_portfolio"] = []
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
+
+
+# =========================================================
+# ⚖️ PORTFOLIO REBALANCE (independent — add from screener)
+# =========================================================
+with tab_rebalance:
+    st.subheader("⚖️ Portfolio Rebalance")
+    st.caption("Independent of Watchlist & Paper Trading. Add stocks from screener results.")
+
+    def _sf(v, d=0.0):
+        try:
+            x = float(v)
+            return d if (x != x or abs(x) == float("inf")) else x
+        except Exception:
+            return d
+
+    book = st.session_state.get("rebalance_book", [])
+    if df_raw.empty:
+        st.warning("Run screener first, then add stocks here.")
+    else:
+        with st.expander("➕ Add from Screener", expanded=len(book) == 0):
+            with st.form("rb_add"):
+                cands = df_raw["Raw_Ticker"].tolist()
+                cur = st.session_state.get("selected_ticker", cands[0])
+                di = cands.index(cur) if cur in cands else 0
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    sel = st.selectbox("Stock", cands, index=di)
+                    mr = df_raw[df_raw["Raw_Ticker"] == sel]
+                    ltp = float(mr["Price (₹)"].iloc[0]) if not mr.empty else 100.0
+                    score = float(mr["Composite Score"].iloc[0]) if not mr.empty else 50.0
+                with c2:
+                    st.metric("LTP", f"₹{ltp:,.2f}")
+                with c3:
+                    qty = st.number_input("Qty", value=50, min_value=1, step=1)
+                with c4:
+                    entry = st.number_input("Entry ₹", value=round(ltp, 2), min_value=0.1, step=0.5)
+                if st.form_submit_button("📥 Add", use_container_width=True):
+                    clean = sel.replace(".NS", "").replace(".BO", "")
+                    if any(x.get("Raw_Ticker") == sel for x in book):
+                        st.warning(f"{clean} already in book")
+                    else:
+                        book.append({
+                            "id": f"rb_{clean}_{int(time.time())}", "Ticker": clean, "Raw_Ticker": sel,
+                            "Qty": int(qty), "Entry (₹)": float(entry), "Score": score, "Note": "",
+                        })
+                        st.session_state["rebalance_book"] = book
+                        save_json_file(REBALANCE_FILE, book)
+                        st.success(f"Added {clean}"); st.rerun()
+
+    book = st.session_state.get("rebalance_book", [])
+    if not book:
+        st.info("Rebalance book empty.")
+    else:
+        live = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        rows, total_val = [], 0.0
+        for pos in book:
+            sym = pos.get("Raw_Ticker", f"{pos.get('Ticker')}.NS")
+            clean = pos.get("Ticker", sym.replace(".NS", ""))
+            entry, qty = _sf(pos.get("Entry (₹)")), max(1, int(pos.get("Qty", 1) or 1))
+            curr = live.get(sym)
+            try:
+                curr = float(curr) if curr is not None else None
+                if curr is not None and (curr != curr or curr <= 0):
+                    curr = None
+            except Exception:
+                curr = None
+            if not curr or curr <= 0:
+                curr = get_ltp_smart(sym, entry) or entry
+            val = round(float(curr) * qty, 2)
+            total_val += val
+            rows.append({"id": pos.get("id"), "Ticker": clean, "Raw_Ticker": sym, "Qty": qty,
+                         "Entry (₹)": entry, "LTP (₹)": round(float(curr), 2), "Value (₹)": val,
+                         "Score": _sf(pos.get("Score"), 50)})
+
+        if total_val > 0:
+            for r in rows:
+                r["Weight %"] = round(r["Value (₹)"] / total_val * 100, 2)
+            st.markdown(f"**{len(rows)} positions · ₹{total_val:,.2f}**")
+
+            opts = {f"{r['Ticker']} · Qty {r['Qty']} ({r['Weight %']:.1f}%)": r["id"] for r in rows}
+            with st.form("rb_edit"):
+                lab = st.selectbox("Edit / Delete", list(opts.keys()))
+                sid = opts[lab]
+                pidx = next((i for i, p in enumerate(book) if p.get("id") == sid), None)
+                if pidx is not None:
+                    nq = st.number_input("Qty", value=max(1, int(book[pidx].get("Qty", 1))), min_value=1, step=1)
+                    ne = st.number_input("Entry ₹", value=_sf(book[pidx].get("Entry (₹)")), min_value=0.1, step=0.5)
+                    s1, s2 = st.columns(2)
+                    with s1:
+                        do_save = st.form_submit_button("💾 Save", use_container_width=True)
+                    with s2:
+                        do_del = st.form_submit_button("🗑️ Delete", type="primary", use_container_width=True)
+                    if do_save:
+                        book[pidx].update({"Qty": int(nq), "Entry (₹)": ne})
+                        st.session_state["rebalance_book"] = book
+                        save_json_file(REBALANCE_FILE, book)
+                        st.rerun()
+                    if do_del:
+                        book.pop(pidx)
+                        st.session_state["rebalance_book"] = book
+                        save_json_file(REBALANCE_FILE, book)
+                        st.rerun()
+
+            strategy = st.selectbox("Strategy", ["Equal Weight", "Max Position Cap", "Score Weight", "Hybrid"])
+            max_w = st.slider("Max weight %", 3.0, 25.0, 8.0, 0.5)
+            drift_th = st.slider("Drift threshold %", 0.5, 10.0, 2.0, 0.5)
+            n = len(rows)
+            eq = 100.0 / n if n else 0
+            for r in rows:
+                if strategy == "Equal Weight":
+                    r["Target %"] = round(eq, 2)
+                elif strategy == "Max Position Cap":
+                    r["Target %"] = min(r["Weight %"], max_w)
+                elif strategy == "Score Weight":
+                    r["_s"] = max(r["Score"], 1)
+                else:
+                    r["Target %"] = round(min(eq, max_w), 2)
+            if strategy == "Score Weight":
+                ts = sum(r.get("_s", 50) for r in rows) or 1
+                for r in rows:
+                    r["Target %"] = round(min(r["_s"] / ts * 100, max_w), 2)
+                s = sum(r["Target %"] for r in rows) or 1
+                for r in rows:
+                    r["Target %"] = round(r["Target %"] / s * 100, 2)
+
+            proposals = []
+            for r in rows:
+                r["Drift %"] = round(r["Weight %"] - r["Target %"], 2)
+                dv = total_val * r["Target %"] / 100 - r["Value (₹)"]
+                if abs(r["Drift %"]) < drift_th:
+                    r["Action"], r["Δ Qty"] = "Hold", 0
+                elif dv > 2000 and r["LTP (₹)"] > 0:
+                    r["Action"], r["Δ Qty"] = "Buy", int(dv // r["LTP (₹)"])
+                elif dv < -2000 and r["LTP (₹)"] > 0:
+                    r["Action"], r["Δ Qty"] = "Sell", min(int(abs(dv) // r["LTP (₹)"]), r["Qty"])
+                else:
+                    r["Action"], r["Δ Qty"] = "Hold", 0
+                if r["Action"] != "Hold" and r["Δ Qty"] > 0:
+                    proposals.append(r)
+
+            st.dataframe(pd.DataFrame([{
+                "Ticker": r["Ticker"], "Qty": r["Qty"], "LTP (₹)": f"₹{r['LTP (₹)']:,.2f}",
+                "Weight %": f"{r['Weight %']:.1f}%", "Target %": f"{r['Target %']:.1f}%",
+                "Drift %": f"{r['Drift %']:+.1f}%", "Action": r["Action"],
+                "Δ Qty": r["Δ Qty"] or "—",
+            } for r in rows]), use_container_width=True, hide_index=True)
+
+            if st.button("🔄 Apply Rebalance", type="primary", disabled=not proposals):
+                id_map = {p.get("id"): p for p in st.session_state["rebalance_book"]}
+                for r in proposals:
+                    pos = id_map.get(r["id"])
+                    if not pos:
+                        continue
+                    old_q = int(pos.get("Qty", 1) or 1)
+                    if r["Action"] == "Buy":
+                        nq = old_q + r["Δ Qty"]
+                        old_e = _sf(pos.get("Entry (₹)"), r["LTP (₹)"])
+                        pos["Entry (₹)"] = round((old_e * old_q + r["LTP (₹)"] * r["Δ Qty"]) / nq, 2)
+                        pos["Qty"] = nq
+                    elif r["Action"] == "Sell":
+                        nq = max(0, old_q - r["Δ Qty"])
+                        if nq == 0:
+                            st.session_state["rebalance_book"] = [p for p in st.session_state["rebalance_book"] if p.get("id") != r["id"]]
+                        else:
+                            pos["Qty"] = nq
+                save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
+                st.success("Applied"); st.rerun()
+
+            if st.button("🗑️ Clear Rebalance Book"):
+                st.session_state["rebalance_book"] = []
+                save_json_file(REBALANCE_FILE, [])
+                st.rerun()

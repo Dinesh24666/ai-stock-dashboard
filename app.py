@@ -1338,14 +1338,19 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(np.clip(score, 10, 100))
 
-                # BUG FIX: `is_overextended` was referenced below but never
-                # defined anywhere in the file. That raised a silent
-                # NameError for every stock (caught by the broad except at
-                # the bottom of this loop), which is a likely contributor to
-                # stocks disappearing from scan results. Defined here as:
-                # price has run more than 15% above its 20 EMA — i.e. too
-                # extended above trend to chase a fresh breakout.
-                is_overextended = bool(ema_20 > 0 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
+                # `is_overextended` = price has run too far to safely chase a
+                # fresh breakout. Originally only checked EMA20 extension —
+                # that missed cases like IIFL (RSI 78, ADX 50.7) where the
+                # screener tagged "STRONG BUY (Breakout)" purely on EMA/ADX
+                # alignment while the AI thesis correctly called the RSI
+                # "stretched" and recommended waiting for a pullback instead.
+                # Extreme RSI overbought (>=75) now also counts as
+                # overextended, so the rule-based signal and the AI's
+                # judgment agree instead of contradicting each other.
+                is_overextended = bool(
+                    (ema_20 > 0 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
+                    or rsi_val >= 75.0
+                )
 
                 if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
                     action_signal = "🟢 STRONG BUY (Breakout)"

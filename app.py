@@ -1857,26 +1857,65 @@ with tab_watchlist:
         for idx, pos in enumerate(active_portfolio):
             sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
             clean_t = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
-            buy_p = float(pos.get("Buy Price (₹)", 0.0))
-            
+            try:
+                buy_p = float(pos.get("Buy Price (₹)", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                buy_p = 0.0
+            if buy_p <= 0 or (isinstance(buy_p, float) and (np.isnan(buy_p) or np.isinf(buy_p))):
+                buy_p = 0.0
+
+            # Safe live price: screener cache → yfinance → fallback to buy price (never NaN)
             curr_p = live_price_dict.get(sym)
+            try:
+                curr_p = float(curr_p) if curr_p is not None else None
+                if curr_p is not None and (np.isnan(curr_p) or np.isinf(curr_p) or curr_p <= 0):
+                    curr_p = None
+            except (TypeError, ValueError):
+                curr_p = None
             if curr_p is None:
                 try:
-                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
+                    raw = yf.Ticker(sym).fast_info.last_price
+                    curr_p = float(raw) if raw is not None else buy_p
+                    if np.isnan(curr_p) or np.isinf(curr_p) or curr_p <= 0:
+                        curr_p = buy_p
                 except Exception:
-                    curr_p = buy_p
+                    curr_p = buy_p if buy_p > 0 else 0.0
 
-            qty = int(pos.get("Qty", 1))
-            invested = float(pos.get("Invested (₹)", buy_p * qty))
-            sl = float(pos.get("SL (₹)", 0.0))
-            tgt = float(pos.get("TGT (₹)", 0.0))
+            try:
+                qty = int(pos.get("Qty", 1) or 1)
+            except (TypeError, ValueError):
+                qty = 1
+            if qty < 1:
+                qty = 1
+
+            try:
+                invested = float(pos.get("Invested (₹)", buy_p * qty) or (buy_p * qty))
+            except (TypeError, ValueError):
+                invested = buy_p * qty
+            if invested <= 0 or (isinstance(invested, float) and (np.isnan(invested) or np.isinf(invested))):
+                invested = max(buy_p * qty, 0.0)
+
+            try:
+                sl = float(pos.get("SL (₹)", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                sl = 0.0
+            try:
+                tgt = float(pos.get("TGT (₹)", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                tgt = 0.0
+
             pos_date_str = str(pos.get("Date", date.today()))
             pos_exit_date_str = str(pos.get("Exit_Date", "") or "")
             pos_remarks = str(pos.get("Remarks", sma_trend_filter))
             pos_status = str(pos.get("Status", "🟢 Open"))
-            saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
+            try:
+                saved_exit_price = float(pos.get("Exit Price (₹)") or 0.0)
+            except (TypeError, ValueError):
+                saved_exit_price = 0.0
+            if np.isnan(saved_exit_price) or np.isinf(saved_exit_price):
+                saved_exit_price = 0.0
 
-            if pos_status == "🟢 Open":
+            if pos_status == "🟢 Open" and curr_p > 0:
                 if sl > 0 and curr_p <= sl:
                     pos_status = "🔴 SL Hit (Closed)"
                     pos_exit_date_str = str(date.today())
@@ -1899,19 +1938,24 @@ with tab_watchlist:
                 holding_days = 0
 
             if "Closed" in pos_status or pos_status == "⚪ Sold Manually":
-                exit_val = saved_exit_price if saved_exit_price > 0 else curr_p
+                exit_val = saved_exit_price if saved_exit_price > 0 else (curr_p if curr_p > 0 else buy_p)
+                if exit_val <= 0 or np.isnan(exit_val):
+                    exit_val = buy_p
                 pnl = round((exit_val - buy_p) * qty, 2)
                 pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
-                realised_pnl_total += pnl
+                realised_pnl_total += pnl if not (np.isnan(pnl) or np.isinf(pnl)) else 0.0
                 effective_curr_p = exit_val
             else:
                 open_trades_count += 1
-                pnl = round((curr_p - buy_p) * qty, 2)
+                safe_price = curr_p if (curr_p > 0 and not np.isnan(curr_p)) else buy_p
+                pnl = round((safe_price - buy_p) * qty, 2)
+                if np.isnan(pnl) or np.isinf(pnl):
+                    pnl = 0.0
                 pnl_pct = round((pnl / invested) * 100.0, 2) if invested > 0 else 0.0
                 open_invested += invested
-                open_current_val += round(curr_p * qty, 2)
+                open_current_val += round(safe_price * qty, 2)
                 unrealised_pnl_total += pnl
-                effective_curr_p = curr_p
+                effective_curr_p = safe_price
 
             if pnl > 0:
                 winning_trades_count += 1
@@ -1928,12 +1972,12 @@ with tab_watchlist:
                 "Entry (₹)": f"₹{buy_p:,.2f}",
                 "SL (₹)": f"₹{sl:,.2f}" if sl > 0 else "-",
                 "TGT (₹)": f"₹{tgt:,.2f}" if tgt > 0 else "-",
-                "Current Price (₹)": f"₹{effective_curr_p:,.2f}",
+                "Current Price (₹)": f"₹{(effective_curr_p if (effective_curr_p and not np.isnan(effective_curr_p)) else buy_p):,.2f}",
                 "Qty": qty,
                 "Invested (₹)": f"₹{invested:,.2f}",
-                "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{pnl:,.2f}",
-                "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%",
-                "_raw_pnl": pnl,
+                "P&L (₹)": f"{'+' if pnl >= 0 else ''}₹{(0.0 if np.isnan(pnl) else pnl):,.2f}",
+                "P&L (%)": f"{'+' if pnl_pct >= 0 else ''}{(0.0 if np.isnan(pnl_pct) else pnl_pct):.2f}%",
+                "_raw_pnl": 0.0 if (np.isnan(pnl) if isinstance(pnl, float) else False) else pnl,
             })
 
         win_rate_pct = (winning_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
@@ -1962,12 +2006,25 @@ with tab_watchlist:
         st.markdown(trade_summary_html, unsafe_allow_html=True)
 
         p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
+        # Guard against any residual NaN before display
+        if np.isnan(open_invested) or np.isinf(open_invested):
+            open_invested = 0.0
+        if np.isnan(open_current_val) or np.isinf(open_current_val):
+            open_current_val = open_invested
+        if np.isnan(unrealised_pnl_total) or np.isinf(unrealised_pnl_total):
+            unrealised_pnl_total = 0.0
+        if np.isnan(realised_pnl_total) or np.isinf(realised_pnl_total):
+            realised_pnl_total = 0.0
+        unrealised_pct = (unrealised_pnl_total / open_invested * 100.0) if open_invested > 0 else 0.0
+        if np.isnan(unrealised_pct) or np.isinf(unrealised_pct):
+            unrealised_pct = 0.0
+
         p_col1.metric("Open Invested Capital", f"₹{open_invested:,.2f}")
         p_col2.metric("Open Portfolio Value", f"₹{open_current_val:,.2f}")
         p_col3.metric(
             "Unrealised P&L (Open)",
             f"₹{unrealised_pnl_total:,.2f}",
-            delta=f"{(unrealised_pnl_total / open_invested * 100.0):.2f}%" if open_invested > 0 else "0.00%",
+            delta=f"{unrealised_pct:.2f}%",
         )
         p_col4.metric(
             "Realised P&L (Closed)",

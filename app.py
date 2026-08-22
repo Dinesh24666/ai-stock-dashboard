@@ -3,6 +3,8 @@ import gc
 import json
 import os
 import time
+from typing import Dict, Optional
+
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -10,6 +12,136 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+
+# ============================================================
+# DHAN API (secrets) — LTP + NSE security_id map
+# ============================================================
+DHAN_SCRIP_CSV = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+DHAN_SID_CACHE = "dhan_nse_sids.json"
+
+
+def _secret(name: str, default: str = "") -> str:
+    try:
+        v = st.secrets.get(name, default)
+        return str(v).strip() if v is not None else default
+    except Exception:
+        return default
+
+
+def get_dhan_client():
+    cid = _secret("DHAN_CLIENT_ID")
+    tok = _secret("DHAN_ACCESS_TOKEN")
+    if not cid or not tok:
+        return None
+    try:
+        from dhanhq import DhanContext, dhanhq
+        return dhanhq(DhanContext(cid, tok))
+    except Exception:
+        try:
+            from dhanhq import dhanhq as Dhan
+            return Dhan(cid, tok)
+        except Exception:
+            return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_dhan_nse_equity_map() -> Dict[str, str]:
+    try:
+        if os.path.exists(DHAN_SID_CACHE):
+            if time.time() - os.path.getmtime(DHAN_SID_CACHE) < 86400:
+                with open(DHAN_SID_CACHE) as f:
+                    data = json.load(f)
+                if data:
+                    return data
+    except Exception:
+        pass
+    mapping: Dict[str, str] = {}
+    try:
+        df = pd.read_csv(DHAN_SCRIP_CSV, low_memory=False)
+        sym_col = sid_col = seg_col = inst_col = None
+        for c in df.columns:
+            cl = c.upper()
+            if sym_col is None and ("TRADING_SYMBOL" in cl or cl == "SYMBOL"):
+                sym_col = c
+            if sid_col is None and "SECURITY_ID" in cl:
+                sid_col = c
+            if seg_col is None and ("SEGMENT" in cl or "EXCH_ID" in cl):
+                seg_col = c
+            if inst_col is None and "INSTRUMENT" in cl:
+                inst_col = c
+        if sym_col and sid_col:
+            for _, row in df.iterrows():
+                try:
+                    sym = str(row[sym_col]).strip().upper()
+                    sid = str(row[sid_col]).strip()
+                    if not sym or not sid or sid == "nan":
+                        continue
+                    seg = str(row[seg_col]).upper() if seg_col else "NSE"
+                    inst = str(row[inst_col]).upper() if inst_col else "ES"
+                    if "BSE" in seg and "NSE" not in seg:
+                        continue
+                    if any(x in inst for x in ("FUT", "OPT", "CE", "PE")):
+                        continue
+                    mapping[f"{sym}.NS"] = sid
+                    mapping[sym] = sid
+                except Exception:
+                    continue
+        if mapping:
+            try:
+                with open(DHAN_SID_CACHE, "w") as f:
+                    json.dump(mapping, f)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return mapping
+
+
+def dhan_security_id(symbol: str) -> Optional[str]:
+    m = load_dhan_nse_equity_map()
+    s = (symbol or "").strip().upper()
+    return m.get(s) or m.get(s.replace(".NS", "").replace(".BO", ""))
+
+
+def get_ltp_smart(symbol: str, fallback: float = 0.0) -> float:
+    """Dhan LTP first, then yfinance."""
+    dhan = get_dhan_client()
+    sid = dhan_security_id(symbol)
+    if dhan is not None and sid:
+        try:
+            payload = {"NSE_EQ": [int(sid)]}
+            resp = None
+            for meth in ("get_ltp", "ticker_data", "ohlc_data"):
+                if hasattr(dhan, meth):
+                    try:
+                        resp = getattr(dhan, meth)(payload)
+                        break
+                    except Exception:
+                        continue
+            data = resp.get("data", resp) if isinstance(resp, dict) else {}
+            nse = data.get("NSE_EQ", {}) if isinstance(data, dict) else {}
+            info = None
+            if isinstance(nse, dict):
+                info = nse.get(str(sid))
+                if info is None and str(sid).isdigit():
+                    info = nse.get(int(sid))
+            if isinstance(info, dict):
+                ltp = info.get("last_price") or info.get("LTP") or info.get("ltp")
+                if ltp and float(ltp) > 0:
+                    return float(ltp)
+            elif isinstance(info, (int, float)) and float(info) > 0:
+                return float(info)
+        except Exception:
+            pass
+    try:
+        t = symbol if str(symbol).endswith((".NS", ".BO")) else f"{symbol}.NS"
+        p = getattr(yf.Ticker(t).fast_info, "last_price", None)
+        if p and float(p) > 0:
+            return float(p)
+    except Exception:
+        pass
+    return fallback
+
 
 # 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
@@ -384,7 +516,6 @@ if "paper_portfolio" not in st.session_state:
     st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
 if "rebalance_book" not in st.session_state:
     st.session_state["rebalance_book"] = load_json_file(REBALANCE_FILE)
-
 if "pullback_watchlist" not in st.session_state:
     st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
 
@@ -451,10 +582,10 @@ def apply_strict_filters():
         st.session_state[key] = val
 
 st.sidebar.header("🔑 API Setup")
-api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
+api_key_from_secrets = _secret("GEMINI_API_KEY")
 
 if api_key_from_secrets:
-    GEMINI_API_KEY = str(api_key_from_secrets).strip()
+    GEMINI_API_KEY = api_key_from_secrets
     st.sidebar.success("✅ Gemini API Key connected")
 else:
     GEMINI_API_KEY = st.sidebar.text_input(
@@ -468,6 +599,17 @@ if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY.strip())
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
+
+# Dhan from Streamlit Secrets
+if _secret("DHAN_CLIENT_ID") and _secret("DHAN_ACCESS_TOKEN"):
+    st.sidebar.success("✅ Dhan API connected (secrets)")
+    try:
+        _nmap = load_dhan_nse_equity_map()
+        st.sidebar.caption(f"Dhan NSE map: {len({k for k in _nmap if str(k).endswith('.NS')})} symbols")
+    except Exception:
+        pass
+else:
+    st.sidebar.caption("Set DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN in Secrets for live LTP")
 
 ORDER_BOOK_CR_MAP = {
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
@@ -1643,7 +1785,9 @@ with tab_pullback_watchlist:
             curr_ltp = live_price_dict.get(sym)
             if curr_ltp is None:
                 try:
-                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_ltp = float(get_ltp_smart(sym, 0.0) or 0.0)
+                    if curr_ltp <= 0:
+                        curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_ltp = None
 
@@ -1896,7 +2040,9 @@ with tab_watchlist:
             curr_p = live_price_dict.get(sym)
             if curr_p is None:
                 try:
-                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_p = float(get_ltp_smart(sym, 0.0) or 0.0)
+                    if curr_p <= 0:
+                        curr_p = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_p = buy_p
 
@@ -2105,7 +2251,7 @@ with tab_watchlist:
 # =========================================================
 with tab_rebalance:
     st.subheader("⚖️ Portfolio Rebalance")
-    st.caption("Independent of Watchlist & Paper Trading. Add stocks from screener only.")
+    st.caption("Independent of Watchlist & Paper Trading. Add from screener only.")
 
     def _sf(v, d=0.0):
         try:
@@ -2116,10 +2262,10 @@ with tab_rebalance:
 
     book = st.session_state.get("rebalance_book", [])
     if df_raw.empty:
-        st.warning("Run the screener first, then add stocks here.")
+        st.warning("Run screener first, then add stocks here.")
     else:
         with st.expander("➕ Add from Screener", expanded=len(book) == 0):
-            with st.form("rb_add_form"):
+            with st.form("rb_add"):
                 cands = df_raw["Raw_Ticker"].tolist()
                 cur = st.session_state.get("selected_ticker", cands[0])
                 di = cands.index(cur) if cur in cands else 0
@@ -2135,7 +2281,7 @@ with tab_rebalance:
                     qty = st.number_input("Qty", value=50, min_value=1, step=1)
                 with c4:
                     entry = st.number_input("Entry ₹", value=round(ltp, 2), min_value=0.1, step=0.5)
-                if st.form_submit_button("📥 Add to Rebalance Book", use_container_width=True):
+                if st.form_submit_button("📥 Add", use_container_width=True):
                     clean = sel.replace(".NS", "").replace(".BO", "")
                     if any(x.get("Raw_Ticker") == sel for x in st.session_state["rebalance_book"]):
                         st.warning(f"{clean} already in book")
@@ -2152,7 +2298,7 @@ with tab_rebalance:
 
     book = st.session_state.get("rebalance_book", [])
     if not book:
-        st.info("Rebalance book empty. Add from screener above.")
+        st.info("Rebalance book empty.")
     else:
         live = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
         rows, total_val = [], 0.0
@@ -2169,11 +2315,7 @@ with tab_rebalance:
             except Exception:
                 curr = None
             if not curr or curr <= 0:
-                try:
-                    p = yf.Ticker(sym).fast_info.last_price
-                    curr = float(p) if p else entry
-                except Exception:
-                    curr = entry if entry > 0 else 0.0
+                curr = get_ltp_smart(sym, entry) or entry
             val = round(float(curr) * qty, 2)
             total_val += val
             rows.append({
@@ -2182,17 +2324,14 @@ with tab_rebalance:
                 "Value (₹)": val, "Score": _sf(pos.get("Score"), 50),
             })
 
-        if total_val <= 0:
-            st.warning("Could not price positions. Run screener for LTPs.")
-        else:
+        if total_val > 0:
             for r in rows:
                 r["Weight %"] = round(r["Value (₹)"] / total_val * 100, 2)
-            st.markdown(f"**{len(rows)} positions · Total ₹{total_val:,.2f}**")
+            st.markdown(f"**{len(rows)} positions · ₹{total_val:,.2f}**")
 
-            # Edit / Delete
-            opts = {f"{r['Ticker']} · Qty {r['Qty']} · {r['Weight %']:.1f}%": r["id"] for r in rows}
-            with st.form("rb_edit_form"):
-                lab = st.selectbox("Select position", list(opts.keys()))
+            opts = {f"{r['Ticker']} · Qty {r['Qty']} ({r['Weight %']:.1f}%)": r["id"] for r in rows}
+            with st.form("rb_edit"):
+                lab = st.selectbox("Edit / Delete", list(opts.keys()))
                 sid = opts[lab]
                 pidx = next((i for i, p in enumerate(book) if p.get("id") == sid), None)
                 if pidx is not None:
@@ -2207,13 +2346,11 @@ with tab_rebalance:
                         book[pidx].update({"Qty": int(nq), "Entry (₹)": ne})
                         st.session_state["rebalance_book"] = book
                         save_json_file(REBALANCE_FILE, book)
-                        st.success("Saved")
                         st.rerun()
                     if do_del:
                         book.pop(pidx)
                         st.session_state["rebalance_book"] = book
                         save_json_file(REBALANCE_FILE, book)
-                        st.success("Deleted")
                         st.rerun()
 
             strategy = st.selectbox("Strategy", ["Equal Weight", "Max Position Cap", "Score Weight", "Hybrid"])

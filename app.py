@@ -2,7 +2,10 @@ from datetime import date, datetime
 import gc
 import json
 import os
+import threading
 import time
+from typing import Dict, List, Optional
+
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -10,6 +13,322 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+
+# ============================================================
+# LIVE PRICE CACHE (Dhan / Zerodha)
+# ============================================================
+_LIVE_LOCK = threading.Lock()
+_LIVE_PRICES: Dict[str, float] = {}
+_LIVE_META = {"broker": None, "connected": False, "last_tick": None, "error": ""}
+_WS_THREAD: Optional[threading.Thread] = None
+_WS_STOP = threading.Event()
+_TOKEN_MAP: Dict[str, int] = {}
+_REV_TOKEN_MAP: Dict[int, str] = {}
+
+
+def _norm_sym(s: str) -> str:
+    s = (s or "").strip().upper()
+    if not s:
+        return s
+    if not (s.endswith(".NS") or s.endswith(".BO")):
+        s = f"{s}.NS"
+    return s
+
+
+def set_live_price(symbol: str, ltp: float):
+    try:
+        v = float(ltp)
+        if v != v or v <= 0:
+            return
+    except Exception:
+        return
+    with _LIVE_LOCK:
+        _LIVE_PRICES[_norm_sym(symbol)] = v
+        _LIVE_META["last_tick"] = datetime.now().isoformat(timespec="seconds")
+
+
+def get_live_price(symbol: str, default: float = 0.0) -> float:
+    with _LIVE_LOCK:
+        v = _LIVE_PRICES.get(_norm_sym(symbol))
+    return float(v) if v and v > 0 else default
+
+
+def live_status() -> dict:
+    with _LIVE_LOCK:
+        return dict(_LIVE_META)
+
+
+def collect_watch_symbols() -> List[str]:
+    syms = set()
+    for p in st.session_state.get("paper_portfolio", []) or []:
+        if str(p.get("Status", "")).startswith("🟢"):
+            syms.add(_norm_sym(p.get("Raw_Ticker") or p.get("Ticker")))
+    for w in st.session_state.get("pullback_watchlist", []) or []:
+        syms.add(_norm_sym(w.get("Raw_Ticker") or w.get("Ticker")))
+    for r in st.session_state.get("rebalance_book", []) or []:
+        syms.add(_norm_sym(r.get("Raw_Ticker") or r.get("Ticker")))
+    sel = st.session_state.get("selected_ticker")
+    if sel:
+        syms.add(_norm_sym(sel))
+    return [s for s in syms if s]
+
+
+def stop_live_feed():
+    global _WS_THREAD
+    _WS_STOP.set()
+    t = _WS_THREAD
+    _WS_THREAD = None
+    if t and t.is_alive():
+        t.join(timeout=2.0)
+    with _LIVE_LOCK:
+        _LIVE_META["connected"] = False
+
+
+def _load_kite_instruments(api_key: str, access_token: str) -> bool:
+    global _TOKEN_MAP, _REV_TOKEN_MAP
+    try:
+        from kiteconnect import KiteConnect
+        kite = KiteConnect(api_key=api_key)
+        kite.set_access_token(access_token)
+        instruments = kite.instruments("NSE")
+        tmap, rmap = {}, {}
+        for inst in instruments:
+            if inst.get("instrument_type") != "EQ":
+                continue
+            ts = str(inst.get("tradingsymbol", "")).upper()
+            token = int(inst.get("instrument_token"))
+            sym = f"{ts}.NS"
+            tmap[sym] = token
+            rmap[token] = sym
+        if not tmap:
+            return False
+        _TOKEN_MAP, _REV_TOKEN_MAP = tmap, rmap
+        try:
+            with open("kite_nse_tokens.json", "w") as f:
+                json.dump({"tmap": tmap, "rmap": {str(k): v for k, v in rmap.items()}}, f)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        with _LIVE_LOCK:
+            _LIVE_META["error"] = f"Kite instruments: {e}"
+        return False
+
+
+def _load_token_cache_from_disk() -> bool:
+    global _TOKEN_MAP, _REV_TOKEN_MAP
+    if _TOKEN_MAP:
+        return True
+    try:
+        if os.path.exists("kite_nse_tokens.json"):
+            with open("kite_nse_tokens.json") as f:
+                data = json.load(f)
+            _TOKEN_MAP = data.get("tmap") or {}
+            _REV_TOKEN_MAP = {int(k): v for k, v in (data.get("rmap") or {}).items()}
+            return bool(_TOKEN_MAP)
+    except Exception:
+        pass
+    return False
+
+
+def start_kite_websocket(api_key: str, access_token: str, symbols: List[str]) -> bool:
+    global _WS_THREAD
+    if not symbols:
+        with _LIVE_LOCK:
+            _LIVE_META["error"] = "No symbols to subscribe"
+        return False
+    if not _TOKEN_MAP and not _load_token_cache_from_disk():
+        if not _load_kite_instruments(api_key, access_token):
+            return False
+    tokens = []
+    for s in symbols:
+        t = _TOKEN_MAP.get(_norm_sym(s))
+        if t:
+            tokens.append(int(t))
+    tokens = list(dict.fromkeys(tokens))
+    if not tokens:
+        with _LIVE_LOCK:
+            _LIVE_META["error"] = "No instrument tokens for watched symbols"
+        return False
+    stop_live_feed()
+
+    def _run():
+        try:
+            from kiteconnect import KiteTicker
+            kws = KiteTicker(api_key, access_token)
+
+            def on_ticks(ws, ticks):
+                for tick in ticks or []:
+                    tok = tick.get("instrument_token")
+                    ltp = tick.get("last_price")
+                    sym = _REV_TOKEN_MAP.get(int(tok)) if tok is not None else None
+                    if sym and ltp:
+                        set_live_price(sym, ltp)
+                with _LIVE_LOCK:
+                    _LIVE_META["connected"] = True
+                    _LIVE_META["broker"] = "zerodha"
+                    _LIVE_META["error"] = ""
+
+            def on_connect(ws, response):
+                ws.subscribe(tokens)
+                ws.set_mode(ws.MODE_LTP, tokens)
+                with _LIVE_LOCK:
+                    _LIVE_META["connected"] = True
+                    _LIVE_META["broker"] = "zerodha"
+
+            def on_close(ws, code, reason):
+                with _LIVE_LOCK:
+                    _LIVE_META["connected"] = False
+                    _LIVE_META["error"] = f"WS closed: {code} {reason}"
+
+            def on_error(ws, code, reason):
+                with _LIVE_LOCK:
+                    _LIVE_META["error"] = f"WS error: {code} {reason}"
+
+            kws.on_ticks = on_ticks
+            kws.on_connect = on_connect
+            kws.on_close = on_close
+            kws.on_error = on_error
+            kws.connect(threaded=True)
+            while not _WS_STOP.is_set():
+                time.sleep(1.0)
+            try:
+                kws.close()
+            except Exception:
+                pass
+        except Exception as e:
+            with _LIVE_LOCK:
+                _LIVE_META["connected"] = False
+                _LIVE_META["error"] = str(e)
+
+    _WS_STOP.clear()
+    _WS_THREAD = threading.Thread(target=_run, name="kite-ws", daemon=True)
+    _WS_THREAD.start()
+    with _LIVE_LOCK:
+        _LIVE_META["broker"] = "zerodha"
+        _LIVE_META["error"] = ""
+    return True
+
+
+def start_dhan_ltp_poller(client_id: str, access_token: str, symbols: List[str], interval: float = 1.5) -> bool:
+    """Fast Dhan REST LTP for watched symbols (Streamlit-friendly)."""
+    global _WS_THREAD
+    stop_live_feed()
+
+    def _run():
+        dhan = None
+        try:
+            from dhanhq import DhanContext, dhanhq
+            dhan = dhanhq(DhanContext(client_id, access_token))
+        except Exception:
+            try:
+                from dhanhq import dhanhq as Dhan
+                dhan = Dhan(client_id, access_token)
+            except Exception as e:
+                with _LIVE_LOCK:
+                    _LIVE_META["error"] = f"Dhan init failed: {e}. pip install dhanhq"
+                    _LIVE_META["connected"] = False
+                return
+
+        with _LIVE_LOCK:
+            _LIVE_META["broker"] = "dhan"
+            _LIVE_META["connected"] = True
+            _LIVE_META["error"] = ""
+
+        sec_map = {}
+        try:
+            if os.path.exists("dhan_nse_sids.json"):
+                with open("dhan_nse_sids.json") as f:
+                    sec_map = json.load(f)
+        except Exception:
+            sec_map = {}
+
+        while not _WS_STOP.is_set():
+            try:
+                # Prefer Dhan quote for symbols we can map; also try yfinance-free path via get_ltp if SDK accepts symbols
+                sids, inv = [], {}
+                for s in symbols:
+                    ns = _norm_sym(s)
+                    clean = ns.replace(".NS", "").replace(".BO", "")
+                    sid = sec_map.get(ns) or sec_map.get(clean)
+                    if sid is not None:
+                        sids.append(str(sid))
+                        inv[str(sid)] = ns
+
+                if sids:
+                    payload = {"NSE_EQ": [int(x) for x in sids[:100]]}
+                    resp = None
+                    for meth in ("get_ltp", "ticker_data", "ohlc_data"):
+                        if hasattr(dhan, meth):
+                            try:
+                                resp = getattr(dhan, meth)(payload)
+                                break
+                            except Exception:
+                                continue
+                    data = resp.get("data", resp) if isinstance(resp, dict) else {}
+                    nse = data.get("NSE_EQ", data) if isinstance(data, dict) else {}
+                    if isinstance(nse, dict):
+                        for sid, info in nse.items():
+                            sym = inv.get(str(sid))
+                            if not sym:
+                                continue
+                            ltp = None
+                            if isinstance(info, dict):
+                                ltp = info.get("last_price") or info.get("LTP") or info.get("ltp")
+                            elif isinstance(info, (int, float)):
+                                ltp = info
+                            if ltp:
+                                set_live_price(sym, ltp)
+                    with _LIVE_LOCK:
+                        _LIVE_META["connected"] = True
+                        _LIVE_META["error"] = ""
+                else:
+                    # No security_id map: use yfinance as interim for watched set only (still limited)
+                    for s in symbols[:50]:
+                        try:
+                            p = yf.Ticker(_norm_sym(s)).fast_info.last_price
+                            if p and float(p) > 0:
+                                set_live_price(s, float(p))
+                        except Exception:
+                            pass
+                    with _LIVE_LOCK:
+                        _LIVE_META["error"] = (
+                            "Dhan connected but dhan_nse_sids.json missing — "
+                            "using fast_info fallback for LTP. Add security_id map for true Dhan LTP."
+                        )
+            except Exception as e:
+                with _LIVE_LOCK:
+                    _LIVE_META["error"] = str(e)
+            time.sleep(interval)
+
+        with _LIVE_LOCK:
+            _LIVE_META["connected"] = False
+
+    _WS_STOP.clear()
+    _WS_THREAD = threading.Thread(target=_run, name="dhan-ltp", daemon=True)
+    _WS_THREAD.start()
+    return True
+
+
+def get_ltp_smart(symbol: str, fallback: float = 0.0) -> float:
+    v = get_live_price(symbol, 0.0)
+    if v > 0:
+        return v
+    try:
+        p = getattr(yf.Ticker(_norm_sym(symbol)).fast_info, "last_price", None)
+        if p and float(p) > 0:
+            return float(p)
+    except Exception:
+        pass
+    return fallback
+
+
+def _secret(name: str, default: str = "") -> str:
+    try:
+        v = st.secrets.get(name, default)
+        return str(v).strip() if v is not None else default
+    except Exception:
+        return default
 
 # 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
@@ -359,7 +678,6 @@ st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 
 PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
-REBALANCE_FILE = "rebalance.json"
 
 
 def load_json_file(filename):
@@ -385,9 +703,6 @@ if "paper_portfolio" not in st.session_state:
 
 if "pullback_watchlist" not in st.session_state:
     st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
-
-if "rebalance_book" not in st.session_state:
-    st.session_state["rebalance_book"] = load_json_file(REBALANCE_FILE)
 
 if "ai_analysis_cache" not in st.session_state:
     st.session_state["ai_analysis_cache"] = {}
@@ -452,10 +767,10 @@ def apply_strict_filters():
         st.session_state[key] = val
 
 st.sidebar.header("🔑 API Setup")
-api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
+api_key_from_secrets = _secret("GEMINI_API_KEY")
 
 if api_key_from_secrets:
-    GEMINI_API_KEY = str(api_key_from_secrets).strip()
+    GEMINI_API_KEY = api_key_from_secrets
     st.sidebar.success("✅ Gemini API Key connected")
 else:
     GEMINI_API_KEY = st.sidebar.text_input(
@@ -469,6 +784,83 @@ if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY.strip())
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
+
+# --- Dhan / Zerodha from Streamlit Secrets ---
+st.sidebar.header("📡 Live Prices")
+DHAN_CLIENT_ID = _secret("DHAN_CLIENT_ID")
+DHAN_ACCESS_TOKEN = _secret("DHAN_ACCESS_TOKEN")
+KITE_API_KEY = _secret("KITE_API_KEY")
+KITE_ACCESS_TOKEN = _secret("KITE_ACCESS_TOKEN")
+
+if DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN:
+    st.sidebar.success("✅ Dhan secrets connected")
+if KITE_API_KEY and KITE_ACCESS_TOKEN:
+    st.sidebar.success("✅ Kite secrets connected")
+
+live_broker = st.sidebar.selectbox(
+    "Broker feed",
+    ["Off (yfinance)", "Dhan LTP (secrets)", "Zerodha Kite WebSocket"],
+    help="Uses Streamlit Secrets when available. Streams only portfolio/watchlist symbols.",
+)
+
+if live_broker == "Dhan LTP (secrets)":
+    if not (DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN):
+        st.sidebar.warning("Add DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in App secrets")
+        dhan_client = st.sidebar.text_input("Dhan Client ID", key="dhan_client_manual")
+        dhan_token = st.sidebar.text_input("Dhan Access Token", type="password", key="dhan_token_manual")
+    else:
+        dhan_client, dhan_token = DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN
+        st.sidebar.caption("Using secrets · no need to paste token")
+    c1, c2 = st.sidebar.columns(2)
+    with c1:
+        if st.button("▶ Start Dhan", use_container_width=True):
+            syms = collect_watch_symbols()
+            cid = (dhan_client or "").strip()
+            tok = (dhan_token or "").strip()
+            if not cid or not tok:
+                st.sidebar.error("Missing Dhan credentials")
+            elif not syms:
+                st.sidebar.warning("Add portfolio/watchlist symbols first")
+            else:
+                if start_dhan_ltp_poller(cid, tok, syms):
+                    st.sidebar.success(f"Polling {len(syms)} symbols")
+                else:
+                    st.sidebar.error(live_status().get("error") or "Failed")
+    with c2:
+        if st.button("■ Stop", use_container_width=True, key="stop_dhan"):
+            stop_live_feed()
+            st.sidebar.info("Stopped")
+
+elif live_broker == "Zerodha Kite WebSocket":
+    if not (KITE_API_KEY and KITE_ACCESS_TOKEN):
+        kite_key = st.sidebar.text_input("Kite API Key", type="password", key="kite_key_manual")
+        kite_tok = st.sidebar.text_input("Kite Access Token", type="password", key="kite_tok_manual")
+    else:
+        kite_key, kite_tok = KITE_API_KEY, KITE_ACCESS_TOKEN
+        st.sidebar.caption("Using Kite secrets")
+    c1, c2 = st.sidebar.columns(2)
+    with c1:
+        if st.button("▶ Start WS", use_container_width=True):
+            syms = collect_watch_symbols()
+            if not kite_key or not kite_tok:
+                st.sidebar.error("Missing Kite credentials")
+            elif not syms:
+                st.sidebar.warning("Add symbols first")
+            else:
+                if start_kite_websocket(kite_key.strip(), kite_tok.strip(), syms):
+                    st.sidebar.success(f"Streaming {len(syms)} symbols")
+                else:
+                    st.sidebar.error(live_status().get("error") or "Failed")
+    with c2:
+        if st.button("■ Stop", use_container_width=True, key="stop_kite"):
+            stop_live_feed()
+            st.sidebar.info("Stopped")
+
+_ls = live_status()
+if _ls.get("connected"):
+    st.sidebar.success(f"🟢 Live · {_ls.get('broker')} · {_ls.get('last_tick') or '—'}")
+elif _ls.get("error"):
+    st.sidebar.caption(f"Feed: {str(_ls.get('error'))[:140]}")
 
 ORDER_BOOK_CR_MAP = {
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
@@ -1303,13 +1695,12 @@ if not df_raw.empty:
             filtered_df = filtered_df.loc[valid_indices]
 
 
-tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist, tab_rebalance = st.tabs(
+tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
     [
         "📊 Screener & Momentum Signals",
         "🔬 Single Stock Chart & AI Thesis",
         "🎯 Pullback Watchlist & Order Trigger",
         "💼 Paper Trading Portfolio",
-        "⚖️ Portfolio Rebalance",
     ]
 )
 
@@ -1614,7 +2005,9 @@ with tab_pullback_watchlist:
             curr_ltp = live_price_dict.get(sym)
             if curr_ltp is None:
                 try:
-                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_ltp = float(get_ltp_smart(sym, 0.0) or 0.0) or None
+                    if not curr_ltp:
+                        curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_ltp = None
 
@@ -1867,9 +2260,13 @@ with tab_watchlist:
             curr_p = live_price_dict.get(sym)
             if curr_p is None:
                 try:
-                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_p = float(get_ltp_smart(sym, 0.0) or 0.0)
+                    if curr_p <= 0:
+                        curr_p = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_p = buy_p
+            if curr_p is None or (isinstance(curr_p, float) and (curr_p != curr_p or curr_p <= 0)):
+                curr_p = buy_p
 
             qty = int(pos.get("Qty", 1))
             invested = float(pos.get("Invested (₹)", buy_p * qty))
@@ -2069,282 +2466,3 @@ with tab_watchlist:
             st.session_state["paper_portfolio"] = []
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
-
-
-# =========================================================
-# ⚖️ PORTFOLIO REBALANCE — independent book (from screener only)
-# =========================================================
-with tab_rebalance:
-    st.subheader("⚖️ Portfolio Rebalance")
-    st.caption("Separate from Watchlist & Paper Trading. Add stocks from **screener results**, then rebalance weights.")
-
-    def _sf(v, d=0.0):
-        try:
-            x = float(v)
-            return d if (x != x or abs(x) == float("inf")) else x
-        except Exception:
-            return d
-
-    book = st.session_state.get("rebalance_book", [])
-
-    # --- Backup / restore ---
-    b1, b2 = st.columns(2)
-    with b2:
-        up = st.file_uploader("📥 Restore Rebalance Book (.json)", type=["json"], key="rb_up")
-        if up is not None:
-            try:
-                data = json.load(up)
-                if isinstance(data, list):
-                    st.session_state["rebalance_book"] = [x for x in data if isinstance(x, dict) and "Ticker" in x]
-                    save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
-                    st.success("Rebalance book restored!"); st.rerun()
-            except Exception as e:
-                st.error(str(e))
-    with b1:
-        if book:
-            st.download_button(
-                "💾 Download Rebalance Book",
-                data=json.dumps(book, indent=4),
-                file_name="rebalance_backup.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-
-    # --- Add from screener ---
-    if df_raw.empty:
-        st.warning("Run the screener first so you can pick stocks to add.")
-    else:
-        with st.expander("➕ Add Stock from Screener", expanded=len(book) == 0):
-            with st.form("rb_add_form"):
-                cands = df_raw["Raw_Ticker"].tolist()
-                cur = st.session_state.get("selected_ticker", cands[0])
-                di = cands.index(cur) if cur in cands else 0
-                a1, a2, a3, a4 = st.columns(4)
-                with a1:
-                    sel = st.selectbox("Screener stock", cands, index=di)
-                    mr = df_raw[df_raw["Raw_Ticker"] == sel]
-                    ltp = float(mr["Price (₹)"].iloc[0]) if not mr.empty else 100.0
-                    score = float(mr["Composite Score"].iloc[0]) if not mr.empty else 50.0
-                    signal = str(mr["Signal"].iloc[0]) if not mr.empty else ""
-                with a2:
-                    st.metric("LTP", f"₹{ltp:,.2f}")
-                with a3:
-                    qty = st.number_input("Quantity", value=50, min_value=1, step=1)
-                with a4:
-                    entry = st.number_input("Entry / Ref Price ₹", value=round(ltp, 2), min_value=0.1, step=0.5)
-                note = st.text_input("Note / Strategy", value=signal)
-                if st.form_submit_button("📥 Add to Rebalance Book", use_container_width=True):
-                    clean = sel.replace(".NS", "").replace(".BO", "")
-                    # avoid exact duplicate same ticker still open-style
-                    exists = any(x.get("Raw_Ticker") == sel for x in st.session_state["rebalance_book"])
-                    if exists:
-                        st.warning(f"{clean} already in rebalance book. Edit qty instead.")
-                    else:
-                        item = {
-                            "id": f"rb_{clean}_{int(time.time())}",
-                            "Date Added": str(date.today()),
-                            "Ticker": clean,
-                            "Raw_Ticker": sel,
-                            "Qty": int(qty),
-                            "Entry (₹)": float(entry),
-                            "Score": score,
-                            "Note": note.strip(),
-                        }
-                        st.session_state["rebalance_book"].append(item)
-                        save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
-                        st.success(f"Added {clean}"); st.rerun()
-
-    book = st.session_state.get("rebalance_book", [])
-    if not book:
-        st.info("Rebalance book is empty. Add stocks from screener results above.")
-    else:
-        live = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
-        rows, total_val = [], 0.0
-        for pos in book:
-            sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
-            clean = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
-            entry = _sf(pos.get("Entry (₹)"))
-            qty = max(1, int(pos.get("Qty", 1) or 1))
-            curr = live.get(sym)
-            try:
-                curr = float(curr) if curr is not None else None
-                if curr is not None and (curr != curr or curr <= 0):
-                    curr = None
-            except Exception:
-                curr = None
-            if curr is None or curr <= 0:
-                try:
-                    rp = yf.Ticker(sym).fast_info.last_price
-                    curr = float(rp) if rp else entry
-                    if curr != curr or curr <= 0:
-                        curr = entry
-                except Exception:
-                    curr = entry if entry > 0 else 0.0
-            val = round(curr * qty, 2)
-            total_val += val
-            rows.append({
-                "id": pos.get("id"), "Ticker": clean, "Raw_Ticker": sym,
-                "Qty": qty, "Entry (₹)": entry, "LTP (₹)": round(curr, 2),
-                "Value (₹)": val, "Score": _sf(pos.get("Score"), 50),
-                "Note": pos.get("Note", ""),
-            })
-
-        if total_val <= 0:
-            st.warning("Could not price book. Run screener for live LTPs.")
-        else:
-            for r in rows:
-                r["Weight %"] = round(r["Value (₹)"] / total_val * 100, 2)
-            st.markdown(f"**Positions:** {len(rows)} · **Book value:** ₹{total_val:,.2f}")
-
-            # Edit / Delete
-            st.markdown("#### ✏️ Edit / 🗑️ Delete")
-            opts = {
-                f"{r['Ticker']} · Qty {r['Qty']} · ₹{r['LTP (₹)']:,.2f} ({r['Weight %']:.1f}%)": r["id"]
-                for r in rows
-            }
-            with st.form("rb_edit_form"):
-                lab = st.selectbox("Select position", list(opts.keys()))
-                sid = opts[lab]
-                pidx = next((i for i, p in enumerate(book) if p.get("id") == sid), None)
-                if pidx is not None:
-                    cur = book[pidx]
-                    e1, e2, e3 = st.columns(3)
-                    with e1:
-                        nq = st.number_input("Qty", value=max(1, int(cur.get("Qty", 1) or 1)), min_value=1, step=1)
-                    with e2:
-                        ne = st.number_input("Entry ₹", value=_sf(cur.get("Entry (₹)")), min_value=0.1, step=0.5)
-                    with e3:
-                        nn = st.text_input("Note", value=cur.get("Note", ""))
-                    s1, s2 = st.columns(2)
-                    with s1:
-                        do_save = st.form_submit_button("💾 Save", use_container_width=True)
-                    with s2:
-                        do_del = st.form_submit_button("🗑️ Delete", type="primary", use_container_width=True)
-                    if do_save:
-                        book[pidx].update({"Qty": int(nq), "Entry (₹)": ne, "Note": nn.strip()})
-                        st.session_state["rebalance_book"] = book
-                        save_json_file(REBALANCE_FILE, book)
-                        st.success("Saved"); st.rerun()
-                    if do_del:
-                        book.pop(pidx)
-                        st.session_state["rebalance_book"] = book
-                        save_json_file(REBALANCE_FILE, book)
-                        st.success("Deleted"); st.rerun()
-
-            st.markdown("---")
-            st.markdown("#### Rebalance Rules")
-            r1, r2, r3, r4 = st.columns(4)
-            with r1:
-                strategy = st.selectbox(
-                    "Strategy",
-                    ["Equal Weight", "Max Position Cap", "Score / Signal Weight", "Hybrid (Equal + Cap)"],
-                )
-            with r2:
-                max_w = st.slider("Max weight %", 3.0, 25.0, 8.0, 0.5)
-            with r3:
-                drift_th = st.slider("Drift threshold %", 0.5, 10.0, 2.0, 0.5)
-            with r4:
-                min_tv = st.number_input("Min trade ₹", value=2000, min_value=0, step=500)
-
-            # Prefer live composite scores from screener when available
-            score_map = {r["Raw_Ticker"]: r["Score"] for r in rows}
-            if not df_raw.empty and "Composite Score" in df_raw.columns:
-                for _, rw in df_raw.iterrows():
-                    score_map[rw.get("Raw_Ticker")] = _sf(rw.get("Composite Score"), score_map.get(rw.get("Raw_Ticker"), 50))
-
-            n = len(rows)
-            eq = 100.0 / n if n else 0
-            for r in rows:
-                if strategy == "Equal Weight":
-                    r["Target %"] = round(eq, 2)
-                elif strategy == "Max Position Cap":
-                    r["Target %"] = min(r["Weight %"], max_w)
-                elif strategy == "Score / Signal Weight":
-                    r["_score"] = max(score_map.get(r["Raw_Ticker"], 50), 1)
-                else:
-                    r["Target %"] = round(min(eq, max_w), 2)
-
-            if strategy == "Score / Signal Weight":
-                ts = sum(r.get("_score", 50) for r in rows) or 1
-                for r in rows:
-                    r["Target %"] = round(min(r["_score"] / ts * 100, max_w), 2)
-                s = sum(r["Target %"] for r in rows) or 1
-                for r in rows:
-                    r["Target %"] = round(r["Target %"] / s * 100, 2)
-            elif strategy == "Max Position Cap":
-                s = sum(r["Target %"] for r in rows)
-                residual = max(0, 100 - s)
-                under = [r for r in rows if r["Weight %"] < max_w]
-                if under and residual > 0:
-                    add = residual / len(under)
-                    for r in under:
-                        r["Target %"] = round(min(r["Target %"] + add, max_w), 2)
-
-            proposals = []
-            for r in rows:
-                r["Drift %"] = round(r["Weight %"] - r["Target %"], 2)
-                tv = total_val * r["Target %"] / 100
-                dv = tv - r["Value (₹)"]
-                if abs(r["Drift %"]) < drift_th:
-                    r["Action"], r["Δ Qty"] = "Hold", 0
-                elif dv > min_tv and r["LTP (₹)"] > 0:
-                    r["Action"] = "Buy"
-                    r["Δ Qty"] = int(dv // r["LTP (₹)"])
-                elif dv < -min_tv and r["LTP (₹)"] > 0:
-                    r["Action"] = "Sell"
-                    r["Δ Qty"] = min(int(abs(dv) // r["LTP (₹)"]), r["Qty"])
-                else:
-                    r["Action"], r["Δ Qty"] = "Hold", 0
-                if r["Action"] != "Hold" and r["Δ Qty"] > 0:
-                    proposals.append(r)
-
-            st.dataframe(pd.DataFrame([{
-                "Ticker": r["Ticker"], "Qty": r["Qty"],
-                "Entry (₹)": f"₹{r['Entry (₹)']:,.2f}",
-                "LTP (₹)": f"₹{r['LTP (₹)']:,.2f}",
-                "Value (₹)": f"₹{r['Value (₹)']:,.2f}",
-                "Weight %": f"{r['Weight %']:.2f}%",
-                "Target %": f"{r['Target %']:.2f}%",
-                "Drift %": f"{r['Drift %']:+.2f}%",
-                "Action": r["Action"],
-                "Δ Qty": r["Δ Qty"] if r["Δ Qty"] else "—",
-                "Note": r["Note"],
-            } for r in rows]), use_container_width=True, hide_index=True)
-
-            st.markdown(
-                f"**Proposed:** {sum(1 for r in proposals if r['Action']=='Buy')} buys · "
-                f"{sum(1 for r in proposals if r['Action']=='Sell')} sells"
-            )
-
-            if st.button("🔄 Apply Rebalance to Book", type="primary", use_container_width=True, disabled=not proposals):
-                id_map = {p.get("id"): p for p in st.session_state["rebalance_book"]}
-                applied = 0
-                for r in proposals:
-                    pos = id_map.get(r["id"])
-                    if not pos:
-                        continue
-                    old_q = int(pos.get("Qty", 1) or 1)
-                    if r["Action"] == "Buy":
-                        nq = old_q + r["Δ Qty"]
-                        old_e = _sf(pos.get("Entry (₹)"), r["LTP (₹)"])
-                        ne = (old_e * old_q + r["LTP (₹)"] * r["Δ Qty"]) / nq if nq else old_e
-                        pos["Entry (₹)"] = round(ne, 2)
-                        pos["Qty"] = nq
-                        applied += 1
-                    elif r["Action"] == "Sell":
-                        nq = max(0, old_q - r["Δ Qty"])
-                        if nq == 0:
-                            # remove fully sold from book
-                            st.session_state["rebalance_book"] = [
-                                p for p in st.session_state["rebalance_book"] if p.get("id") != r["id"]
-                            ]
-                        else:
-                            pos["Qty"] = nq
-                        applied += 1
-                save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
-                st.success(f"Applied to {applied} position(s)"); st.rerun()
-
-            if st.button("🗑️ Clear Entire Rebalance Book"):
-                st.session_state["rebalance_book"] = []
-                save_json_file(REBALANCE_FILE, [])
-                st.rerun()

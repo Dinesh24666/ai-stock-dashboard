@@ -1362,6 +1362,26 @@ def fetch_screener_universe(ticker_list):
                 else:
                     action_signal = "🔴 AVOID / WEAK"
 
+                # Composite Score now FOLLOWS the signal category directly,
+                # using the exact same point values the AI thesis assigns
+                # (STRONG BUY=92, BUY/PULLBACK=72, WAIT/CONSOLIDATING=45,
+                # AVOID=18). Previously the displayed score came from the
+                # raw technical calc above and could show e.g. 100 next to
+                # a "BUY / PULLBACK" tag — the two numbers measured
+                # different things (raw strength vs. final call) and could
+                # visually contradict each other. Now the number always
+                # matches the label, and matches whatever the AI verdict
+                # would assign too, so generating an AI thesis never causes
+                # the score to jump inconsistently either.
+                if action_signal == "🟢 STRONG BUY (Breakout)":
+                    swing_composite = 92.0
+                elif action_signal == "🟡 BUY / PULLBACK":
+                    swing_composite = 72.0
+                elif action_signal == "🟠 CONSOLIDATING":
+                    swing_composite = 45.0
+                else:
+                    swing_composite = 18.0
+
                 change_display = f"{'+' if price_change_pct >= 0 else ''}{price_change_pct:.2f}%"
 
                 rows.append({
@@ -2365,6 +2385,34 @@ with tab_rebalance:
     st.subheader("⚖️ Portfolio Rebalance")
     st.caption("Independent of Watchlist & Paper Trading. Add from screener only.")
 
+    col_rb_dl, col_rb_up = st.columns([1, 1])
+    with col_rb_up:
+        uploaded_rebalance = st.file_uploader("📥 Restore Rebalance Book from Backup (.json)", type=["json"], key="rebalance_uploader")
+        if uploaded_rebalance is not None:
+            try:
+                restored_rb_data = json.load(uploaded_rebalance)
+                if isinstance(restored_rb_data, list):
+                    valid_rb_items = [item for item in restored_rb_data if isinstance(item, dict) and "Raw_Ticker" in item]
+                    if valid_rb_items:
+                        st.session_state["rebalance_book"] = valid_rb_items
+                        save_json_file(REBALANCE_FILE, valid_rb_items)
+                        st.success("Rebalance book successfully restored!")
+                        st.rerun()
+                    else:
+                        st.error("Uploaded file does not contain valid rebalance book entries.")
+            except Exception as e:
+                st.error(f"Failed to restore rebalance backup: {e}")
+    with col_rb_dl:
+        active_rebalance_data = st.session_state.get("rebalance_book", [])
+        if active_rebalance_data:
+            st.download_button(
+                label="💾 Download Rebalance Backup (.json)",
+                data=json.dumps(active_rebalance_data, indent=4),
+                file_name="rebalance_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
     def _sf(v, d=0.0):
         try:
             x = float(v)
@@ -2377,34 +2425,44 @@ with tab_rebalance:
         st.warning("Run screener first.")
     else:
         with st.expander("➕ Add from Screener", expanded=len(book) == 0):
-            with st.form("rb_add"):
-                cands = df_raw["Raw_Ticker"].tolist()
-                cur = st.session_state.get("selected_ticker", cands[0])
-                di = cands.index(cur) if cur in cands else 0
-                c1, c2, c3, c4 = st.columns(4)
-                with c1:
-                    sel = st.selectbox("Stock", cands, index=di)
-                    mr = df_raw[df_raw["Raw_Ticker"] == sel]
-                    ltp = float(mr["Price (₹)"].iloc[0]) if not mr.empty else 100.0
-                    score = float(mr["Composite Score"].iloc[0]) if not mr.empty else 50.0
-                with c2:
-                    st.metric("LTP", f"₹{ltp:,.2f}")
-                with c3:
-                    qty = st.number_input("Qty", value=50, min_value=1, step=1)
-                with c4:
-                    entry = st.number_input("Entry ₹", value=round(ltp, 2), min_value=0.1, step=0.5)
-                if st.form_submit_button("📥 Add", use_container_width=True):
-                    clean = sel.replace(".NS", "").replace(".BO", "")
-                    if any(x.get("Raw_Ticker") == sel for x in st.session_state["rebalance_book"]):
-                        st.warning(f"{clean} already in book")
-                    else:
-                        st.session_state["rebalance_book"].append({
-                            "id": f"rb_{clean}_{int(time.time())}", "Ticker": clean, "Raw_Ticker": sel,
-                            "Qty": int(qty), "Entry (₹)": float(entry), "Score": score, "Note": "",
-                        })
-                        save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
-                        st.success(f"Added {clean}")
-                        st.rerun()
+            cands = df_raw["Raw_Ticker"].tolist()
+            cur = st.session_state.get("selected_ticker", cands[0])
+            di = cands.index(cur) if cur in cands else 0
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                sel = st.selectbox("Stock", cands, index=di, key="rb_add_stock")
+            mr = df_raw[df_raw["Raw_Ticker"] == sel]
+            ltp = float(mr["Price (₹)"].iloc[0]) if not mr.empty else 100.0
+            score = float(mr["Composite Score"].iloc[0]) if not mr.empty else 50.0
+            with c2:
+                st.metric("LTP", f"₹{ltp:,.2f}")
+            with c3:
+                amount = st.number_input(
+                    "Amount (₹) to Invest", value=round(ltp * 50, 2), min_value=1.0, step=500.0,
+                    key="rb_add_amount",
+                )
+            with c4:
+                entry = st.number_input("Entry ₹", value=round(ltp, 2), min_value=0.1, step=0.5, key="rb_add_entry")
+
+            # Live: not inside st.form, so this recalculates on every keystroke
+            # instead of only after a submit click.
+            auto_qty = max(1, int(amount // entry)) if entry > 0 else 1
+            actual_amount = round(auto_qty * entry, 2)
+            st.caption(f"→ Auto-calculated Qty: **{auto_qty}** shares · Actual amount: **₹{actual_amount:,.2f}** (Qty = Amount ÷ Entry price, rounded down to whole shares)")
+
+            if st.button("📥 Add", use_container_width=True, key="rb_add_btn"):
+                clean = sel.replace(".NS", "").replace(".BO", "")
+                if any(x.get("Raw_Ticker") == sel for x in st.session_state["rebalance_book"]):
+                    st.warning(f"{clean} already in book")
+                else:
+                    st.session_state["rebalance_book"].append({
+                        "id": f"rb_{clean}_{int(time.time())}", "Ticker": clean, "Raw_Ticker": sel,
+                        "Qty": int(auto_qty), "Entry (₹)": float(entry), "Amount (₹)": actual_amount,
+                        "Score": score, "Note": "",
+                    })
+                    save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
+                    st.success(f"Added {clean} · Qty {auto_qty} · ₹{actual_amount:,.2f}")
+                    st.rerun()
 
     book = st.session_state.get("rebalance_book", [])
     if not book:
@@ -2428,35 +2486,45 @@ with tab_rebalance:
             val = round(float(curr) * qty, 2)
             total_val += val
             rows.append({"id": pos.get("id"), "Ticker": clean, "Raw_Ticker": sym, "Qty": qty,
-                         "Entry (₹)": entry, "LTP (₹)": round(float(curr), 2), "Value (₹)": val,
+                         "Entry (₹)": entry, "Amount (₹)": round(entry * qty, 2),
+                         "LTP (₹)": round(float(curr), 2), "Value (₹)": val,
                          "Score": _sf(pos.get("Score"), 50)})
         if total_val > 0:
             for r in rows:
                 r["Weight %"] = round(r["Value (₹)"] / total_val * 100, 2)
             st.markdown(f"**{len(rows)} positions · ₹{total_val:,.2f}**")
             opts = {f"{r['Ticker']} · Qty {r['Qty']} ({r['Weight %']:.1f}%)": r["id"] for r in rows}
-            with st.form("rb_edit"):
-                lab = st.selectbox("Edit / Delete", list(opts.keys()))
-                sid = opts[lab]
-                pidx = next((i for i, p in enumerate(book) if p.get("id") == sid), None)
-                if pidx is not None:
-                    nq = st.number_input("Qty", value=max(1, int(book[pidx].get("Qty", 1))), min_value=1, step=1)
-                    ne = st.number_input("Entry ₹", value=_sf(book[pidx].get("Entry (₹)")), min_value=0.1, step=0.5)
-                    s1, s2 = st.columns(2)
-                    with s1:
-                        do_save = st.form_submit_button("💾 Save", use_container_width=True)
-                    with s2:
-                        do_del = st.form_submit_button("🗑️ Delete", type="primary", use_container_width=True)
-                    if do_save:
-                        book[pidx].update({"Qty": int(nq), "Entry (₹)": ne})
-                        st.session_state["rebalance_book"] = book
-                        save_json_file(REBALANCE_FILE, book)
-                        st.rerun()
-                    if do_del:
-                        book.pop(pidx)
-                        st.session_state["rebalance_book"] = book
-                        save_json_file(REBALANCE_FILE, book)
-                        st.rerun()
+            lab = st.selectbox("Edit / Delete", list(opts.keys()), key="rb_edit_select")
+            sid = opts[lab]
+            pidx = next((i for i, p in enumerate(book) if p.get("id") == sid), None)
+            if pidx is not None:
+                pos_ltp = next((r["LTP (₹)"] for r in rows if r["id"] == sid), _sf(book[pidx].get("Entry (₹)")))
+                e1, e2 = st.columns(2)
+                with e1:
+                    ne = st.number_input("Entry ₹", value=_sf(book[pidx].get("Entry (₹)")), min_value=0.1, step=0.5, key="rb_edit_entry")
+                with e2:
+                    n_amount = st.number_input(
+                        "Amount (₹)", value=round(_sf(book[pidx].get("Entry (₹)")) * max(1, int(book[pidx].get("Qty", 1))), 2),
+                        min_value=1.0, step=500.0, key="rb_edit_amount",
+                    )
+                # Live: Qty auto-recalculates from Amount ÷ Entry as you type.
+                n_qty = max(1, int(n_amount // ne)) if ne > 0 else 1
+                st.caption(f"→ Auto-calculated Qty: **{n_qty}** shares at Entry ₹{ne:,.2f} (current LTP ₹{pos_ltp:,.2f})")
+                s1, s2 = st.columns(2)
+                with s1:
+                    do_save = st.button("💾 Save", use_container_width=True, key="rb_edit_save")
+                with s2:
+                    do_del = st.button("🗑️ Delete", type="primary", use_container_width=True, key="rb_edit_del")
+                if do_save:
+                    book[pidx].update({"Qty": int(n_qty), "Entry (₹)": ne, "Amount (₹)": round(n_qty * ne, 2)})
+                    st.session_state["rebalance_book"] = book
+                    save_json_file(REBALANCE_FILE, book)
+                    st.rerun()
+                if do_del:
+                    book.pop(pidx)
+                    st.session_state["rebalance_book"] = book
+                    save_json_file(REBALANCE_FILE, book)
+                    st.rerun()
             strategy = st.selectbox("Strategy", ["Equal Weight", "Max Position Cap", "Score Weight", "Hybrid"])
             max_w = st.slider("Max weight %", 3.0, 25.0, 8.0, 0.5)
             drift_th = st.slider("Drift threshold %", 0.5, 10.0, 2.0, 0.5)
@@ -2492,7 +2560,8 @@ with tab_rebalance:
                 if r["Action"] != "Hold" and r["Δ Qty"] > 0:
                     proposals.append(r)
             st.dataframe(pd.DataFrame([{
-                "Ticker": r["Ticker"], "Qty": r["Qty"], "LTP (₹)": f"₹{r['LTP (₹)']:,.2f}",
+                "Ticker": r["Ticker"], "Qty": r["Qty"], "Amount (₹)": f"₹{r['Amount (₹)']:,.2f}",
+                "LTP (₹)": f"₹{r['LTP (₹)']:,.2f}",
                 "Weight %": f"{r['Weight %']:.1f}%", "Target %": f"{r['Target %']:.1f}%",
                 "Drift %": f"{r['Drift %']:+.1f}%", "Action": r["Action"], "Δ Qty": r["Δ Qty"] or "—",
             } for r in rows]), use_container_width=True, hide_index=True)
@@ -2508,12 +2577,14 @@ with tab_rebalance:
                         old_e = _sf(pos.get("Entry (₹)"), r["LTP (₹)"])
                         pos["Entry (₹)"] = round((old_e * old_q + r["LTP (₹)"] * r["Δ Qty"]) / nq, 2)
                         pos["Qty"] = nq
+                        pos["Amount (₹)"] = round(pos["Entry (₹)"] * nq, 2)
                     elif r["Action"] == "Sell":
                         nq = max(0, old_q - r["Δ Qty"])
                         if nq == 0:
                             st.session_state["rebalance_book"] = [p for p in st.session_state["rebalance_book"] if p.get("id") != r["id"]]
                         else:
                             pos["Qty"] = nq
+                            pos["Amount (₹)"] = round(_sf(pos.get("Entry (₹)"), r["LTP (₹)"]) * nq, 2)
                 save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
                 st.success("Applied")
                 st.rerun()

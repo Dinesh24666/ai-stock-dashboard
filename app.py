@@ -1299,12 +1299,13 @@ if not df_raw.empty:
             filtered_df = filtered_df.loc[valid_indices]
 
 
-tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
+tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist, tab_rebalance = st.tabs(
     [
         "📊 Screener & Momentum Signals",
         "🔬 Single Stock Chart & AI Thesis",
         "🎯 Pullback Watchlist & Order Trigger",
         "💼 Paper Trading Portfolio",
+        "⚖️ Portfolio Rebalance",
     ]
 )
 
@@ -1447,24 +1448,28 @@ with tab_deepdive:
                     if not GEMINI_API_KEY:
                         st.warning("Please provide your Gemini API Key in the left sidebar.")
                     else:
-                        # Clean structured output only — no chain-of-thought / thinking text
-                        prompt = f"""You are an NSE swing trader. Output ONLY the final report below. Do NOT show reasoning steps, options analysis, checks, or internal thoughts.
+                        prompt = f"""You are an NSE swing trader. Reply with the COMPLETE final report only.
+Do NOT write thinking, option lists, checks, or partial answers. Finish ALL 4 sections.
 
-Stock: {selected_stock} | Price: ₹{curr_p:.2f} ({curr_change}) | Vol: {curr_volume}
-EMA 9/20/44: ₹{ema9_val:.1f} / ₹{ema20_val:.1f} / ₹{ema44_val:.1f}
-ADX: {curr_adx} | RSI: {stock_row['RSI (14)'] if stock_row is not None else 'N/A'} | Score: {curr_score}/100 | Signal: {curr_signal}
+Data:
+- Stock: {selected_stock}
+- Price: ₹{curr_p:.2f} ({curr_change}) | Volume: {curr_volume}
+- 9 EMA: ₹{ema9_val:.1f} | 20 EMA: ₹{ema20_val:.1f} | 44 EMA: ₹{ema44_val:.1f}
+- ADX: {curr_adx} | RSI: {stock_row['RSI (14)'] if stock_row is not None else 'N/A'}
+- Composite Score: {curr_score}/100 | System Signal: {curr_signal}
 
-Use this EXACT markdown structure (nothing else):
+Output this EXACT structure (complete every section):
 
 ## 1. Breakout Setup Assessment
-**Status:** <one short phrase>
-- **Trend Strength:** <1–2 sentences>
-- **Momentum Profile:** <1–2 sentences on RSI/ADX>
-- **Volatility/Volume:** <1–2 sentences>
+**Status:** <short phrase, e.g. Bullish Pullback / Overextended / Healthy Breakout>
+- **Trend Strength:** <1-2 sentences>
+- **Momentum Profile:** <1-2 sentences on RSI and ADX>
+- **Volatility/Volume:** <1-2 sentences>
 
 ## 2. Exact Actionable Verdict
-**Verdict:** [STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID]
-**Reasoning:** <1–2 sentences>
+**Verdict:** BUY (ON PULLBACK)
+**Reasoning:** <1-2 sentences>
+(Use exactly one of: STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID)
 
 ## 3. Trade Blueprint
 | Parameter | Value / Range | Logic |
@@ -1474,12 +1479,12 @@ Use this EXACT markdown structure (nothing else):
 | Target 1 | ₹a | <brief> |
 | Target 2 | ₹b | <brief> |
 
-**Risk/Reward:** Risk ₹r · Reward T2 ₹w · R:R 1:x (must be ≥ 1:2)
+**Risk/Reward:** Risk ₹r per share · T2 reward ₹w · R:R 1:x (≥ 1:2 required)
 
 ## 4. Exit Trigger (Invalidation)
-<1–2 sentences: when the swing trade is invalidated>
+<1-2 sentences when the trade is invalid>
 
-Rules: pick exactly one verdict. Entry/SL/targets must be realistic vs the EMAs given. No extra sections."""
+Important: Complete the full response. Entry/SL/targets must align with the EMAs above."""
                         with st.spinner("AI analyzing (fast)..."):
                             success = False
                             error_logs = []
@@ -1492,8 +1497,12 @@ Rules: pick exactly one verdict. Entry/SL/targets must be realistic vs the EMAs 
                                 error_logs.append(f"Model listing: {e}")
 
                             preferred = [
-                                "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash",
-                                "gemini-flash-latest", "gemini-2.5-pro", "gemini-pro-latest",
+                                "gemini-3.6-flash",
+                                "gemini-2.5-flash",
+                                "gemini-2.0-flash",
+                                "gemini-flash-latest",
+                                "gemini-2.5-pro",
+                                "gemini-pro-latest",
                             ]
                             ordered = []
                             for p in preferred:
@@ -1513,21 +1522,33 @@ Rules: pick exactly one verdict. Entry/SL/targets must be realistic vs the EMAs 
                                     model = genai.GenerativeModel(model_name)
                                     res = model.generate_content(
                                         prompt,
-                                        generation_config={"max_output_tokens": 550, "temperature": 0.25},
+                                        generation_config={
+                                            "max_output_tokens": 1024,
+                                            "temperature": 0.2,
+                                        },
                                     )
                                     if res and res.text:
                                         thesis = res.text.strip()
+                                        # Reject clearly truncated replies
+                                        if len(thesis) < 120 or "## 2." not in thesis and "Verdict" not in thesis:
+                                            error_logs.append(f"{model_name}: truncated response ({len(thesis)} chars)")
+                                            continue
                                         st.session_state["ai_analysis_cache"][selected_stock] = thesis
                                         st.markdown(thesis)
                                         t_up = thesis.upper()
+                                        # Prefer explicit Verdict line
                                         if "STRONG BUY" in t_up:
                                             vs, vsig = 92, "🟢 STRONG BUY (AI)"
                                         elif "BUY (ON PULLBACK)" in t_up or "BUY ON PULLBACK" in t_up:
                                             vs, vsig = 72, "🟡 BUY / PULLBACK (AI)"
-                                        elif "WAIT" in t_up:
+                                        elif "**VERDICT:** WAIT" in t_up or "VERDICT: WAIT" in t_up or (
+                                            "WAIT" in t_up and "BUY" not in t_up.split("VERDICT")[-1][:80] if "VERDICT" in t_up else False
+                                        ):
                                             vs, vsig = 45, "🟠 WAIT (AI)"
                                         elif "AVOID" in t_up:
                                             vs, vsig = 18, "🔴 AVOID (AI)"
+                                        elif "PULLBACK" in t_up:
+                                            vs, vsig = 72, "🟡 BUY / PULLBACK (AI)"
                                         else:
                                             vs, vsig = 50, "🟠 CONSOLIDATING (AI)"
                                         if "ai_score_map" not in st.session_state:
@@ -1546,7 +1567,7 @@ Rules: pick exactly one verdict. Entry/SL/targets must be realistic vs the EMAs 
                                     continue
 
                             if not success:
-                                st.error("AI failed.")
+                                st.error("AI failed or response was incomplete. Try again.")
                                 with st.expander("🔍 View Error Details"):
                                     for err in error_logs:
                                         st.code(err)
@@ -2113,3 +2134,201 @@ with tab_watchlist:
             st.session_state["paper_portfolio"] = []
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
+
+
+# =========================================================
+# ⚖️ PORTFOLIO REBALANCE
+# =========================================================
+with tab_rebalance:
+    st.subheader("⚖️ Portfolio Rebalance")
+    st.caption("Edit / Delete open positions, or apply equal-weight / cap / score rebalance.")
+
+    portfolio = st.session_state.get("paper_portfolio", [])
+    open_pos = [p for p in portfolio if str(p.get("Status", "")).startswith("🟢")]
+
+    if not open_pos:
+        st.info("No open positions. Add trades in Paper Trading first.")
+    else:
+        def _sf(v, d=0.0):
+            try:
+                x = float(v)
+                return d if (x != x or abs(x) == float("inf")) else x
+            except Exception:
+                return d
+
+        live = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        rows, total_val = [], 0.0
+        for pos in open_pos:
+            sym = pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
+            clean = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
+            buy = _sf(pos.get("Buy Price (₹)"))
+            qty = max(1, int(pos.get("Qty", 1) or 1))
+            curr = live.get(sym)
+            try:
+                curr = float(curr) if curr is not None else None
+                if curr is not None and (curr != curr or curr <= 0):
+                    curr = None
+            except Exception:
+                curr = None
+            if curr is None or curr <= 0:
+                try:
+                    rp = yf.Ticker(sym).fast_info.last_price
+                    curr = float(rp) if rp else buy
+                    if curr != curr or curr <= 0:
+                        curr = buy
+                except Exception:
+                    curr = buy if buy > 0 else 0.0
+            val = round(curr * qty, 2)
+            total_val += val
+            rows.append({
+                "id": pos.get("id"), "Ticker": clean, "Raw_Ticker": sym,
+                "Qty": qty, "Buy (₹)": buy, "LTP (₹)": round(curr, 2), "Value (₹)": val,
+                "SL (₹)": _sf(pos.get("SL (₹)")), "TGT (₹)": _sf(pos.get("TGT (₹)")),
+            })
+
+        if total_val <= 0:
+            st.warning("Could not price portfolio. Run screener for live prices.")
+        else:
+            for r in rows:
+                r["Weight %"] = round(r["Value (₹)"] / total_val * 100, 2)
+            st.markdown(f"**Open:** {len(rows)} · **Value:** ₹{total_val:,.2f}")
+
+            st.markdown("#### ✏️ Edit / 🗑️ Delete")
+            opts = {f"{r['Ticker']} · Qty {r['Qty']} · ₹{r['LTP (₹)']:,.2f} ({r['Weight %']:.1f}%)": r["id"] for r in rows}
+            with st.form("rb_edit_form"):
+                lab = st.selectbox("Select stock", list(opts.keys()))
+                sid = opts[lab]
+                pidx = next((i for i, p in enumerate(portfolio) if p.get("id") == sid), None)
+                if pidx is not None:
+                    cur = portfolio[pidx]
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
+                        nq = st.number_input("Qty", value=max(0, int(cur.get("Qty", 1) or 1)), min_value=0, step=1)
+                    with c2:
+                        nsl = st.number_input("SL ₹", value=_sf(cur.get("SL (₹)")), step=0.5)
+                    with c3:
+                        ntg = st.number_input("TGT ₹", value=_sf(cur.get("TGT (₹)")), step=0.5)
+                    with c4:
+                        nb = st.number_input("Buy ₹", value=_sf(cur.get("Buy Price (₹)")), min_value=0.0, step=0.5)
+                    s1, s2 = st.columns(2)
+                    with s1:
+                        do_save = st.form_submit_button("💾 Save", use_container_width=True)
+                    with s2:
+                        do_del = st.form_submit_button("🗑️ Delete", type="primary", use_container_width=True)
+                    if do_save:
+                        if nq <= 0:
+                            portfolio[pidx]["Status"] = "⚪ Sold Manually"
+                            portfolio[pidx]["Exit_Date"] = str(date.today())
+                            portfolio[pidx]["Exit Price (₹)"] = rows[0]["LTP (₹)"]
+                            portfolio[pidx]["Qty"] = 0
+                        else:
+                            portfolio[pidx].update({"Qty": int(nq), "SL (₹)": nsl, "TGT (₹)": ntg,
+                                                    "Buy Price (₹)": nb, "Invested (₹)": round(nb * nq, 2)})
+                        st.session_state["paper_portfolio"] = portfolio
+                        save_json_file(PORTFOLIO_FILE, portfolio)
+                        st.success("Saved"); st.rerun()
+                    if do_del:
+                        portfolio.pop(pidx)
+                        st.session_state["paper_portfolio"] = portfolio
+                        save_json_file(PORTFOLIO_FILE, portfolio)
+                        st.success("Deleted"); st.rerun()
+
+            st.markdown("---")
+            st.markdown("#### Rebalance Rules")
+            r1, r2, r3, r4 = st.columns(4)
+            with r1:
+                strategy = st.selectbox("Strategy", ["Equal Weight", "Max Position Cap", "Score / Signal Weight", "Hybrid (Equal + Cap)"])
+            with r2:
+                max_w = st.slider("Max weight %", 3.0, 25.0, 8.0, 0.5)
+            with r3:
+                drift_th = st.slider("Drift threshold %", 0.5, 10.0, 2.0, 0.5)
+            with r4:
+                min_tv = st.number_input("Min trade ₹", value=2000, min_value=0, step=500)
+
+            score_map = {}
+            if not df_raw.empty and "Composite Score" in df_raw.columns:
+                for _, rw in df_raw.iterrows():
+                    score_map[rw.get("Raw_Ticker")] = _sf(rw.get("Composite Score"), 50)
+
+            n = len(rows)
+            eq = 100.0 / n if n else 0
+            for r in rows:
+                if strategy == "Equal Weight":
+                    r["Target %"] = round(eq, 2)
+                elif strategy == "Max Position Cap":
+                    r["Target %"] = min(r["Weight %"], max_w)
+                elif strategy == "Score / Signal Weight":
+                    r["_score"] = max(score_map.get(r["Raw_Ticker"], 50), 1)
+                else:
+                    r["Target %"] = round(min(eq, max_w), 2)
+
+            if strategy == "Score / Signal Weight":
+                ts = sum(r.get("_score", 50) for r in rows) or 1
+                for r in rows:
+                    r["Target %"] = round(min(r["_score"] / ts * 100, max_w), 2)
+                s = sum(r["Target %"] for r in rows) or 1
+                for r in rows:
+                    r["Target %"] = round(r["Target %"] / s * 100, 2)
+            elif strategy == "Max Position Cap":
+                s = sum(r["Target %"] for r in rows)
+                residual = max(0, 100 - s)
+                under = [r for r in rows if r["Weight %"] < max_w]
+                if under and residual > 0:
+                    add = residual / len(under)
+                    for r in under:
+                        r["Target %"] = round(min(r["Target %"] + add, max_w), 2)
+
+            proposals = []
+            for r in rows:
+                r["Drift %"] = round(r["Weight %"] - r["Target %"], 2)
+                tv = total_val * r["Target %"] / 100
+                dv = tv - r["Value (₹)"]
+                if abs(r["Drift %"]) < drift_th:
+                    r["Action"], r["Δ Qty"] = "Hold", 0
+                elif dv > min_tv and r["LTP (₹)"] > 0:
+                    r["Action"] = "Buy"
+                    r["Δ Qty"] = int(dv // r["LTP (₹)"])
+                elif dv < -min_tv and r["LTP (₹)"] > 0:
+                    r["Action"] = "Sell"
+                    r["Δ Qty"] = min(int(abs(dv) // r["LTP (₹)"]), r["Qty"])
+                else:
+                    r["Action"], r["Δ Qty"] = "Hold", 0
+                r["Δ Value (₹)"] = round(r["Δ Qty"] * r["LTP (₹)"] * (1 if r["Action"] == "Buy" else -1), 2) if r["Δ Qty"] else 0
+                if r["Action"] != "Hold" and r["Δ Qty"] > 0:
+                    proposals.append(r)
+
+            st.dataframe(pd.DataFrame([{
+                "Ticker": r["Ticker"], "Qty": r["Qty"],
+                "LTP (₹)": f"₹{r['LTP (₹)']:,.2f}", "Value (₹)": f"₹{r['Value (₹)']:,.2f}",
+                "Weight %": f"{r['Weight %']:.2f}%", "Target %": f"{r['Target %']:.2f}%",
+                "Drift %": f"{r['Drift %']:+.2f}%", "Action": r["Action"],
+                "Δ Qty": r["Δ Qty"] if r["Δ Qty"] else "—",
+            } for r in rows]), use_container_width=True, hide_index=True)
+
+            st.markdown(f"**Proposed:** {sum(1 for r in proposals if r['Action']=='Buy')} buys · {sum(1 for r in proposals if r['Action']=='Sell')} sells")
+
+            if st.button("🔄 Apply Rebalance", type="primary", use_container_width=True, disabled=not proposals):
+                id_map = {p.get("id"): p for p in st.session_state["paper_portfolio"]}
+                applied = 0
+                for r in proposals:
+                    pos = id_map.get(r["id"])
+                    if not pos:
+                        continue
+                    old_q = int(pos.get("Qty", 1) or 1)
+                    if r["Action"] == "Buy":
+                        nq = old_q + r["Δ Qty"]
+                        old_b = _sf(pos.get("Buy Price (₹)"), r["LTP (₹)"])
+                        nb = (old_b * old_q + r["LTP (₹)"] * r["Δ Qty"]) / nq if nq else old_b
+                        pos.update({"Buy Price (₹)": round(nb, 2), "Qty": nq, "Invested (₹)": round(nb * nq, 2)})
+                        applied += 1
+                    elif r["Action"] == "Sell":
+                        nq = max(0, old_q - r["Δ Qty"])
+                        if nq == 0:
+                            pos.update({"Status": "⚪ Sold Manually", "Exit_Date": str(date.today()),
+                                        "Exit Price (₹)": r["LTP (₹)"], "Qty": 0})
+                        else:
+                            pos["Qty"] = nq
+                            pos["Invested (₹)"] = round(_sf(pos.get("Buy Price (₹)")) * nq, 2)
+                        applied += 1
+                save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+                st.success(f"Applied to {applied} position(s)"); st.rerun()

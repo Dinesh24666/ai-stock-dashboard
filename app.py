@@ -1340,16 +1340,17 @@ def fetch_screener_universe(ticker_list):
 
                 # `is_overextended` = price has run too far to safely chase a
                 # fresh breakout. Originally only checked EMA20 extension —
-                # that missed cases like IIFL (RSI 78, ADX 50.7) where the
-                # screener tagged "STRONG BUY (Breakout)" purely on EMA/ADX
-                # alignment while the AI thesis correctly called the RSI
-                # "stretched" and recommended waiting for a pullback instead.
-                # Extreme RSI overbought (>=75) now also counts as
-                # overextended, so the rule-based signal and the AI's
-                # judgment agree instead of contradicting each other.
+                # that missed cases like IIFL (RSI 78) where the screener
+                # tagged "STRONG BUY (Breakout)" purely on EMA/ADX alignment
+                # while the AI thesis correctly flagged RSI as stretched.
+                # First fix used RSI >= 75, but BRIGADE (RSI 72) then showed
+                # the same mismatch — the AI already treats RSI 70+ as
+                # "approaching overbought" and recommends a pullback entry,
+                # which matches the standard Wilder RSI overbought line of
+                # 70, not 75. Lowered to 70 so the two signals agree.
                 is_overextended = bool(
                     (ema_20 > 0 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
-                    or rsi_val >= 75.0
+                    or rsi_val >= 70.0
                 )
 
                 if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:

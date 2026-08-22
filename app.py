@@ -1338,6 +1338,15 @@ def fetch_screener_universe(ticker_list):
 
                 swing_composite = float(np.clip(score, 10, 100))
 
+                # BUG FIX: `is_overextended` was referenced below but never
+                # defined anywhere in the file. That raised a silent
+                # NameError for every stock (caught by the broad except at
+                # the bottom of this loop), which is a likely contributor to
+                # stocks disappearing from scan results. Defined here as:
+                # price has run more than 15% above its 20 EMA — i.e. too
+                # extended above trend to chase a fresh breakout.
+                is_overextended = bool(ema_20 > 0 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
+
                 if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
@@ -1484,18 +1493,9 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # --- PAT filter removed: it relied on yf.Ticker(rt).info, the slowest and
-    # most rate-limit-prone yfinance call (1-2s+ per stock, sequential, up to
-    # 40 calls). This was the main lag source when that filter was enabled.
-    if not filtered_df.empty:
-        # Use cache only — zero network on watchlist/paper clicks
-        filtered_df = filtered_df.copy()
-        for idx, row in filtered_df.iterrows():
-            rt = row["Raw_Ticker"]
-            if rt in st.session_state["pat_cache"]:
-                pat_pct, pat_disp = st.session_state["pat_cache"][rt]
-                filtered_df.at[idx, "PAT YoY (%)"] = pat_disp
-                filtered_df.at[idx, "_pat_num"] = pat_pct
+    # PAT filter/column removed entirely — it relied on yf.Ticker(rt).info,
+    # the slowest and most rate-limit-prone yfinance call, and was the main
+    # lag source when enabled.
 
 
 tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist, tab_rebalance = st.tabs(
@@ -1520,7 +1520,7 @@ with tab_screener:
         with col_sort_by:
             sort_metric = st.selectbox(
                 "Sort Results By:",
-                ["Volume", "Composite Score", "Change (%)", "Price (₹)", "ADX (14)", "ROCE (%)", "PAT YoY (%)", "RSI (14)", "From 52W High (%)", "Market Cap (₹ Cr)"],
+                ["Volume", "Composite Score", "Change (%)", "Price (₹)", "ADX (14)", "ROCE (%)", "RSI (14)", "From 52W High (%)", "Market Cap (₹ Cr)"],
                 index=0,
             )
         with col_sort_dir:
@@ -1533,7 +1533,6 @@ with tab_screener:
             "Price (₹)": "Price (₹)",
             "ADX (14)": "_adx_num",
             "ROCE (%)": "_roce_num",
-            "PAT YoY (%)": "_pat_num",
             "RSI (14)": "RSI (14)",
             "From 52W High (%)": "From 52W High (%)",
             "Market Cap (₹ Cr)": "_mcap_num",
@@ -1546,7 +1545,7 @@ with tab_screener:
 
         display_cols = [
             "Ticker", "Signal", "Price (₹)", "Change (%)", "Volume",
-            "Composite Score", "ROCE (%)", "PAT YoY (%)", "ADX (14)", "RSI (14)",
+            "Composite Score", "ROCE (%)", "ADX (14)", "RSI (14)",
             "From 52W High (%)", "Vol Surge", "Market Cap (₹ Cr)",
             "Order Book (₹ Cr)", "OB / MCap"
         ]
@@ -2007,12 +2006,11 @@ with tab_pullback_watchlist:
                 updated_watchlist.pop(d_idx)
                 st.session_state["pullback_watchlist"] = updated_watchlist
                 save_json_file(WATCHLIST_FILE, updated_watchlist)
-
-                st.session_state["paper_portfolio"] = [
-                    p for p in st.session_state["paper_portfolio"]
-                    if not (p.get("Ticker") == removed_sym and "Pullback" in p.get("Remarks", ""))
-                ]
-                save_json_file(PORTFOLIO_FILE, st.session_state["paper_portfolio"])
+                # NOTE: deliberately does NOT touch paper_portfolio. Once a
+                # pullback item has triggered and become a paper trade, it's
+                # an independent position — removing it from the watchlist
+                # (because it's no longer needed there) must not delete the
+                # trade that already executed from it.
                 st.success(f"Deleted {removed_sym} from watchlist!")
                 st.rerun()
     else:

@@ -2,10 +2,7 @@ from datetime import date, datetime
 import gc
 import json
 import os
-import threading
 import time
-from typing import Dict, List, Optional
-
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -13,322 +10,6 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
-
-# ============================================================
-# LIVE PRICE CACHE (Dhan / Zerodha)
-# ============================================================
-_LIVE_LOCK = threading.Lock()
-_LIVE_PRICES: Dict[str, float] = {}
-_LIVE_META = {"broker": None, "connected": False, "last_tick": None, "error": ""}
-_WS_THREAD: Optional[threading.Thread] = None
-_WS_STOP = threading.Event()
-_TOKEN_MAP: Dict[str, int] = {}
-_REV_TOKEN_MAP: Dict[int, str] = {}
-
-
-def _norm_sym(s: str) -> str:
-    s = (s or "").strip().upper()
-    if not s:
-        return s
-    if not (s.endswith(".NS") or s.endswith(".BO")):
-        s = f"{s}.NS"
-    return s
-
-
-def set_live_price(symbol: str, ltp: float):
-    try:
-        v = float(ltp)
-        if v != v or v <= 0:
-            return
-    except Exception:
-        return
-    with _LIVE_LOCK:
-        _LIVE_PRICES[_norm_sym(symbol)] = v
-        _LIVE_META["last_tick"] = datetime.now().isoformat(timespec="seconds")
-
-
-def get_live_price(symbol: str, default: float = 0.0) -> float:
-    with _LIVE_LOCK:
-        v = _LIVE_PRICES.get(_norm_sym(symbol))
-    return float(v) if v and v > 0 else default
-
-
-def live_status() -> dict:
-    with _LIVE_LOCK:
-        return dict(_LIVE_META)
-
-
-def collect_watch_symbols() -> List[str]:
-    syms = set()
-    for p in st.session_state.get("paper_portfolio", []) or []:
-        if str(p.get("Status", "")).startswith("🟢"):
-            syms.add(_norm_sym(p.get("Raw_Ticker") or p.get("Ticker")))
-    for w in st.session_state.get("pullback_watchlist", []) or []:
-        syms.add(_norm_sym(w.get("Raw_Ticker") or w.get("Ticker")))
-    for r in st.session_state.get("rebalance_book", []) or []:
-        syms.add(_norm_sym(r.get("Raw_Ticker") or r.get("Ticker")))
-    sel = st.session_state.get("selected_ticker")
-    if sel:
-        syms.add(_norm_sym(sel))
-    return [s for s in syms if s]
-
-
-def stop_live_feed():
-    global _WS_THREAD
-    _WS_STOP.set()
-    t = _WS_THREAD
-    _WS_THREAD = None
-    if t and t.is_alive():
-        t.join(timeout=2.0)
-    with _LIVE_LOCK:
-        _LIVE_META["connected"] = False
-
-
-def _load_kite_instruments(api_key: str, access_token: str) -> bool:
-    global _TOKEN_MAP, _REV_TOKEN_MAP
-    try:
-        from kiteconnect import KiteConnect
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
-        instruments = kite.instruments("NSE")
-        tmap, rmap = {}, {}
-        for inst in instruments:
-            if inst.get("instrument_type") != "EQ":
-                continue
-            ts = str(inst.get("tradingsymbol", "")).upper()
-            token = int(inst.get("instrument_token"))
-            sym = f"{ts}.NS"
-            tmap[sym] = token
-            rmap[token] = sym
-        if not tmap:
-            return False
-        _TOKEN_MAP, _REV_TOKEN_MAP = tmap, rmap
-        try:
-            with open("kite_nse_tokens.json", "w") as f:
-                json.dump({"tmap": tmap, "rmap": {str(k): v for k, v in rmap.items()}}, f)
-        except Exception:
-            pass
-        return True
-    except Exception as e:
-        with _LIVE_LOCK:
-            _LIVE_META["error"] = f"Kite instruments: {e}"
-        return False
-
-
-def _load_token_cache_from_disk() -> bool:
-    global _TOKEN_MAP, _REV_TOKEN_MAP
-    if _TOKEN_MAP:
-        return True
-    try:
-        if os.path.exists("kite_nse_tokens.json"):
-            with open("kite_nse_tokens.json") as f:
-                data = json.load(f)
-            _TOKEN_MAP = data.get("tmap") or {}
-            _REV_TOKEN_MAP = {int(k): v for k, v in (data.get("rmap") or {}).items()}
-            return bool(_TOKEN_MAP)
-    except Exception:
-        pass
-    return False
-
-
-def start_kite_websocket(api_key: str, access_token: str, symbols: List[str]) -> bool:
-    global _WS_THREAD
-    if not symbols:
-        with _LIVE_LOCK:
-            _LIVE_META["error"] = "No symbols to subscribe"
-        return False
-    if not _TOKEN_MAP and not _load_token_cache_from_disk():
-        if not _load_kite_instruments(api_key, access_token):
-            return False
-    tokens = []
-    for s in symbols:
-        t = _TOKEN_MAP.get(_norm_sym(s))
-        if t:
-            tokens.append(int(t))
-    tokens = list(dict.fromkeys(tokens))
-    if not tokens:
-        with _LIVE_LOCK:
-            _LIVE_META["error"] = "No instrument tokens for watched symbols"
-        return False
-    stop_live_feed()
-
-    def _run():
-        try:
-            from kiteconnect import KiteTicker
-            kws = KiteTicker(api_key, access_token)
-
-            def on_ticks(ws, ticks):
-                for tick in ticks or []:
-                    tok = tick.get("instrument_token")
-                    ltp = tick.get("last_price")
-                    sym = _REV_TOKEN_MAP.get(int(tok)) if tok is not None else None
-                    if sym and ltp:
-                        set_live_price(sym, ltp)
-                with _LIVE_LOCK:
-                    _LIVE_META["connected"] = True
-                    _LIVE_META["broker"] = "zerodha"
-                    _LIVE_META["error"] = ""
-
-            def on_connect(ws, response):
-                ws.subscribe(tokens)
-                ws.set_mode(ws.MODE_LTP, tokens)
-                with _LIVE_LOCK:
-                    _LIVE_META["connected"] = True
-                    _LIVE_META["broker"] = "zerodha"
-
-            def on_close(ws, code, reason):
-                with _LIVE_LOCK:
-                    _LIVE_META["connected"] = False
-                    _LIVE_META["error"] = f"WS closed: {code} {reason}"
-
-            def on_error(ws, code, reason):
-                with _LIVE_LOCK:
-                    _LIVE_META["error"] = f"WS error: {code} {reason}"
-
-            kws.on_ticks = on_ticks
-            kws.on_connect = on_connect
-            kws.on_close = on_close
-            kws.on_error = on_error
-            kws.connect(threaded=True)
-            while not _WS_STOP.is_set():
-                time.sleep(1.0)
-            try:
-                kws.close()
-            except Exception:
-                pass
-        except Exception as e:
-            with _LIVE_LOCK:
-                _LIVE_META["connected"] = False
-                _LIVE_META["error"] = str(e)
-
-    _WS_STOP.clear()
-    _WS_THREAD = threading.Thread(target=_run, name="kite-ws", daemon=True)
-    _WS_THREAD.start()
-    with _LIVE_LOCK:
-        _LIVE_META["broker"] = "zerodha"
-        _LIVE_META["error"] = ""
-    return True
-
-
-def start_dhan_ltp_poller(client_id: str, access_token: str, symbols: List[str], interval: float = 1.5) -> bool:
-    """Fast Dhan REST LTP for watched symbols (Streamlit-friendly)."""
-    global _WS_THREAD
-    stop_live_feed()
-
-    def _run():
-        dhan = None
-        try:
-            from dhanhq import DhanContext, dhanhq
-            dhan = dhanhq(DhanContext(client_id, access_token))
-        except Exception:
-            try:
-                from dhanhq import dhanhq as Dhan
-                dhan = Dhan(client_id, access_token)
-            except Exception as e:
-                with _LIVE_LOCK:
-                    _LIVE_META["error"] = f"Dhan init failed: {e}. pip install dhanhq"
-                    _LIVE_META["connected"] = False
-                return
-
-        with _LIVE_LOCK:
-            _LIVE_META["broker"] = "dhan"
-            _LIVE_META["connected"] = True
-            _LIVE_META["error"] = ""
-
-        sec_map = {}
-        try:
-            if os.path.exists("dhan_nse_sids.json"):
-                with open("dhan_nse_sids.json") as f:
-                    sec_map = json.load(f)
-        except Exception:
-            sec_map = {}
-
-        while not _WS_STOP.is_set():
-            try:
-                # Prefer Dhan quote for symbols we can map; also try yfinance-free path via get_ltp if SDK accepts symbols
-                sids, inv = [], {}
-                for s in symbols:
-                    ns = _norm_sym(s)
-                    clean = ns.replace(".NS", "").replace(".BO", "")
-                    sid = sec_map.get(ns) or sec_map.get(clean)
-                    if sid is not None:
-                        sids.append(str(sid))
-                        inv[str(sid)] = ns
-
-                if sids:
-                    payload = {"NSE_EQ": [int(x) for x in sids[:100]]}
-                    resp = None
-                    for meth in ("get_ltp", "ticker_data", "ohlc_data"):
-                        if hasattr(dhan, meth):
-                            try:
-                                resp = getattr(dhan, meth)(payload)
-                                break
-                            except Exception:
-                                continue
-                    data = resp.get("data", resp) if isinstance(resp, dict) else {}
-                    nse = data.get("NSE_EQ", data) if isinstance(data, dict) else {}
-                    if isinstance(nse, dict):
-                        for sid, info in nse.items():
-                            sym = inv.get(str(sid))
-                            if not sym:
-                                continue
-                            ltp = None
-                            if isinstance(info, dict):
-                                ltp = info.get("last_price") or info.get("LTP") or info.get("ltp")
-                            elif isinstance(info, (int, float)):
-                                ltp = info
-                            if ltp:
-                                set_live_price(sym, ltp)
-                    with _LIVE_LOCK:
-                        _LIVE_META["connected"] = True
-                        _LIVE_META["error"] = ""
-                else:
-                    # No security_id map: use yfinance as interim for watched set only (still limited)
-                    for s in symbols[:50]:
-                        try:
-                            p = yf.Ticker(_norm_sym(s)).fast_info.last_price
-                            if p and float(p) > 0:
-                                set_live_price(s, float(p))
-                        except Exception:
-                            pass
-                    with _LIVE_LOCK:
-                        _LIVE_META["error"] = (
-                            "Dhan connected but dhan_nse_sids.json missing — "
-                            "using fast_info fallback for LTP. Add security_id map for true Dhan LTP."
-                        )
-            except Exception as e:
-                with _LIVE_LOCK:
-                    _LIVE_META["error"] = str(e)
-            time.sleep(interval)
-
-        with _LIVE_LOCK:
-            _LIVE_META["connected"] = False
-
-    _WS_STOP.clear()
-    _WS_THREAD = threading.Thread(target=_run, name="dhan-ltp", daemon=True)
-    _WS_THREAD.start()
-    return True
-
-
-def get_ltp_smart(symbol: str, fallback: float = 0.0) -> float:
-    v = get_live_price(symbol, 0.0)
-    if v > 0:
-        return v
-    try:
-        p = getattr(yf.Ticker(_norm_sym(symbol)).fast_info, "last_price", None)
-        if p and float(p) > 0:
-            return float(p)
-    except Exception:
-        pass
-    return fallback
-
-
-def _secret(name: str, default: str = "") -> str:
-    try:
-        v = st.secrets.get(name, default)
-        return str(v).strip() if v is not None else default
-    except Exception:
-        return default
 
 # 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
@@ -461,7 +142,98 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- TIME-DRIVEN MARKET HOURS & ALERT SYSTEM ---
+# ==========================================
+# --- FILE STORAGE & SESSION STATE ---------
+# ==========================================
+PORTFOLIO_FILE = "portfolio.json"
+WATCHLIST_FILE = "watchlist.json"
+
+def load_json_file(filename):
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_json_file(filename, data):
+    try:
+        with open(filename, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        st.error(f"Error saving to {filename}: {e}")
+
+if "paper_portfolio" not in st.session_state:
+    st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
+
+if "pullback_watchlist" not in st.session_state:
+    st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
+
+if "ai_analysis_cache" not in st.session_state:
+    st.session_state["ai_analysis_cache"] = {}
+
+if "screener_data" not in st.session_state:
+    st.session_state["screener_data"] = pd.DataFrame()
+
+# ==========================================
+# --- FILTER DICTIONARIES & STATE DEFAULTS -
+# ==========================================
+WIDE_OPEN_FILTERS = {
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 100,
+    "strict_fund": False,
+    "pat_growth": False,
+    "ob_mcap": False,
+    "roce_rng": (-20, 100),
+    "mcap_rng": (0, 2000000),
+    "max_de": 5.0,
+    "price_rng": (10, 10000),
+    "rsi_rng": (10, 95),
+    "min_adx": 0,
+    "dist_52w": 100,
+    "ma_align": "Any Trend",
+    "vol_10d_en": False,
+    "vol_10d_mult": 1.1,
+    "vol_20d_en": False,
+    "vol_20d_mult": 1.2
+}
+
+STRICT_STRATEGY_FILTERS = {
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 1950,
+    "strict_fund": True,
+    "pat_growth": False,
+    "ob_mcap": False,
+    "roce_rng": (20, 100),
+    "mcap_rng": (1000, 2000000),
+    "max_de": 0.50,
+    "price_rng": (30, 2000),
+    "rsi_rng": (55, 75),
+    "min_adx": 20,
+    "dist_52w": 12,
+    "ma_align": "Any Trend",
+    "vol_10d_en": False,
+    "vol_10d_mult": 1.1,
+    "vol_20d_en": False,
+    "vol_20d_mult": 1.2
+}
+
+for key, val in WIDE_OPEN_FILTERS.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+def reset_to_open_filters():
+    for k, v in WIDE_OPEN_FILTERS.items():
+        st.session_state[k] = v
+
+def apply_strict_filters():
+    for k, v in STRICT_STRATEGY_FILTERS.items():
+        st.session_state[k] = v
+
+# ==========================================
+# --- ALERTS & NOTIFICATIONS ---------------
+# ==========================================
 def render_alert_permission_banner():
     banner_html = """
     <div style="display: flex; align-items: center; justify-content: space-between; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(16,185,129,0.12);">
@@ -483,20 +255,7 @@ def render_alert_permission_banner():
     function checkMarketHoursAndPermissions() {
         var statusSub = document.getElementById("market-time-status");
         var btnEl = document.getElementById("alert-btn");
-        
-        var d = new Date();
-        var utc = d.getTime() + (d.getTimezoneOffset() * 60000);
-        var istDate = new Date(utc + (3600000 * 5.5));
-        var hours = istDate.getHours();
-        var minutes = istDate.getMinutes();
-        var day = istDate.getDay();
-        
-        var timeVal = hours * 100 + minutes;
-        var isWeekday = (day >= 1 && day <= 5);
-        
-        // TEMPORARY BYPASS: Forces system "ON" regardless of time/day for testing
-        var isMarketHours = true; 
-        
+        var isMarketHours = true;
         if ("Notification" in window && Notification.permission === "granted") {
             btnEl.style.display = "none";
             if (isMarketHours) {
@@ -519,26 +278,23 @@ def render_alert_permission_banner():
                 }
             });
         }
-        
-        // Play a LOUD test sound
         try {
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) {
                 var ctx = new AudioCtx();
-                ctx.resume();
+                if (ctx.state === "suspended") ctx.resume();
                 var osc = ctx.createOscillator();
                 var gain = ctx.createGain();
-                osc.type = "square"; // Harsh, loud alarm sound
-                osc.frequency.value = 900;
                 osc.connect(gain);
                 gain.connect(ctx.destination);
-                gain.gain.setValueAtTime(1.0, ctx.currentTime); // 100% volume
-                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
                 osc.start();
-                osc.stop(ctx.currentTime + 0.5);
+                osc.stop(ctx.currentTime + 0.25);
             }
-        } catch(e) { console.log(e); }
-    }
+        } catch(e) {}
     }
 
     window.onload = checkMarketHoursAndPermissions;
@@ -547,54 +303,92 @@ def render_alert_permission_banner():
     """
     components.html(banner_html, height=85)
 
-
 def play_trigger_alert(ticker, buy_price):
-    # Runs safely inside Streamlit's iframe without triggering cross-origin security blocks
     js_html = f"""
     <script>
     (function() {{
-        // 1. Loud Multi-Tone Alarm
-        try {{
-            var AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if(AudioCtx) {{
-                var ctx = new AudioCtx();
-                ctx.resume(); // Force audio context to wake up
-                
-                function playLoudBeep(freq, startTime, duration) {{
+        var lockKey = "alert_fired_{ticker}_{buy_price}";
+        if (!window.parent[lockKey]) {{
+            window.parent[lockKey] = true;
+            try {{
+                var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (AudioCtx) {{
+                    var ctx = new AudioCtx();
+                    ctx.resume();
                     var osc = ctx.createOscillator();
                     var gain = ctx.createGain();
-                    
-                    osc.type = "square"; // Piercing digital alarm tone
-                    osc.frequency.value = freq;
-                    
+                    osc.type = "square";
+                    osc.frequency.value = 900;
                     osc.connect(gain);
                     gain.connect(ctx.destination);
-                    
-                    gain.gain.setValueAtTime(1.0, startTime);
-                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
-                    
-                    osc.start(startTime);
-                    osc.stop(startTime + duration);
+                    gain.gain.setValueAtTime(1.0, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.4);
                 }}
-                
-                var now = ctx.currentTime;
-                playLoudBeep(900, now, 0.25);
-                playLoudBeep(900, now + 0.35, 0.25);
-                playLoudBeep(1200, now + 0.70, 0.5);
-            }}
-        }} catch(err) {{
-            console.log("Audio failed:", err);
+            }} catch(err) {}
+            setTimeout(function() {{
+                alert("🚨 PULLBACK ALERT: {ticker}\\n\\nTarget hit at ₹{buy_price:,.2f}. Trade moved to Paper Portfolio!");
+            }}, 200);
         }}
-
-        // 2. Hard Browser Popup (Freezes screen until user clicks OK)
-        setTimeout(function() {{
-            alert("🚨 PULLBACK ALERT: {ticker}\\n\\nTarget hit at ₹{buy_price:,.2f}. Trade successfully executed and moved to your Paper Trading Portfolio!");
-        }}, 400); // Waits a split second so the audio starts before the alert freezes the screen
     }})();
     </script>
     """
     components.html(js_html, height=0, width=0)
-# --- TOP LIVE MARKET INDEX TICKER RIBBON ---
+
+# ==========================================
+# --- AI CLIENT STREAMER -------------------
+# ==========================================
+def stream_gemini_analysis(prompt):
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+            return
+        except Exception:
+            continue
+    yield "Error: Failed to connect to Gemini API. Please check your key or verify your API permissions in Google AI Studio."
+
+# ==========================================
+# --- TECHNICAL INDICATOR HELPERS ----------
+# ==========================================
+def compute_rsi(series: pd.Series, period: int = 14) -> float:
+    if len(series) < period + 1:
+        return 50.0
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain.iloc[-1] / (avg_loss.iloc[-1] + 1e-9)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return float(rsi) if not pd.isna(rsi) else 50.0
+
+def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
+    if len(df) < period * 2:
+        return 25.0
+    try:
+        high, low, close = df["High"], df["Low"], df["Close"]
+        tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+        up_move, down_move = high - high.shift(1), low.shift(1) - low
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr)
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9))
+        adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().iloc[-1]
+        return round(float(adx), 1) if not pd.isna(adx) else 25.0
+    except Exception:
+        return 25.0
+
+# ==========================================
+# --- MARKET TICKER RIBBON -----------------
+# ==========================================
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_market_indices():
     index_items = [
@@ -676,192 +470,9 @@ if market_indices:
 
 st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 
-PORTFOLIO_FILE = "portfolio.json"
-WATCHLIST_FILE = "watchlist.json"
-
-
-def load_json_file(filename):
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
-
-
-def save_json_file(filename, data):
-    try:
-        with open(filename, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        st.error(f"Error saving to {filename}: {e}")
-
-
-if "paper_portfolio" not in st.session_state:
-    st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
-
-if "pullback_watchlist" not in st.session_state:
-    st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
-
-if "ai_analysis_cache" not in st.session_state:
-    st.session_state["ai_analysis_cache"] = {}
-
-if "screener_data" not in st.session_state:
-    st.session_state["screener_data"] = pd.DataFrame()
-
 # ==========================================
-# --- FILTER DICTIONARIES FOR STATE MGMT ---
+# --- UNIVERSE LISTS & DEFINITIONS ---------
 # ==========================================
-WIDE_OPEN_FILTERS = {
-    "sel_universe": "All NSE Stocks (Full Listed)",
-    "scan_limit": 100,  
-    "strict_fund": False,
-    "pat_growth": False,
-    "ob_mcap": False,
-    "roce_rng": (-20, 100),
-    "mcap_rng": (0, 2000000),
-    "max_de": 5.0,
-    "price_rng": (10, 10000),
-    "rsi_rng": (10, 95),
-    "min_adx": 0,
-    "dist_52w": 100,
-    "ma_align": "Any Trend",
-    "vol_10d_en": False,
-    "vol_10d_mult": 1.1,
-    "vol_20d_en": False,
-    "vol_20d_mult": 1.2
-}
-
-STRICT_STRATEGY_FILTERS = {
-    "sel_universe": "All NSE Stocks (Full Listed)",
-    "scan_limit": 1950, 
-    "strict_fund": True, 
-    "pat_growth": False,
-    "ob_mcap": False,
-    "roce_rng": (20, 100),
-    "mcap_rng": (1000, 2000000),
-    "max_de": 0.50,
-    "price_rng": (30, 2000),
-    "rsi_rng": (55, 75),
-    "min_adx": 20,
-    "dist_52w": 12,
-    "ma_align": "Any Trend",
-    "vol_10d_en": False,
-    "vol_10d_mult": 1.1,
-    "vol_20d_en": False,
-    "vol_20d_mult": 1.2
-}
-
-# Ensure defaults are initialized in session state
-for key, val in WIDE_OPEN_FILTERS.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
-
-def reset_to_open_filters():
-    for key, val in WIDE_OPEN_FILTERS.items():
-        st.session_state[key] = val
-
-def apply_strict_filters():
-    for key, val in STRICT_STRATEGY_FILTERS.items():
-        st.session_state[key] = val
-
-st.sidebar.header("🔑 API Setup")
-api_key_from_secrets = _secret("GEMINI_API_KEY")
-
-if api_key_from_secrets:
-    GEMINI_API_KEY = api_key_from_secrets
-    st.sidebar.success("✅ Gemini API Key connected")
-else:
-    GEMINI_API_KEY = st.sidebar.text_input(
-        "Google Gemini API Key",
-        type="password",
-        help="Get a key from Google AI Studio (aistudio.google.com)",
-    )
-
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY.strip())
-    except Exception as e:
-        st.sidebar.error(f"Error configuring API: {e}")
-
-# --- Dhan / Zerodha from Streamlit Secrets ---
-st.sidebar.header("📡 Live Prices")
-DHAN_CLIENT_ID = _secret("DHAN_CLIENT_ID")
-DHAN_ACCESS_TOKEN = _secret("DHAN_ACCESS_TOKEN")
-KITE_API_KEY = _secret("KITE_API_KEY")
-KITE_ACCESS_TOKEN = _secret("KITE_ACCESS_TOKEN")
-
-if DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN:
-    st.sidebar.success("✅ Dhan secrets connected")
-if KITE_API_KEY and KITE_ACCESS_TOKEN:
-    st.sidebar.success("✅ Kite secrets connected")
-
-live_broker = st.sidebar.selectbox(
-    "Broker feed",
-    ["Off (yfinance)", "Dhan LTP (secrets)", "Zerodha Kite WebSocket"],
-    help="Uses Streamlit Secrets when available. Streams only portfolio/watchlist symbols.",
-)
-
-if live_broker == "Dhan LTP (secrets)":
-    if not (DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN):
-        st.sidebar.warning("Add DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in App secrets")
-        dhan_client = st.sidebar.text_input("Dhan Client ID", key="dhan_client_manual")
-        dhan_token = st.sidebar.text_input("Dhan Access Token", type="password", key="dhan_token_manual")
-    else:
-        dhan_client, dhan_token = DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN
-        st.sidebar.caption("Using secrets · no need to paste token")
-    c1, c2 = st.sidebar.columns(2)
-    with c1:
-        if st.button("▶ Start Dhan", use_container_width=True):
-            syms = collect_watch_symbols()
-            cid = (dhan_client or "").strip()
-            tok = (dhan_token or "").strip()
-            if not cid or not tok:
-                st.sidebar.error("Missing Dhan credentials")
-            elif not syms:
-                st.sidebar.warning("Add portfolio/watchlist symbols first")
-            else:
-                if start_dhan_ltp_poller(cid, tok, syms):
-                    st.sidebar.success(f"Polling {len(syms)} symbols")
-                else:
-                    st.sidebar.error(live_status().get("error") or "Failed")
-    with c2:
-        if st.button("■ Stop", use_container_width=True, key="stop_dhan"):
-            stop_live_feed()
-            st.sidebar.info("Stopped")
-
-elif live_broker == "Zerodha Kite WebSocket":
-    if not (KITE_API_KEY and KITE_ACCESS_TOKEN):
-        kite_key = st.sidebar.text_input("Kite API Key", type="password", key="kite_key_manual")
-        kite_tok = st.sidebar.text_input("Kite Access Token", type="password", key="kite_tok_manual")
-    else:
-        kite_key, kite_tok = KITE_API_KEY, KITE_ACCESS_TOKEN
-        st.sidebar.caption("Using Kite secrets")
-    c1, c2 = st.sidebar.columns(2)
-    with c1:
-        if st.button("▶ Start WS", use_container_width=True):
-            syms = collect_watch_symbols()
-            if not kite_key or not kite_tok:
-                st.sidebar.error("Missing Kite credentials")
-            elif not syms:
-                st.sidebar.warning("Add symbols first")
-            else:
-                if start_kite_websocket(kite_key.strip(), kite_tok.strip(), syms):
-                    st.sidebar.success(f"Streaming {len(syms)} symbols")
-                else:
-                    st.sidebar.error(live_status().get("error") or "Failed")
-    with c2:
-        if st.button("■ Stop", use_container_width=True, key="stop_kite"):
-            stop_live_feed()
-            st.sidebar.info("Stopped")
-
-_ls = live_status()
-if _ls.get("connected"):
-    st.sidebar.success(f"🟢 Live · {_ls.get('broker')} · {_ls.get('last_tick') or '—'}")
-elif _ls.get("error"):
-    st.sidebar.caption(f"Feed: {str(_ls.get('error'))[:140]}")
-
 ORDER_BOOK_CR_MAP = {
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
     "COCHINSHIP": 22000, "GRSE": 25000, "BHEL": 135000, "ACE": 3200, 
@@ -1192,11 +803,32 @@ UNIVERSE_PRESETS = {
     ],
 }
 
-
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_all_nse_symbols():
     unique_list = sorted(list(dict.fromkeys(NSE_FULL_EQUITIES)))
     return [f"{s}.NS" for s in unique_list]
+
+# ==========================================
+# --- SIDEBAR WIDGETS ----------------------
+# ==========================================
+st.sidebar.header("🔑 API Setup")
+api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
+
+if api_key_from_secrets:
+    GEMINI_API_KEY = str(api_key_from_secrets).strip()
+    st.sidebar.success("✅ Gemini API Key connected")
+else:
+    GEMINI_API_KEY = st.sidebar.text_input(
+        "Google Gemini API Key",
+        type="password",
+        help="Get a key from Google AI Studio (aistudio.google.com)",
+    )
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY.strip())
+    except Exception as e:
+        st.sidebar.error(f"Error configuring API: {e}")
 
 selected_universe = st.sidebar.selectbox("Select Stock Basket", list(UNIVERSE_PRESETS.keys()), key="sel_universe")
 
@@ -1269,39 +901,9 @@ if st.sidebar.button("🔄 Clear Cache & Rerun", use_container_width=True):
     gc.collect()
     st.rerun()
 
-
-def compute_rsi(series: pd.Series, period: int = 14) -> float:
-    if len(series) < period + 1:
-        return 50.0
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain.iloc[-1] / (avg_loss.iloc[-1] + 1e-9)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    return float(rsi) if not pd.isna(rsi) else 50.0
-
-
-def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
-    if len(df) < period * 2:
-        return 25.0
-    try:
-        high, low, close = df["High"], df["Low"], df["Close"]
-        tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
-        atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
-        up_move, down_move = high - high.shift(1), low.shift(1) - low
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-        plus_di = 100 * (pd.Series(plus_dm, index=df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr)
-        minus_di = 100 * (pd.Series(minus_dm, index=df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr)
-        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9))
-        adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().iloc[-1]
-        return round(float(adx), 1) if not pd.isna(adx) else 25.0
-    except Exception:
-        return 25.0
-
-
+# ==========================================
+# --- FAST DATA PIPELINE -------------------
+# ==========================================
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -1309,20 +911,14 @@ def fetch_screener_universe(ticker_list):
 
     unique_tickers = list(dict.fromkeys(ticker_list))
     total = len(unique_tickers)
-    progress_bar = st.progress(0, text="Fetching market data...")
     
-    # Safe chunk size to avoid Yahoo Finance IP block limits
     chunk_size = 50
     chunks = [unique_tickers[i : i + chunk_size] for i in range(0, total, chunk_size)]
     rows = []
     seen = set()
 
     for c_idx, chunk in enumerate(chunks):
-        progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
-        
         batch_data = pd.DataFrame()
-        
-        # Retry mechanism to handle yfinance random rate limit failures
         for attempt in range(3):
             try:
                 batch_data = yf.download(
@@ -1330,7 +926,7 @@ def fetch_screener_universe(ticker_list):
                     period="1y", 
                     interval="1d", 
                     group_by="ticker", 
-                    threads=True, 
+                    threads=False, 
                     auto_adjust=True, 
                     progress=False, 
                     timeout=10
@@ -1338,11 +934,7 @@ def fetch_screener_universe(ticker_list):
                 if not batch_data.empty:
                     break
             except Exception:
-                time.sleep(1)
-                
-        # Sleep slightly between chunks to prevent 429 errors from YF
-        if len(chunks) > 1:
-            time.sleep(0.5)
+                time.sleep(0.5)
 
         if batch_data.empty:
             continue
@@ -1389,7 +981,6 @@ def fetch_screener_universe(ticker_list):
                 rsi_val = compute_rsi(hist["Close"], 14)
                 adx_val = compute_adx(hist, 14)
 
-                # --- WEEKLY MACD, STOCHASTICS, RSI(7) SETUP LOGIC ---
                 is_weekly_setup_match = False
                 try:
                     temp_hist = hist.copy()
@@ -1409,7 +1000,6 @@ def fetch_screener_universe(ticker_list):
                         w_high = weekly_df["High"]
                         w_low = weekly_df["Low"]
 
-                        # 1. Weekly MACD (21, 13, 9) Crossover
                         w_exp1 = w_close.ewm(span=13, adjust=False).mean()
                         w_exp2 = w_close.ewm(span=21, adjust=False).mean()
                         w_macd_line = w_exp1 - w_exp2
@@ -1418,7 +1008,6 @@ def fetch_screener_universe(ticker_list):
                         if len(w_macd_line) >= 2 and pd.notna(w_macd_line.iloc[-1]):
                             macd_cross = (w_macd_line.iloc[-1] > w_macd_signal.iloc[-1]) and (w_macd_line.iloc[-2] <= w_macd_signal.iloc[-2])
 
-                        # 2. Weekly Fast Stochastic %K (4, 1) Crossover > 80
                         lowest_low = w_low.rolling(window=4).min()
                         highest_high = w_high.rolling(window=4).max()
                         stoch_k = 100 * ((w_close - lowest_low) / (highest_high - lowest_low + 1e-9))
@@ -1426,7 +1015,6 @@ def fetch_screener_universe(ticker_list):
                         if len(stoch_k) >= 2 and pd.notna(stoch_k.iloc[-1]):
                             stoch_cross = (stoch_k.iloc[-1] > 80) and (stoch_k.iloc[-2] <= 80)
 
-                        # 3. Weekly RSI (7) Crossover > 70
                         delta = w_close.diff()
                         gain = delta.where(delta > 0, 0.0)
                         loss = -delta.where(delta < 0, 0.0)
@@ -1438,7 +1026,6 @@ def fetch_screener_universe(ticker_list):
                         if len(w_rsi) >= 2 and pd.notna(w_rsi.iloc[-1]):
                             rsi_cross = (w_rsi.iloc[-1] > 70) and (w_rsi.iloc[-2] <= 70)
 
-                        # 4. Weekly ATR (7) > 0
                         tr1 = w_high - w_low
                         tr2 = (w_high - w_close.shift(1)).abs()
                         tr3 = (w_low - w_close.shift(1)).abs()
@@ -1452,7 +1039,6 @@ def fetch_screener_universe(ticker_list):
                 except Exception:
                     is_weekly_setup_match = False
 
-                # --- DAILY VOLUME AND INDICATORS ---
                 vol_series = hist["Volume"].dropna()
                 curr_vol = int(vol_series.iloc[-1]) if not vol_series.empty else 0
                 avg_vol_10 = float(vol_series.rolling(10).mean().iloc[-1]) if len(vol_series) >= 10 else float(curr_vol)
@@ -1513,8 +1099,10 @@ def fetch_screener_universe(ticker_list):
                     score -= 30
 
                 swing_composite = float(np.clip(score, 10, 100))
+                is_overextended = bool(curr_price > ema_9 and ((curr_price - ema_20) / ema_20 * 100.0) > 15.0)
 
-                if swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended:
+                # Strict Score 100 = Strong Buy
+                if swing_composite >= 100.0 or (swing_composite >= 80 and curr_price >= ema_9 >= ema_20 and not is_overextended):
                     action_signal = "🟢 STRONG BUY (Breakout)"
                 elif (swing_composite >= 50 or is_triple_cross or is_cluster_squeeze or passes_mtf_breakout or is_overextended) and curr_price >= ema_20:
                     action_signal = "🟡 BUY / PULLBACK"
@@ -1533,7 +1121,7 @@ def fetch_screener_universe(ticker_list):
                     "Volume": f"{curr_vol:,}",
                     "Composite Score": round(swing_composite, 1),
                     "ROCE (%)": roce,
-                    "PAT YoY (%)": "N/A",  # Default placeholder for exact fundamental matching
+                    "PAT YoY (%)": "N/A",
                     "ADX (14)": adx_val,
                     "RSI (14)": round(rsi_val, 1),
                     "From 52W High (%)": round(dist_52w_high, 1),
@@ -1564,15 +1152,18 @@ def fetch_screener_universe(ticker_list):
                     "_weekly_setup_match": is_weekly_setup_match,
                 })
                 seen.add(clean_sym)
-            except Exception as loop_e:
+            except Exception:
                 continue
 
         del batch_data
         gc.collect()
 
-    progress_bar.empty()
-    return pd.DataFrame(rows)
-
+    final_df = pd.DataFrame(rows)
+    if not final_df.empty:
+        float_cols = final_df.select_dtypes(include=['float64']).columns
+        final_df[float_cols] = final_df[float_cols].astype('float32')
+        
+    return final_df
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_single_stock_history(ticker):
@@ -1601,25 +1192,27 @@ def get_single_stock_history(ticker):
     except Exception:
         return pd.DataFrame()
 
-
-# AUTO-RUN SCAN ON STARTUP IF EMPTY
+# ==========================================
+# --- DATA FETCH & EXECUTION ---------------
+# ==========================================
 if st.session_state["screener_data"].empty:
-    with st.spinner("Initializing market scan..."):
-        st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
+    status_box = st.info("⏳ Initializing market scan...")
+    st.session_state["screener_data"] = fetch_screener_universe(tickers_to_scan)
+    status_box.empty()
 
 if scan_button or is_single_search:
-    with st.spinner("Analyzing market data..."):
-        df_raw = fetch_screener_universe(tickers_to_scan)
-        st.session_state["screener_data"] = df_raw
+    status_box = st.info("⏳ Analyzing market data...")
+    df_raw = fetch_screener_universe(tickers_to_scan)
+    st.session_state["screener_data"] = df_raw
+    status_box.empty()
 else:
-    df_raw = st.session_state["screener_data"]
+    df_raw = st.session_state.get("screener_data", pd.DataFrame())
 
 filtered_df = pd.DataFrame()
 
 if not df_raw.empty:
     filtered_df = df_raw.copy()
 
-    # Apply strict numerical filters exactly matching the sidebar
     filtered_df = filtered_df[
         (filtered_df["_roce_num"] >= roce_range[0])
         & (filtered_df["_roce_num"] <= roce_range[1])
@@ -1660,41 +1253,30 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # --- FUNDAMENTAL FETCH: ALWAYS FETCH FOR MATCHED STOCKS ---
+    # Dynamic AI Thesis Sync
+    ai_cache = st.session_state.get("ai_analysis_cache", {})
     if not filtered_df.empty:
-        filtered_df = filtered_df.copy()
-        with st.spinner("Fetching real-time earnings data (PAT YoY) for matched stocks..."):
-            valid_indices = []
-            for idx, row in filtered_df.iterrows():
-                try:
-                    t_info = yf.Ticker(row["Raw_Ticker"]).info
-                    gr = t_info.get("earningsQuarterlyGrowth")
-                    if gr is None:
-                        gr = t_info.get("earningsGrowth")
-                    
-                    if gr is not None:
-                        pat_pct = float(gr) * 100
-                        filtered_df.at[idx, "PAT YoY (%)"] = f"{pat_pct:.1f}%"
-                        filtered_df.at[idx, "_pat_num"] = pat_pct
-                    else:
-                        pat_pct = 0.0
-                        filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
-                        filtered_df.at[idx, "_pat_num"] = 0.0
-                    
-                    if pat_growth_filter:
-                        if gr is not None and pat_pct >= 20.0:
-                            valid_indices.append(idx)
-                    else:
-                        valid_indices.append(idx)
-                except Exception:
-                    filtered_df.at[idx, "PAT YoY (%)"] = "N/A"
-                    filtered_df.at[idx, "_pat_num"] = -999.0
-                    if not pat_growth_filter:
-                        valid_indices.append(idx)
-            
-            filtered_df = filtered_df.loc[valid_indices]
+        for idx, row in filtered_df.iterrows():
+            raw_t = row["Raw_Ticker"]
+            cached_text = ai_cache.get(raw_t, "")
+            if cached_text:
+                upper_txt = cached_text.upper()
+                if "STRONG BUY" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟢 STRONG BUY (Breakout)"
+                    filtered_df.at[idx, "Composite Score"] = 100.0
+                elif "BUY" in upper_txt or "PULLBACK" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟡 BUY / PULLBACK"
+                    filtered_df.at[idx, "Composite Score"] = 80.0
+                elif "AVOID" in upper_txt or "WEAK" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🔴 AVOID / WEAK"
+                    filtered_df.at[idx, "Composite Score"] = 10.0
+                elif "WAIT" in upper_txt or "CONSOLIDATING" in upper_txt:
+                    filtered_df.at[idx, "Signal"] = "🟠 CONSOLIDATING"
+                    filtered_df.at[idx, "Composite Score"] = 40.0
 
-
+# ==========================================
+# --- TABS INTERFACE -----------------------
+# ==========================================
 tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
     [
         "📊 Screener & Momentum Signals",
@@ -1747,8 +1329,21 @@ with tab_screener:
             "Order Book (₹ Cr)", "OB / MCap"
         ]
         table_data = sorted_results_df[display_cols].copy()
+        
+        def format_comp(score, sym):
+            ai_text = st.session_state.get("ai_analysis_cache", {}).get(f"{sym}.NS", "")
+            if ai_text:
+                up = ai_text.upper()
+                if "STRONG BUY" in up: return "STRONG BUY (Breakout)"
+                if "BUY" in up or "PULLBACK" in up: return "BUY / PULLBACK"
+                if "AVOID" in up or "WEAK" in up: return "AVOID / WEAK"
+                if "WAIT" in up or "CONSOLIDATING" in up: return "CONSOLIDATING"
+            if pd.notna(score) and score >= 100:
+                return "STRONG BUY (Breakout)"
+            return f"{int(score)}" if pd.notna(score) else "-"
+
+        table_data["Composite Score"] = table_data.apply(lambda r: format_comp(r["Composite Score"], r["Ticker"]), axis=1)
         table_data["Price (₹)"] = table_data["Price (₹)"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "-")
-        table_data["Composite Score"] = table_data["Composite Score"].apply(lambda x: f"{int(x)}" if pd.notna(x) else "-")
         table_data["ROCE (%)"] = table_data["ROCE (%)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["ADX (14)"] = table_data["ADX (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
         table_data["RSI (14)"] = table_data["RSI (14)"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
@@ -1859,50 +1454,14 @@ with tab_deepdive:
                         3. **Trade Blueprint**: Entry Range (₹), Strict Stop-Loss (₹), Targets (Target 1 & 2 with Risk:Reward >= 1:2).
                         4. **Exit Trigger**: Invalidation condition for swing trades.
                         """
-                        with st.spinner("Analyzing momentum setup with Gemini..."):
-                            success = False
-                            error_logs = []
-                            candidate_models = []
-                            try:
-                                for m in genai.list_models():
-                                    if "generateContent" in m.supported_generation_methods:
-                                        candidate_models.append(m.name.replace("models/", ""))
-                            except Exception as e:
-                                error_logs.append(f"Model listing error: {e}")
-
-                            if not candidate_models:
-                                candidate_models = [
-                                    "gemini-1.5-flash",
-                                    "gemini-2.0-flash",
-                                    "gemini-1.5-flash-8b",
-                                    "gemini-1.5-pro",
-                                    "gemini-pro",
-                                ]
-
-                            for model_name in candidate_models:
-                                try:
-                                    model = genai.GenerativeModel(model_name)
-                                    res = model.generate_content(prompt)
-                                    if res and res.text:
-                                        st.session_state["ai_analysis_cache"][selected_stock] = res.text
-                                        st.markdown(res.text)
-                                        success = True
-                                        break
-                                except Exception as err:
-                                    error_logs.append(f"{model_name}: {str(err)}")
-                                    continue
-
-                            if not success:
-                                st.error("Failed to generate AI thesis.")
-                                with st.expander("🔍 View Error Details"):
-                                    for err in error_logs:
-                                        st.code(err)
+                        try:
+                            st.session_state["ai_analysis_cache"][selected_stock] = st.write_stream(stream_gemini_analysis(prompt))
+                        except Exception as e:
+                            st.error(f"Failed to generate: {e}")
 
 with tab_pullback_watchlist:
     st.subheader("🎯 Pullback Watchlist & Limit Order Execution")
-    
     render_alert_permission_banner()
-    
     st.info("💡 **Pullback Entry Engine:** Place limit orders below current market price (LTP). When market price dips to or below your target, the system triggers, sounds an alert, and automatically executes the trade.")
 
     col_w_dl, col_w_up = st.columns([1, 1])
@@ -1934,8 +1493,8 @@ with tab_pullback_watchlist:
                 use_container_width=True,
             )
 
-    if not df_raw.empty:
-        pullback_candidates = df_raw["Raw_Ticker"].tolist()
+    if not filtered_df.empty:
+        pullback_candidates = filtered_df["Raw_Ticker"].tolist()
         curr_selected = st.session_state.get("selected_ticker", pullback_candidates[0] if pullback_candidates else "ACE.NS")
         default_wb_idx = pullback_candidates.index(curr_selected) if curr_selected in pullback_candidates else 0
 
@@ -1943,8 +1502,8 @@ with tab_pullback_watchlist:
             cw1, cw2, cw3, cw4, cw5 = st.columns([1.2, 1, 1, 1, 1])
             with cw1:
                 sel_stock = st.selectbox("Stock Candidate:", pullback_candidates, index=default_wb_idx)
-                matched_match = df_raw[df_raw["Raw_Ticker"] == sel_stock]
-                matched_row = matched_match.iloc[0] if not matched_match.empty else df_raw.iloc[0]
+                matched_match = filtered_df[filtered_df["Raw_Ticker"] == sel_stock]
+                matched_row = matched_match.iloc[0] if not matched_match.empty else filtered_df.iloc[0]
                 live_ltp = float(matched_row["Price (₹)"])
                 ema20_val = float(matched_row["20 EMA"])
             with cw2:
@@ -1986,7 +1545,7 @@ with tab_pullback_watchlist:
 
     active_watchlist = st.session_state.get("pullback_watchlist", [])
     if active_watchlist:
-        live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        live_price_dict = dict(zip(filtered_df["Raw_Ticker"], filtered_df["Price (₹)"])) if not filtered_df.empty else {}
         updated_watchlist = []
         display_rows = []
 
@@ -2005,9 +1564,7 @@ with tab_pullback_watchlist:
             curr_ltp = live_price_dict.get(sym)
             if curr_ltp is None:
                 try:
-                    curr_ltp = float(get_ltp_smart(sym, 0.0) or 0.0) or None
-                    if not curr_ltp:
-                        curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_ltp = None
 
@@ -2144,18 +1701,18 @@ with tab_watchlist:
     st.subheader("💼 Paper Trading Portfolio & Risk Manager")
     active_portfolio = st.session_state.get("paper_portfolio", [])
 
-    if not df_raw.empty:
+    if not filtered_df.empty:
         with st.expander("➕ Execute New Paper Trade (Custom SL, Target & Remarks)", expanded=False):
             col_add1, col_add2, col_add3, col_add4, col_add5 = st.columns([1.2, 1, 1, 1, 1])
             with col_add1:
-                available_tickers = df_raw["Raw_Ticker"].tolist() if not df_raw.empty else ["ACE.NS"]
+                available_tickers = filtered_df["Raw_Ticker"].tolist() if not filtered_df.empty else ["ACE.NS"]
                 curr_selected_trade = st.session_state.get("selected_ticker", available_tickers[0])
                 default_trade_idx = available_tickers.index(curr_selected_trade) if curr_selected_trade in available_tickers else 0
                 trade_stock = st.selectbox("Stock:", available_tickers, index=default_trade_idx)
             with col_add2:
                 trade_date = st.date_input("Entry Date", value=date.today())
             with col_add3:
-                matched_stock = df_raw[df_raw["Raw_Ticker"] == trade_stock] if not df_raw.empty else pd.DataFrame()
+                matched_stock = filtered_df[filtered_df["Raw_Ticker"] == trade_stock] if not filtered_df.empty else pd.DataFrame()
                 live_price = float(matched_stock["Price (₹)"].iloc[0]) if not matched_stock.empty else 100.0
                 buy_price = st.number_input("Entry Price (₹)", value=live_price, min_value=0.1, step=0.5)
             with col_add4:
@@ -2239,7 +1796,7 @@ with tab_watchlist:
             )
 
     if active_portfolio:
-        live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        live_price_dict = dict(zip(filtered_df["Raw_Ticker"], filtered_df["Price (₹)"])) if not filtered_df.empty else {}
         open_invested = 0.0
         open_current_val = 0.0
         unrealised_pnl_total = 0.0
@@ -2260,13 +1817,9 @@ with tab_watchlist:
             curr_p = live_price_dict.get(sym)
             if curr_p is None:
                 try:
-                    curr_p = float(get_ltp_smart(sym, 0.0) or 0.0)
-                    if curr_p <= 0:
-                        curr_p = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
                 except Exception:
                     curr_p = buy_p
-            if curr_p is None or (isinstance(curr_p, float) and (curr_p != curr_p or curr_p <= 0)):
-                curr_p = buy_p
 
             qty = int(pos.get("Qty", 1))
             invested = float(pos.get("Invested (₹)", buy_p * qty))

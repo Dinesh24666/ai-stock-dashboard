@@ -1033,7 +1033,6 @@ else:
 
 st.sidebar.markdown("### Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", key="strict_fund")
-pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", key="pat_growth")
 order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", key="ob_mcap")
 
 roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, key="roce_rng")
@@ -1109,6 +1108,44 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> float:
         return 25.0
 
 
+def _download_chunk_with_salvage(chunk, max_split_depth=2):
+    """Try to download a chunk; if Yahoo returns nothing for the whole batch
+    (rate-limit / transient block), split it in half and retry each half
+    instead of silently dropping all ~50 symbols in that batch. This is why
+    a 500-symbol scan was only returning ~140 stocks — one failed chunk used
+    to throw away the entire batch instead of salvaging what it could."""
+    for attempt in range(3):
+        try:
+            data = yf.download(
+                tickers=" ".join(chunk),
+                period="6mo",
+                interval="1d",
+                group_by="ticker",
+                threads=True,
+                auto_adjust=True,
+                progress=False,
+                timeout=25,
+            )
+            if not data.empty:
+                return data
+        except Exception:
+            time.sleep(0.8 + attempt * 0.4)
+    if max_split_depth > 0 and len(chunk) > 5:
+        mid = len(chunk) // 2
+        left = _download_chunk_with_salvage(chunk[:mid], max_split_depth - 1)
+        time.sleep(0.3)
+        right = _download_chunk_with_salvage(chunk[mid:], max_split_depth - 1)
+        if left.empty:
+            return right
+        if right.empty:
+            return left
+        try:
+            return pd.concat([left, right], axis=1)
+        except Exception:
+            return left if not left.empty else right
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_screener_universe(ticker_list):
     if not ticker_list:
@@ -1126,26 +1163,8 @@ def fetch_screener_universe(ticker_list):
 
     for c_idx, chunk in enumerate(chunks):
         progress_bar.progress((c_idx + 1) / len(chunks), text=f"Scanning batch {c_idx+1}/{len(chunks)} ({min((c_idx+1)*chunk_size, total)}/{total} stocks)...")
-        
-        batch_data = pd.DataFrame()
-        
-        # Retry mechanism to handle yfinance random rate limit failures
-        for attempt in range(3):
-            try:
-                batch_data = yf.download(
-                    tickers=" ".join(chunk),
-                    period="6mo",
-                    interval="1d",
-                    group_by="ticker",
-                    threads=True,
-                    auto_adjust=True,
-                    progress=False,
-                    timeout=20,
-                )
-                if not batch_data.empty:
-                    break
-            except Exception:
-                time.sleep(0.8)
+
+        batch_data = _download_chunk_with_salvage(chunk)
         if len(chunks) > 1:
             time.sleep(0.35)
 
@@ -1465,35 +1484,10 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # --- PAT: ONLY if filter ON + CACHE (no re-fetch on every click) ---
-    if not filtered_df.empty and pat_growth_filter:
-        filtered_df = filtered_df.copy()
-        if len(filtered_df) > 40:
-            filtered_df = filtered_df.nlargest(40, "_raw_vol")
-        need_fetch = [rt for rt in filtered_df["Raw_Ticker"] if rt not in st.session_state["pat_cache"]]
-        if need_fetch:
-            with st.spinner(f"PAT YoY for {len(need_fetch)} new stocks (cached after)..."):
-                for rt in need_fetch:
-                    try:
-                        t_info = yf.Ticker(rt).info or {}
-                        gr = t_info.get("earningsQuarterlyGrowth") or t_info.get("earningsGrowth")
-                        if gr is not None:
-                            pat_pct = float(gr) * 100
-                            st.session_state["pat_cache"][rt] = (pat_pct, f"{pat_pct:+.1f}%")
-                        else:
-                            st.session_state["pat_cache"][rt] = (0.0, "N/A")
-                    except Exception:
-                        st.session_state["pat_cache"][rt] = (-999.0, "N/A")
-        valid_indices = []
-        for idx, row in filtered_df.iterrows():
-            rt = row["Raw_Ticker"]
-            pat_pct, pat_disp = st.session_state["pat_cache"].get(rt, (0.0, "N/A"))
-            filtered_df.at[idx, "PAT YoY (%)"] = pat_disp
-            filtered_df.at[idx, "_pat_num"] = pat_pct
-            if pat_pct >= 20.0:
-                valid_indices.append(idx)
-        filtered_df = filtered_df.loc[valid_indices] if valid_indices else filtered_df.iloc[0:0]
-    elif not filtered_df.empty:
+    # --- PAT filter removed: it relied on yf.Ticker(rt).info, the slowest and
+    # most rate-limit-prone yfinance call (1-2s+ per stock, sequential, up to
+    # 40 calls). This was the main lag source when that filter was enabled.
+    if not filtered_df.empty:
         # Use cache only — zero network on watchlist/paper clicks
         filtered_df = filtered_df.copy()
         for idx, row in filtered_df.iterrows():
@@ -1699,7 +1693,7 @@ FORBIDDEN: bullet lists of Strong Buy/Wait/Avoid options, re-evaluating R:R alou
                                         candidate_models.append(m.name.replace("models/", ""))
                             except Exception as e:
                                 error_logs.append(str(e))
-                            preferred = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-pro"]
+                            preferred = ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-flash-latest", "gemini-3.1-pro-preview"]
                             ordered = [p for p in preferred if p in candidate_models]
                             ordered += [m for m in candidate_models if m not in ordered and "flash" in m.lower()]
                             ordered += [m for m in candidate_models if m not in ordered]
@@ -1716,8 +1710,24 @@ FORBIDDEN: bullet lists of Strong Buy/Wait/Avoid options, re-evaluating R:R alou
                                         continue
                                     thesis = res.text.strip()
                                     t_up = thesis.upper()
-                                    # Reject messy chain-of-thought / incomplete
-                                    messy = thesis.count("*") > 12 or "RE-EVALUATING" in t_up or "LET'S SET" in t_up
+                                    # Reject genuine chain-of-thought / incomplete output.
+                                    # NOTE: the old check used `thesis.count("*") > 12` as a
+                                    # "messiness" signal, but the prompt template itself
+                                    # requires ~9 bold (**label**) markdown pairs — i.e. 18+
+                                    # asterisks in ANY correctly formatted response. That made
+                                    # every well-formed answer get rejected as "messy",
+                                    # which is why every model in the fallback list failed.
+                                    # Instead, detect the actual forbidden pattern: dumping
+                                    # multiple verdict options as a bullet list instead of
+                                    # picking one.
+                                    verdict_mentions = sum(
+                                        t_up.count(v) for v in ("STRONG BUY", "BUY (ON PULLBACK)", "WAIT", "AVOID")
+                                    )
+                                    messy = (
+                                        verdict_mentions > 4
+                                        or "RE-EVALUATING" in t_up
+                                        or "LET'S SET" in t_up
+                                    )
                                     has_verdict = any(v in t_up for v in ("STRONG BUY", "BUY (ON PULLBACK)", "BUY ON PULLBACK", "WAIT", "AVOID"))
                                     has_blueprint = "ENTRY" in t_up or "STOP" in t_up or "TARGET" in t_up
                                     if messy or not has_verdict or len(thesis) < 200:

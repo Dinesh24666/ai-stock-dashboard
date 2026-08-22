@@ -3,6 +3,8 @@ import gc
 import json
 import os
 import time
+from typing import Dict, Optional
+
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
@@ -10,6 +12,171 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+
+# ============================================================
+# DHAN API — secrets + LTP (kept permanently)
+# ============================================================
+DHAN_SCRIP_CSV = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+DHAN_SID_CACHE = "dhan_nse_sids.json"
+
+
+def _secret(name: str, default: str = "") -> str:
+    try:
+        v = st.secrets.get(name, default)
+        return str(v).strip() if v is not None else default
+    except Exception:
+        return default
+
+
+def get_dhan_client():
+    cid, tok = _secret("DHAN_CLIENT_ID"), _secret("DHAN_ACCESS_TOKEN")
+    if not cid or not tok:
+        return None
+    try:
+        from dhanhq import DhanContext, dhanhq
+        return dhanhq(DhanContext(cid, tok))
+    except Exception:
+        try:
+            from dhanhq import dhanhq as Dhan
+            return Dhan(cid, tok)
+        except Exception:
+            return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_dhan_nse_equity_map() -> Dict[str, str]:
+    try:
+        if os.path.exists(DHAN_SID_CACHE) and time.time() - os.path.getmtime(DHAN_SID_CACHE) < 86400:
+            with open(DHAN_SID_CACHE) as f:
+                data = json.load(f)
+            if data:
+                return data
+    except Exception:
+        pass
+    mapping: Dict[str, str] = {}
+    try:
+        df = pd.read_csv(DHAN_SCRIP_CSV, low_memory=False)
+        sym_col = sid_col = seg_col = inst_col = None
+        for c in df.columns:
+            cl = c.upper()
+            if sym_col is None and ("TRADING_SYMBOL" in cl or cl == "SYMBOL"):
+                sym_col = c
+            if sid_col is None and "SECURITY_ID" in cl:
+                sid_col = c
+            if seg_col is None and ("SEGMENT" in cl or "EXCH_ID" in cl):
+                seg_col = c
+            if inst_col is None and "INSTRUMENT" in cl:
+                inst_col = c
+        if sym_col and sid_col:
+            for _, row in df.iterrows():
+                try:
+                    sym = str(row[sym_col]).strip().upper()
+                    sid = str(row[sid_col]).strip()
+                    if not sym or not sid or sid == "nan":
+                        continue
+                    seg = str(row[seg_col]).upper() if seg_col else "NSE"
+                    inst = str(row[inst_col]).upper() if inst_col else "ES"
+                    if "BSE" in seg and "NSE" not in seg:
+                        continue
+                    if any(x in inst for x in ("FUT", "OPT", "CE", "PE")):
+                        continue
+                    mapping[f"{sym}.NS"] = sid
+                    mapping[sym] = sid
+                except Exception:
+                    continue
+        if mapping:
+            try:
+                with open(DHAN_SID_CACHE, "w") as f:
+                    json.dump(mapping, f)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return mapping
+
+
+def dhan_security_id(symbol: str) -> Optional[str]:
+    m = load_dhan_nse_equity_map()
+    s = (symbol or "").strip().upper()
+    return m.get(s) or m.get(s.replace(".NS", "").replace(".BO", ""))
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_ltp_smart(symbol: str, fallback: float = 0.0) -> float:
+    dhan, sid = get_dhan_client(), dhan_security_id(symbol)
+    if dhan is not None and sid:
+        try:
+            payload = {"NSE_EQ": [int(sid)]}
+            resp = None
+            for meth in ("get_ltp", "ticker_data", "ohlc_data"):
+                if hasattr(dhan, meth):
+                    try:
+                        resp = getattr(dhan, meth)(payload)
+                        break
+                    except Exception:
+                        continue
+            data = resp.get("data", resp) if isinstance(resp, dict) else {}
+            nse = data.get("NSE_EQ", {}) if isinstance(data, dict) else {}
+            info = nse.get(str(sid)) if isinstance(nse, dict) else None
+            if info is None and isinstance(nse, dict) and str(sid).isdigit():
+                info = nse.get(int(sid))
+            if isinstance(info, dict):
+                ltp = info.get("last_price") or info.get("LTP") or info.get("ltp")
+                if ltp and float(ltp) > 0:
+                    return float(ltp)
+            elif isinstance(info, (int, float)) and float(info) > 0:
+                return float(info)
+        except Exception:
+            pass
+    try:
+        t = symbol if str(symbol).endswith((".NS", ".BO")) else f"{symbol}.NS"
+        p = getattr(yf.Ticker(t).fast_info, "last_price", None)
+        if p and float(p) > 0:
+            return float(p)
+    except Exception:
+        pass
+    return fallback
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_batch_ltp_map(symbols: tuple) -> Dict[str, float]:
+    """Fetch last price for many symbols in ONE network round trip instead of
+    looping yf.Ticker(sym).fast_info per symbol (which is what caused the
+    watchlist/portfolio tabs to feel slow on every rerun)."""
+    result: Dict[str, float] = {}
+    syms = [s for s in dict.fromkeys(symbols) if s]
+    if not syms:
+        return result
+    try:
+        data = yf.download(
+            tickers=" ".join(syms),
+            period="5d",
+            interval="1d",
+            group_by="ticker",
+            threads=True,
+            auto_adjust=True,
+            progress=False,
+            timeout=15,
+        )
+        if data.empty:
+            return result
+        if len(syms) == 1:
+            closes = data["Close"].dropna()
+            if not closes.empty:
+                result[syms[0]] = float(closes.iloc[-1])
+        else:
+            for sym in syms:
+                try:
+                    if isinstance(data.columns, pd.MultiIndex) and sym in data.columns.get_level_values(0):
+                        closes = data[sym]["Close"].dropna()
+                        if not closes.empty:
+                            result[sym] = float(closes.iloc[-1])
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return result
+
 
 # 1. Page Configuration & Center-Aligned Table Styling
 st.set_page_config(
@@ -174,9 +341,7 @@ def render_alert_permission_banner():
         
         var timeVal = hours * 100 + minutes;
         var isWeekday = (day >= 1 && day <= 5);
-        
-        // TEMPORARY BYPASS: Forces system "ON" regardless of time/day for testing
-        var isMarketHours = true; 
+        var isMarketHours = isWeekday && timeVal >= 915 && timeVal <= 1530;
         
         if ("Notification" in window && Notification.permission === "granted") {
             btnEl.style.display = "none";
@@ -359,6 +524,7 @@ st.title("⚡ Indian Market AI Stock Screener & Paper Trading")
 
 PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
+REBALANCE_FILE = "rebalance.json"
 
 
 def load_json_file(filename):
@@ -381,9 +547,12 @@ def save_json_file(filename, data):
 
 if "paper_portfolio" not in st.session_state:
     st.session_state["paper_portfolio"] = load_json_file(PORTFOLIO_FILE)
-
+if "rebalance_book" not in st.session_state:
+    st.session_state["rebalance_book"] = load_json_file(REBALANCE_FILE)
 if "pullback_watchlist" not in st.session_state:
     st.session_state["pullback_watchlist"] = load_json_file(WATCHLIST_FILE)
+if "pat_cache" not in st.session_state:
+    st.session_state["pat_cache"] = {}
 
 if "ai_analysis_cache" not in st.session_state:
     st.session_state["ai_analysis_cache"] = {}
@@ -395,9 +564,10 @@ if "screener_data" not in st.session_state:
 # --- FILTER DICTIONARIES FOR STATE MGMT ---
 # ==========================================
 WIDE_OPEN_FILTERS = {
-    "sel_universe": "Nifty 50 Core",
-    "scan_limit": 100,
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 100,  
     "strict_fund": False,
+    "pat_growth": False,
     "ob_mcap": False,
     "roce_rng": (-20, 100),
     "mcap_rng": (0, 2000000),
@@ -414,9 +584,10 @@ WIDE_OPEN_FILTERS = {
 }
 
 STRICT_STRATEGY_FILTERS = {
-    "sel_universe": "Nifty 500",
-    "scan_limit": 500,
-    "strict_fund": True,
+    "sel_universe": "All NSE Stocks (Full Listed)",
+    "scan_limit": 1950, 
+    "strict_fund": True, 
+    "pat_growth": False,
     "ob_mcap": False,
     "roce_rng": (20, 100),
     "mcap_rng": (1000, 2000000),
@@ -446,23 +617,30 @@ def apply_strict_filters():
         st.session_state[key] = val
 
 st.sidebar.header("🔑 API Setup")
-api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
-
+api_key_from_secrets = _secret("GEMINI_API_KEY")
 if api_key_from_secrets:
-    GEMINI_API_KEY = str(api_key_from_secrets).strip()
+    GEMINI_API_KEY = api_key_from_secrets
     st.sidebar.success("✅ Gemini API Key connected")
 else:
     GEMINI_API_KEY = st.sidebar.text_input(
-        "Google Gemini API Key",
-        type="password",
+        "Google Gemini API Key", type="password",
         help="Get a key from Google AI Studio (aistudio.google.com)",
     )
-
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY.strip())
     except Exception as e:
         st.sidebar.error(f"Error configuring API: {e}")
+
+if _secret("DHAN_CLIENT_ID") and _secret("DHAN_ACCESS_TOKEN"):
+    st.sidebar.success("✅ Dhan API connected (secrets)")
+    try:
+        _nmap = load_dhan_nse_equity_map()
+        st.sidebar.caption(f"Dhan NSE map: {len({k for k in _nmap if str(k).endswith('.NS')})} symbols")
+    except Exception:
+        pass
+else:
+    st.sidebar.caption("Set DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN in Secrets for live LTP")
 
 ORDER_BOOK_CR_MAP = {
     "HAL": 94000, "BEL": 76000, "BDL": 20000, "MAZDOCK": 40000, 
@@ -768,6 +946,7 @@ NSE_FULL_EQUITIES = [
 ]
 
 UNIVERSE_PRESETS = {
+    "All NSE Stocks (Full Listed)": "ALL_NSE",
     "🔍 Single Stock Search": "SINGLE_SEARCH",
     "Nifty 50 Core": "NIFTY_50",
     "Nifty 500": "NIFTY_500",
@@ -836,13 +1015,25 @@ elif selected_universe == "Nifty 50 Core":
     tickers_to_scan = get_all_nse_symbols()[:50]
 elif selected_universe == "Nifty 500":
     tickers_to_scan = get_nifty500_symbols()
-    st.sidebar.caption(f"Nifty 500 · {len(tickers_to_scan)} symbols")
+    st.sidebar.caption(f"Nifty 500 · {len(tickers_to_scan)} symbols (Yahoo may return fewer)")
+elif selected_universe == "All NSE Stocks (Full Listed)":
+    all_symbols = get_all_nse_symbols()
+    total_found = len(all_symbols)
+    scan_limit = st.sidebar.slider(
+        "Number of Stocks to Scan",
+        min_value=25,
+        max_value=total_found,
+        step=25,
+        help="Scanning fewer stocks at once prevents Yahoo Finance timeouts.",
+        key="scan_limit"
+    )
+    tickers_to_scan = all_symbols[:scan_limit]
 else:
     tickers_to_scan = UNIVERSE_PRESETS[selected_universe]
 
 st.sidebar.markdown("### Fundamental Filters")
 apply_fund_filter = st.sidebar.checkbox("Enable Strict Fundamental Filters", key="strict_fund")
-# PAT > 20% removed — was slow and blocked results
+pat_growth_filter = st.sidebar.checkbox("PAT up > 20% YoY", key="pat_growth")
 order_book_gt_mcap_filter = st.sidebar.checkbox("Order Book > Market Cap", key="ob_mcap")
 
 roce_range = st.sidebar.slider("ROCE (%) Range", -20, 100, key="roce_rng")
@@ -942,23 +1133,21 @@ def fetch_screener_universe(ticker_list):
         for attempt in range(3):
             try:
                 batch_data = yf.download(
-                    tickers=" ".join(chunk), 
-                    period="1y", 
-                    interval="1d", 
-                    group_by="ticker", 
-                    threads=True, 
-                    auto_adjust=True, 
-                    progress=False, 
-                    timeout=10
+                    tickers=" ".join(chunk),
+                    period="6mo",
+                    interval="1d",
+                    group_by="ticker",
+                    threads=True,
+                    auto_adjust=True,
+                    progress=False,
+                    timeout=20,
                 )
                 if not batch_data.empty:
                     break
             except Exception:
-                time.sleep(1)
-                
-        # Sleep slightly between chunks to prevent 429 errors from YF
+                time.sleep(0.8)
         if len(chunks) > 1:
-            time.sleep(0.5)
+            time.sleep(0.35)
 
         if batch_data.empty:
             continue
@@ -1276,15 +1465,52 @@ if not df_raw.empty:
         if enable_vol_multiplier_20d:
             filtered_df = filtered_df[filtered_df["_raw_vol"] >= (filtered_df["_avg_vol_20"] * vol_multiplier)]
 
-    # PAT live fetch removed (was lagging every click). Column stays as N/A from scan.
+    # --- PAT: ONLY if filter ON + CACHE (no re-fetch on every click) ---
+    if not filtered_df.empty and pat_growth_filter:
+        filtered_df = filtered_df.copy()
+        if len(filtered_df) > 40:
+            filtered_df = filtered_df.nlargest(40, "_raw_vol")
+        need_fetch = [rt for rt in filtered_df["Raw_Ticker"] if rt not in st.session_state["pat_cache"]]
+        if need_fetch:
+            with st.spinner(f"PAT YoY for {len(need_fetch)} new stocks (cached after)..."):
+                for rt in need_fetch:
+                    try:
+                        t_info = yf.Ticker(rt).info or {}
+                        gr = t_info.get("earningsQuarterlyGrowth") or t_info.get("earningsGrowth")
+                        if gr is not None:
+                            pat_pct = float(gr) * 100
+                            st.session_state["pat_cache"][rt] = (pat_pct, f"{pat_pct:+.1f}%")
+                        else:
+                            st.session_state["pat_cache"][rt] = (0.0, "N/A")
+                    except Exception:
+                        st.session_state["pat_cache"][rt] = (-999.0, "N/A")
+        valid_indices = []
+        for idx, row in filtered_df.iterrows():
+            rt = row["Raw_Ticker"]
+            pat_pct, pat_disp = st.session_state["pat_cache"].get(rt, (0.0, "N/A"))
+            filtered_df.at[idx, "PAT YoY (%)"] = pat_disp
+            filtered_df.at[idx, "_pat_num"] = pat_pct
+            if pat_pct >= 20.0:
+                valid_indices.append(idx)
+        filtered_df = filtered_df.loc[valid_indices] if valid_indices else filtered_df.iloc[0:0]
+    elif not filtered_df.empty:
+        # Use cache only — zero network on watchlist/paper clicks
+        filtered_df = filtered_df.copy()
+        for idx, row in filtered_df.iterrows():
+            rt = row["Raw_Ticker"]
+            if rt in st.session_state["pat_cache"]:
+                pat_pct, pat_disp = st.session_state["pat_cache"][rt]
+                filtered_df.at[idx, "PAT YoY (%)"] = pat_disp
+                filtered_df.at[idx, "_pat_num"] = pat_pct
 
 
-tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist = st.tabs(
+tab_screener, tab_deepdive, tab_pullback_watchlist, tab_watchlist, tab_rebalance = st.tabs(
     [
         "📊 Screener & Momentum Signals",
         "🔬 Single Stock Chart & AI Thesis",
         "🎯 Pullback Watchlist & Order Trigger",
         "💼 Paper Trading Portfolio",
+        "⚖️ Portfolio Rebalance",
     ]
 )
 
@@ -1427,35 +1653,43 @@ with tab_deepdive:
                     if not GEMINI_API_KEY:
                         st.warning("Please provide your Gemini API Key in the left sidebar.")
                     else:
-                        prompt = f"""NSE swing trader. Output ONLY this final report. No thinking steps, no option lists.
+                        # CLEAN format only (like user's preferred image 1) — NO chain-of-thought
+                        prompt = f"""You are an NSE swing trader. Output ONLY the final report below. Do NOT show reasoning steps, option lists, or asterisk thinking.
 
-{selected_stock} | ₹{curr_p:.2f} ({curr_change}) | Vol {curr_volume}
+DATA: {selected_stock} | ₹{curr_p:.2f} ({curr_change}) | Vol {curr_volume}
 EMA9 ₹{ema9_val:.2f} | EMA20 ₹{ema20_val:.2f} | EMA44 ₹{ema44_val:.2f} | ADX {curr_adx} | RSI {stock_row['RSI (14)'] if stock_row is not None else 'N/A'} | Score {curr_score}
 
+Copy this structure exactly and fill it. Complete ALL sections:
+
 ## 1. Breakout Setup Assessment
-**Status:** <phrase>
-- **Trend Alignment:** <1-2 sentences>
-- **Momentum Strength:** <1-2 sentences>
+**Status:** <short phrase>
+- **Trend Alignment:** <1-2 sentences on EMA stack>
+- **Momentum Strength:** <1-2 sentences on ADX>
 - **RSI Context:** <1-2 sentences>
-- **Gap Risk:** <1-2 sentences>
+- **Gap Risk:** <1-2 sentences on entry vs EMAs>
 
 ## 2. Exact Actionable Verdict
 **Verdict:** <STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID>
-**Reasoning:** <1-2 sentences>
+**Reasoning:** <1-2 sentences only>
 
 ## 3. Trade Blueprint
 | Parameter | Value | Logic |
 |-----------|-------|-------|
-| Entry Range | ₹x – ₹y | near 9/20 EMA |
-| Strict Stop-Loss | ₹z | below 44 EMA |
+| Entry Range | ₹x – ₹y | confluence with 9/20 EMA |
+| Strict Stop-Loss | ₹z | below 44 EMA / structure |
 | Target 1 | ₹a | R:R ≥ 1:2 |
 | Target 2 | ₹b | extension |
 
-**Risk/Reward:** Risk ₹… · Reward ₹… · Ratio 1:x
+**Risk/Reward Profile:**
+- Risk per share: ₹…
+- Reward per share: ₹…
+- Ratio: 1:x
 
 ## 4. Exit Trigger
-<1-2 sentences>"""
-                        with st.spinner("AI thesis..."):
+<1-2 sentences invalidation>
+
+FORBIDDEN: bullet lists of Strong Buy/Wait/Avoid options, re-evaluating R:R aloud, *asterisk* notes, incomplete section 1 only."""
+                        with st.spinner("AI thesis (clean format)..."):
                             success = False
                             error_logs = []
                             candidate_models = []
@@ -1467,6 +1701,7 @@ EMA9 ₹{ema9_val:.2f} | EMA20 ₹{ema20_val:.2f} | EMA44 ₹{ema44_val:.2f} | A
                                 error_logs.append(str(e))
                             preferred = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-pro"]
                             ordered = [p for p in preferred if p in candidate_models]
+                            ordered += [m for m in candidate_models if m not in ordered and "flash" in m.lower()]
                             ordered += [m for m in candidate_models if m not in ordered]
                             if not ordered:
                                 ordered = preferred
@@ -1475,35 +1710,48 @@ EMA9 ₹{ema9_val:.2f} | EMA20 ₹{ema20_val:.2f} | EMA44 ₹{ema44_val:.2f} | A
                                     model = genai.GenerativeModel(model_name)
                                     res = model.generate_content(
                                         prompt,
-                                        generation_config={"max_output_tokens": 1200, "temperature": 0.2},
+                                        generation_config={"max_output_tokens": 1200, "temperature": 0.15},
                                     )
-                                    if res and res.text and len(res.text.strip()) > 50:
-                                        thesis = res.text.strip()
-                                        st.session_state["ai_analysis_cache"][selected_stock] = thesis
-                                        st.markdown(thesis)
-                                        t_up = thesis.upper()
-                                        if "STRONG BUY" in t_up:
-                                            vs, vsig = 92, "🟢 STRONG BUY (AI)"
-                                        elif "BUY (ON PULLBACK)" in t_up or "BUY ON PULLBACK" in t_up:
-                                            vs, vsig = 72, "🟡 BUY / PULLBACK (AI)"
-                                        elif "AVOID" in t_up:
-                                            vs, vsig = 18, "🔴 AVOID (AI)"
-                                        elif "WAIT" in t_up:
-                                            vs, vsig = 45, "🟠 WAIT (AI)"
-                                        else:
-                                            vs, vsig = int(curr_score) if curr_score else 50, str(curr_signal)
-                                        if not st.session_state["screener_data"].empty:
-                                            mask = st.session_state["screener_data"]["Raw_Ticker"] == selected_stock
-                                            if mask.any():
-                                                st.session_state["screener_data"].loc[mask, "Composite Score"] = vs
-                                                st.session_state["screener_data"].loc[mask, "Signal"] = vsig
-                                        st.success(f"AI Score: {vs}/100 → {vsig} ({model_name})")
-                                        success = True
-                                        break
+                                    if not res or not res.text:
+                                        continue
+                                    thesis = res.text.strip()
+                                    t_up = thesis.upper()
+                                    # Reject messy chain-of-thought / incomplete
+                                    messy = thesis.count("*") > 12 or "RE-EVALUATING" in t_up or "LET'S SET" in t_up
+                                    has_verdict = any(v in t_up for v in ("STRONG BUY", "BUY (ON PULLBACK)", "BUY ON PULLBACK", "WAIT", "AVOID"))
+                                    has_blueprint = "ENTRY" in t_up or "STOP" in t_up or "TARGET" in t_up
+                                    if messy or not has_verdict or len(thesis) < 200:
+                                        error_logs.append(f"{model_name}: rejected (messy or incomplete)")
+                                        continue
+                                    st.session_state["ai_analysis_cache"][selected_stock] = thesis
+                                    st.markdown(thesis)
+                                    if "STRONG BUY" in t_up:
+                                        vs, vsig = 92, "🟢 STRONG BUY (AI)"
+                                    elif "BUY (ON PULLBACK)" in t_up or "BUY ON PULLBACK" in t_up:
+                                        vs, vsig = 72, "🟡 BUY / PULLBACK (AI)"
+                                    elif "AVOID" in t_up:
+                                        vs, vsig = 18, "🔴 AVOID (AI)"
+                                    elif "WAIT" in t_up:
+                                        vs, vsig = 45, "🟠 WAIT (AI)"
+                                    else:
+                                        vs, vsig = int(curr_score) if curr_score else 50, str(curr_signal)
+                                    if has_verdict and not st.session_state["screener_data"].empty:
+                                        mask = st.session_state["screener_data"]["Raw_Ticker"] == selected_stock
+                                        if mask.any():
+                                            st.session_state["screener_data"].loc[mask, "Composite Score"] = vs
+                                            st.session_state["screener_data"].loc[mask, "Signal"] = vsig
+                                    st.success(f"AI Score: {vs}/100 → {vsig} ({model_name})")
+                                    if not has_blueprint:
+                                        st.warning("Blueprint weak — click Generate again if Entry/SL/TGT missing.")
+                                    success = True
+                                    break
                                 except Exception as err:
                                     error_logs.append(f"{model_name}: {err}")
                             if not success:
-                                st.error("Failed to generate AI thesis.")
+                                st.error("AI failed or returned messy/incomplete text. Try again.")
+                                with st.expander("Errors"):
+                                    for e in error_logs:
+                                        st.code(e)
                                 with st.expander("🔍 View Error Details"):
                                     for err in error_logs:
                                         st.code(err)
@@ -1600,6 +1848,16 @@ with tab_pullback_watchlist:
         updated_watchlist = []
         display_rows = []
 
+        # Pre-fetch every symbol missing from the screener table in ONE batched
+        # call, instead of one network round trip per row inside the loop below.
+        _missing_syms = tuple(
+            (item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS")
+            for item in active_watchlist
+            if isinstance(item, dict) and (item.get("Raw_Ticker") or item.get("Ticker"))
+            and (item.get("Raw_Ticker") or f"{item.get('Ticker')}.NS") not in live_price_dict
+        )
+        batch_ltp_fallback = get_batch_ltp_map(_missing_syms) if _missing_syms else {}
+
         for item in active_watchlist:
             if not isinstance(item, dict) or "Target Buy (₹)" not in item:
                 continue
@@ -1612,10 +1870,12 @@ with tab_pullback_watchlist:
             qty = int(item.get("Qty", 1))
             status_str = item.get("Status", "⏳ Waiting for Pullback")
 
-            curr_ltp = live_price_dict.get(sym)
+            curr_ltp = live_price_dict.get(sym) or batch_ltp_fallback.get(sym)
             if curr_ltp is None:
                 try:
-                    curr_ltp = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_ltp = float(get_ltp_smart(sym, 0.0) or 0.0)
+                    if curr_ltp <= 0:
+                        curr_ltp = None
                 except Exception:
                     curr_ltp = None
 
@@ -1848,6 +2108,16 @@ with tab_watchlist:
 
     if active_portfolio:
         live_price_dict = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+
+        # Pre-fetch every symbol missing from the screener table in ONE batched
+        # call, instead of one network round trip per position inside the loop.
+        _missing_port_syms = tuple(
+            pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS")
+            for pos in active_portfolio
+            if pos.get("Raw_Ticker", f"{pos.get('Ticker', 'ACE')}.NS") not in live_price_dict
+        )
+        batch_ltp_fallback = get_batch_ltp_map(_missing_port_syms) if _missing_port_syms else {}
+
         open_invested = 0.0
         open_current_val = 0.0
         unrealised_pnl_total = 0.0
@@ -1865,10 +2135,12 @@ with tab_watchlist:
             clean_t = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
             buy_p = float(pos.get("Buy Price (₹)", 0.0))
             
-            curr_p = live_price_dict.get(sym)
+            curr_p = live_price_dict.get(sym) or batch_ltp_fallback.get(sym)
             if curr_p is None:
                 try:
-                    curr_p = float(yf.Ticker(sym).fast_info.last_price)
+                    curr_p = float(get_ltp_smart(sym, 0.0) or 0.0)
+                    if curr_p <= 0:
+                        curr_p = buy_p
                 except Exception:
                     curr_p = buy_p
 
@@ -2070,3 +2342,168 @@ with tab_watchlist:
             st.session_state["paper_portfolio"] = []
             save_json_file(PORTFOLIO_FILE, [])
             st.rerun()
+
+
+# =========================================================
+# ⚖️ PORTFOLIO REBALANCE (independent book from screener)
+# =========================================================
+with tab_rebalance:
+    st.subheader("⚖️ Portfolio Rebalance")
+    st.caption("Independent of Watchlist & Paper Trading. Add from screener only.")
+
+    def _sf(v, d=0.0):
+        try:
+            x = float(v)
+            return d if (x != x or abs(x) == float("inf")) else x
+        except Exception:
+            return d
+
+    book = st.session_state.get("rebalance_book", [])
+    if df_raw.empty:
+        st.warning("Run screener first.")
+    else:
+        with st.expander("➕ Add from Screener", expanded=len(book) == 0):
+            with st.form("rb_add"):
+                cands = df_raw["Raw_Ticker"].tolist()
+                cur = st.session_state.get("selected_ticker", cands[0])
+                di = cands.index(cur) if cur in cands else 0
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    sel = st.selectbox("Stock", cands, index=di)
+                    mr = df_raw[df_raw["Raw_Ticker"] == sel]
+                    ltp = float(mr["Price (₹)"].iloc[0]) if not mr.empty else 100.0
+                    score = float(mr["Composite Score"].iloc[0]) if not mr.empty else 50.0
+                with c2:
+                    st.metric("LTP", f"₹{ltp:,.2f}")
+                with c3:
+                    qty = st.number_input("Qty", value=50, min_value=1, step=1)
+                with c4:
+                    entry = st.number_input("Entry ₹", value=round(ltp, 2), min_value=0.1, step=0.5)
+                if st.form_submit_button("📥 Add", use_container_width=True):
+                    clean = sel.replace(".NS", "").replace(".BO", "")
+                    if any(x.get("Raw_Ticker") == sel for x in st.session_state["rebalance_book"]):
+                        st.warning(f"{clean} already in book")
+                    else:
+                        st.session_state["rebalance_book"].append({
+                            "id": f"rb_{clean}_{int(time.time())}", "Ticker": clean, "Raw_Ticker": sel,
+                            "Qty": int(qty), "Entry (₹)": float(entry), "Score": score, "Note": "",
+                        })
+                        save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
+                        st.success(f"Added {clean}")
+                        st.rerun()
+
+    book = st.session_state.get("rebalance_book", [])
+    if not book:
+        st.info("Rebalance book empty.")
+    else:
+        live = dict(zip(df_raw["Raw_Ticker"], df_raw["Price (₹)"])) if not df_raw.empty else {}
+        rows, total_val = [], 0.0
+        for pos in book:
+            sym = pos.get("Raw_Ticker", f"{pos.get('Ticker')}.NS")
+            clean = pos.get("Ticker", sym.replace(".NS", "").replace(".BO", ""))
+            entry, qty = _sf(pos.get("Entry (₹)")), max(1, int(pos.get("Qty", 1) or 1))
+            curr = live.get(sym)
+            try:
+                curr = float(curr) if curr is not None else None
+                if curr is not None and (curr != curr or curr <= 0):
+                    curr = None
+            except Exception:
+                curr = None
+            if not curr or curr <= 0:
+                curr = get_ltp_smart(sym, entry) or entry
+            val = round(float(curr) * qty, 2)
+            total_val += val
+            rows.append({"id": pos.get("id"), "Ticker": clean, "Raw_Ticker": sym, "Qty": qty,
+                         "Entry (₹)": entry, "LTP (₹)": round(float(curr), 2), "Value (₹)": val,
+                         "Score": _sf(pos.get("Score"), 50)})
+        if total_val > 0:
+            for r in rows:
+                r["Weight %"] = round(r["Value (₹)"] / total_val * 100, 2)
+            st.markdown(f"**{len(rows)} positions · ₹{total_val:,.2f}**")
+            opts = {f"{r['Ticker']} · Qty {r['Qty']} ({r['Weight %']:.1f}%)": r["id"] for r in rows}
+            with st.form("rb_edit"):
+                lab = st.selectbox("Edit / Delete", list(opts.keys()))
+                sid = opts[lab]
+                pidx = next((i for i, p in enumerate(book) if p.get("id") == sid), None)
+                if pidx is not None:
+                    nq = st.number_input("Qty", value=max(1, int(book[pidx].get("Qty", 1))), min_value=1, step=1)
+                    ne = st.number_input("Entry ₹", value=_sf(book[pidx].get("Entry (₹)")), min_value=0.1, step=0.5)
+                    s1, s2 = st.columns(2)
+                    with s1:
+                        do_save = st.form_submit_button("💾 Save", use_container_width=True)
+                    with s2:
+                        do_del = st.form_submit_button("🗑️ Delete", type="primary", use_container_width=True)
+                    if do_save:
+                        book[pidx].update({"Qty": int(nq), "Entry (₹)": ne})
+                        st.session_state["rebalance_book"] = book
+                        save_json_file(REBALANCE_FILE, book)
+                        st.rerun()
+                    if do_del:
+                        book.pop(pidx)
+                        st.session_state["rebalance_book"] = book
+                        save_json_file(REBALANCE_FILE, book)
+                        st.rerun()
+            strategy = st.selectbox("Strategy", ["Equal Weight", "Max Position Cap", "Score Weight", "Hybrid"])
+            max_w = st.slider("Max weight %", 3.0, 25.0, 8.0, 0.5)
+            drift_th = st.slider("Drift threshold %", 0.5, 10.0, 2.0, 0.5)
+            n, eq = len(rows), (100.0 / len(rows) if rows else 0)
+            for r in rows:
+                if strategy == "Equal Weight":
+                    r["Target %"] = round(eq, 2)
+                elif strategy == "Max Position Cap":
+                    r["Target %"] = min(r["Weight %"], max_w)
+                elif strategy == "Score Weight":
+                    r["_s"] = max(r["Score"], 1)
+                else:
+                    r["Target %"] = round(min(eq, max_w), 2)
+            if strategy == "Score Weight":
+                ts = sum(r.get("_s", 50) for r in rows) or 1
+                for r in rows:
+                    r["Target %"] = round(min(r["_s"] / ts * 100, max_w), 2)
+                s = sum(r["Target %"] for r in rows) or 1
+                for r in rows:
+                    r["Target %"] = round(r["Target %"] / s * 100, 2)
+            proposals = []
+            for r in rows:
+                r["Drift %"] = round(r["Weight %"] - r["Target %"], 2)
+                dv = total_val * r["Target %"] / 100 - r["Value (₹)"]
+                if abs(r["Drift %"]) < drift_th:
+                    r["Action"], r["Δ Qty"] = "Hold", 0
+                elif dv > 2000 and r["LTP (₹)"] > 0:
+                    r["Action"], r["Δ Qty"] = "Buy", int(dv // r["LTP (₹)"])
+                elif dv < -2000 and r["LTP (₹)"] > 0:
+                    r["Action"], r["Δ Qty"] = "Sell", min(int(abs(dv) // r["LTP (₹)"]), r["Qty"])
+                else:
+                    r["Action"], r["Δ Qty"] = "Hold", 0
+                if r["Action"] != "Hold" and r["Δ Qty"] > 0:
+                    proposals.append(r)
+            st.dataframe(pd.DataFrame([{
+                "Ticker": r["Ticker"], "Qty": r["Qty"], "LTP (₹)": f"₹{r['LTP (₹)']:,.2f}",
+                "Weight %": f"{r['Weight %']:.1f}%", "Target %": f"{r['Target %']:.1f}%",
+                "Drift %": f"{r['Drift %']:+.1f}%", "Action": r["Action"], "Δ Qty": r["Δ Qty"] or "—",
+            } for r in rows]), use_container_width=True, hide_index=True)
+            if st.button("🔄 Apply Rebalance", type="primary", disabled=not proposals):
+                id_map = {p.get("id"): p for p in st.session_state["rebalance_book"]}
+                for r in proposals:
+                    pos = id_map.get(r["id"])
+                    if not pos:
+                        continue
+                    old_q = int(pos.get("Qty", 1) or 1)
+                    if r["Action"] == "Buy":
+                        nq = old_q + r["Δ Qty"]
+                        old_e = _sf(pos.get("Entry (₹)"), r["LTP (₹)"])
+                        pos["Entry (₹)"] = round((old_e * old_q + r["LTP (₹)"] * r["Δ Qty"]) / nq, 2)
+                        pos["Qty"] = nq
+                    elif r["Action"] == "Sell":
+                        nq = max(0, old_q - r["Δ Qty"])
+                        if nq == 0:
+                            st.session_state["rebalance_book"] = [p for p in st.session_state["rebalance_book"] if p.get("id") != r["id"]]
+                        else:
+                            pos["Qty"] = nq
+                save_json_file(REBALANCE_FILE, st.session_state["rebalance_book"])
+                st.success("Applied")
+                st.rerun()
+            if st.button("🗑️ Clear Rebalance Book"):
+                st.session_state["rebalance_book"] = []
+                save_json_file(REBALANCE_FILE, [])
+                st.rerun()

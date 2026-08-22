@@ -1668,15 +1668,76 @@ with tab_deepdive:
                 if cached_thesis:
                     st.markdown(cached_thesis)
 
+                @st.cache_data(ttl=86400, show_spinner=False)
+                def get_fundamentals_snapshot(symbol: str) -> dict:
+                    """One-time-per-day fundamentals lookup for a SINGLE stock,
+                    called only when the user asks for an AI thesis on that
+                    stock — never inside the screener scan loop. This is the
+                    same yf.Ticker().info call that caused lag when it ran in
+                    a loop for the PAT filter (now removed); doing it for one
+                    symbol, cached 24h, adds no measurable lag anywhere else
+                    in the app."""
+                    out = {
+                        "promoter_holding": None, "institution_holding": None,
+                        "roe": None, "debt_to_equity": None, "pe": None,
+                        "profit_margin": None, "earnings_growth": None, "revenue_growth": None,
+                    }
+                    try:
+                        info = yf.Ticker(symbol).info or {}
+                        out["promoter_holding"] = info.get("heldPercentInsiders")
+                        out["institution_holding"] = info.get("heldPercentInstitutions")
+                        out["roe"] = info.get("returnOnEquity")
+                        out["debt_to_equity"] = info.get("debtToEquity")
+                        out["pe"] = info.get("trailingPE")
+                        out["profit_margin"] = info.get("profitMargins")
+                        out["earnings_growth"] = info.get("earningsGrowth") or info.get("earningsQuarterlyGrowth")
+                        out["revenue_growth"] = info.get("revenueGrowth")
+                    except Exception:
+                        pass
+                    return out
+
+                def _pct_or_na(v):
+                    try:
+                        return f"{float(v) * 100:.1f}%" if v is not None else "N/A"
+                    except Exception:
+                        return "N/A"
+
+                def _num_or_na(v, fmt="{:.2f}"):
+                    try:
+                        return fmt.format(float(v)) if v is not None else "N/A"
+                    except Exception:
+                        return "N/A"
+
                 if st.button("Generate Short-Term Swing Setup for " + selected_stock):
                     if not GEMINI_API_KEY:
                         st.warning("Please provide your Gemini API Key in the left sidebar.")
                     else:
+                        with st.spinner("Fetching fundamentals..."):
+                            fnd = get_fundamentals_snapshot(selected_stock)
+
+                        promoter_disp = _pct_or_na(fnd["promoter_holding"])
+                        institution_disp = _pct_or_na(fnd["institution_holding"])
+                        roe_disp = _pct_or_na(fnd["roe"])
+                        de_disp = _num_or_na(fnd["debt_to_equity"])
+                        pe_disp = _num_or_na(fnd["pe"])
+                        margin_disp = _pct_or_na(fnd["profit_margin"])
+                        earnings_gr_disp = _pct_or_na(fnd["earnings_growth"])
+                        revenue_gr_disp = _pct_or_na(fnd["revenue_growth"])
+
+                        fc1, fc2, fc3, fc4 = st.columns(4)
+                        fc1.metric("Promoter Holding", promoter_disp)
+                        fc2.metric("ROE", roe_disp)
+                        fc3.metric("Debt/Equity", de_disp)
+                        fc4.metric("Trailing P/E", pe_disp)
+                        if fnd["promoter_holding"] is None:
+                            st.caption("ℹ️ Yahoo Finance doesn't reliably report promoter holding for many NSE stocks — treat 'N/A' here as missing data, not zero promoter stake.")
+
                         # CLEAN format only (like user's preferred image 1) — NO chain-of-thought
                         prompt = f"""You are an NSE swing trader. Output ONLY the final report below. Do NOT show reasoning steps, option lists, or asterisk thinking.
 
 DATA: {selected_stock} | ₹{curr_p:.2f} ({curr_change}) | Vol {curr_volume}
 EMA9 ₹{ema9_val:.2f} | EMA20 ₹{ema20_val:.2f} | EMA44 ₹{ema44_val:.2f} | ADX {curr_adx} | RSI {stock_row['RSI (14)'] if stock_row is not None else 'N/A'} | Score {curr_score}
+FUNDAMENTALS (use "N/A" values as missing data, do not assume a value for them): Promoter Holding {promoter_disp} | Institutional Holding {institution_disp} | ROE {roe_disp} | Debt/Equity {de_disp} | Trailing P/E {pe_disp} | Profit Margin {margin_disp} | Earnings Growth {earnings_gr_disp} | Revenue Growth {revenue_gr_disp}
 
 Copy this structure exactly and fill it. Complete ALL sections:
 
@@ -1686,10 +1747,11 @@ Copy this structure exactly and fill it. Complete ALL sections:
 - **Momentum Strength:** <1-2 sentences on ADX>
 - **RSI Context:** <1-2 sentences>
 - **Gap Risk:** <1-2 sentences on entry vs EMAs>
+- **Fundamental Check:** <1-2 sentences: is this technical setup backed by decent fundamentals (promoter holding, ROE, debt, earnings growth) or is it a purely technical trade with weak/missing fundamental support? If most fundamentals are "N/A", say so plainly instead of guessing.>
 
 ## 2. Exact Actionable Verdict
 **Verdict:** <STRONG BUY | BUY (ON PULLBACK) | WAIT | AVOID>
-**Reasoning:** <1-2 sentences only>
+**Reasoning:** <1-2 sentences only, weighing BOTH the technical setup and the fundamental check above>
 
 ## 3. Trade Blueprint
 | Parameter | Value | Logic |
